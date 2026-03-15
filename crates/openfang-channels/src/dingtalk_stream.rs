@@ -99,7 +99,7 @@ impl DingTalkStreamAdapter {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let token = self.get_token().await.map_err(|e| -> Box<dyn std::error::Error> { e })?;
 
-        let (msg_key, msg_param) = match &content {
+        let (msg_key, _msg_param) = match &content {
             ChannelContent::Text(t) => (
                 "sampleText",
                 serde_json::json!({ "content": t }).to_string(),
@@ -283,18 +283,10 @@ impl ChannelAdapter for DingTalkStreamAdapter {
 
 // ─── Token helpers ───────────────────────────────────────────────────────────
 
+#[derive(Default)]
 struct TokenCache {
     token: String,
     expire_at: u64,
-}
-
-impl Default for TokenCache {
-    fn default() -> Self {
-        Self {
-            token: String::new(),
-            expire_at: 0,
-        }
-    }
 }
 
 async fn get_access_token(
