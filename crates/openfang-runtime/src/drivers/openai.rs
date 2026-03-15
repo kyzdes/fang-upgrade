@@ -35,8 +35,10 @@ impl OpenAIDriver {
     }
 
     /// True if this provider is Moonshot/Kimi and requires reasoning_content on assistant messages with tool_calls.
-    fn kimi_needs_reasoning_content(&self, model: &str) -> bool {
-        self.base_url.contains("moonshot") || model.to_lowercase().contains("kimi")
+    fn needs_reasoning_content(&self, model: &str) -> bool {
+        self.base_url.contains("moonshot")
+            || model.to_lowercase().contains("kimi")
+            || model.to_lowercase().contains("reasoner")
     }
 
     /// Create a driver with additional HTTP headers (e.g. for Copilot IDE auth).
@@ -295,6 +297,7 @@ impl LlmDriver for OpenAIDriver {
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
                     let mut text_parts = Vec::new();
                     let mut tool_calls = Vec::new();
+                    let mut reasoning_text = String::new();
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
@@ -308,17 +311,16 @@ impl LlmDriver for OpenAIDriver {
                                     },
                                 });
                             }
-                            ContentBlock::Thinking { .. } => {}
+                            ContentBlock::Thinking { thinking, .. } => {
+                                reasoning_text = thinking.clone();
+                            }
                             _ => {}
                         }
                     }
                     let has_tool_calls = !tool_calls.is_empty();
+                    let needs_reasoning = self.needs_reasoning_content(&request.model);
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
-                        // ZHIPU (GLM) rejects assistant messages where content is
-                        // null or omitted when tool_calls are present (error 1214).
-                        // Always send an empty string so every OpenAI-compat
-                        // provider gets a valid payload.
                         content: if text_parts.is_empty() {
                             if has_tool_calls {
                                 Some(OaiMessageContent::Text(String::new()))
@@ -334,8 +336,8 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
-                            Some(String::new())
+                        reasoning_content: if needs_reasoning {
+                            Some(if reasoning_text.is_empty() { String::new() } else { reasoning_text })
                         } else {
                             None
                         },
@@ -377,7 +379,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if self.kimi_needs_reasoning_content(&request.model) {
+            temperature: if self.needs_reasoning_content(&request.model) {
                 // Kimi with thinking disabled uses fixed 0.6 for multi-turn compatibility.
                 Some(0.6)
             } else if temperature_must_be_one(&request.model) {
@@ -391,7 +393,7 @@ impl LlmDriver for OpenAIDriver {
             tool_choice,
             stream: false,
             stream_options: None,
-            thinking: if self.kimi_needs_reasoning_content(&request.model) {
+            thinking: if self.needs_reasoning_content(&request.model) {
                 Some(serde_json::json!({"type": "disabled"}))
             } else {
                 None
@@ -718,6 +720,7 @@ impl LlmDriver for OpenAIDriver {
                 (Role::Assistant, MessageContent::Blocks(blocks)) => {
                     let mut text_parts = Vec::new();
                     let mut tool_calls_out = Vec::new();
+                    let mut reasoning_text = String::new();
                     for block in blocks {
                         match block {
                             ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
@@ -731,11 +734,14 @@ impl LlmDriver for OpenAIDriver {
                                     },
                                 });
                             }
-                            ContentBlock::Thinking { .. } => {}
+                            ContentBlock::Thinking { thinking, .. } => {
+                                reasoning_text = thinking.clone();
+                            }
                             _ => {}
                         }
                     }
                     let has_tool_calls = !tool_calls_out.is_empty();
+                    let needs_reasoning = self.needs_reasoning_content(&request.model);
                     oai_messages.push(OaiMessage {
                         role: "assistant".to_string(),
                         content: if text_parts.is_empty() {
@@ -753,8 +759,8 @@ impl LlmDriver for OpenAIDriver {
                             Some(tool_calls_out)
                         },
                         tool_call_id: None,
-                        reasoning_content: if has_tool_calls && self.kimi_needs_reasoning_content(&request.model) {
-                            Some(String::new())
+                        reasoning_content: if needs_reasoning {
+                            Some(if reasoning_text.is_empty() { String::new() } else { reasoning_text })
                         } else {
                             None
                         },
@@ -796,7 +802,7 @@ impl LlmDriver for OpenAIDriver {
             messages: oai_messages,
             max_tokens: mt,
             max_completion_tokens: mct,
-            temperature: if self.kimi_needs_reasoning_content(&request.model) {
+            temperature: if self.needs_reasoning_content(&request.model) {
                 Some(0.6)
             } else if temperature_must_be_one(&request.model) {
                 Some(1.0)
@@ -809,7 +815,7 @@ impl LlmDriver for OpenAIDriver {
             tool_choice,
             stream: true,
             stream_options: Some(serde_json::json!({"include_usage": true})),
-            thinking: if self.kimi_needs_reasoning_content(&request.model) {
+            thinking: if self.needs_reasoning_content(&request.model) {
                 Some(serde_json::json!({"type": "disabled"}))
             } else {
                 None

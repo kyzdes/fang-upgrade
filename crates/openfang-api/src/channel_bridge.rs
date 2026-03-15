@@ -73,6 +73,10 @@ impl ChannelBridgeHandle for KernelBridgeAdapter {
             .send_message(agent_id, message)
             .await
             .map_err(|e| format!("{e}"))?;
+        // Silent/NO_REPLY responses should not be forwarded to channels
+        if result.silent {
+            return Ok(String::new());
+        }
         Ok(result.response)
     }
 

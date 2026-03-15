@@ -374,8 +374,11 @@ pub async fn send_message(
             // Strip <think>...</think> blocks from model output
             let cleaned = crate::ws::strip_think_tags(&result.response);
 
-            // Guard: ensure we never return an empty response to the client
-            let response = if cleaned.trim().is_empty() {
+            // If the agent intentionally returned a silent/NO_REPLY response,
+            // return an empty string — don't generate debug fallback text.
+            let response = if result.silent {
+                String::new()
+            } else if cleaned.trim().is_empty() {
                 format!(
                     "[The agent completed processing but returned no text response. ({} in / {} out | {} iter)]",
                     result.total_usage.input_tokens,
@@ -3431,12 +3434,14 @@ pub async fn clawhub_search(
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
+    let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.search(&query, limit).await {
         Ok(results) => {
             let items: Vec<serde_json::Value> = results
                 .results
                 .iter()
                 .map(|e| {
+                    let installed = skills_dir.join(&e.slug).exists();
                     serde_json::json!({
                         "slug": e.slug,
                         "name": e.display_name,
@@ -3444,6 +3449,7 @@ pub async fn clawhub_search(
                         "version": e.version,
                         "score": e.score,
                         "updated_at": e.updated_at,
+                        "installed": installed,
                     })
                 })
                 .collect();
@@ -3508,12 +3514,18 @@ pub async fn clawhub_browse(
     let cache_dir = state.kernel.config.home_dir.join(".cache").join("clawhub");
     let client = openfang_skills::clawhub::ClawHubClient::new(cache_dir);
 
+    let skills_dir = state.kernel.config.home_dir.join("skills");
     match client.browse(sort, limit, cursor).await {
         Ok(results) => {
             let items: Vec<serde_json::Value> = results
                 .items
                 .iter()
-                .map(clawhub_browse_entry_to_json)
+                .map(|entry| {
+                    let mut json = clawhub_browse_entry_to_json(entry);
+                    let installed = skills_dir.join(&entry.slug).exists();
+                    json["installed"] = serde_json::json!(installed);
+                    json
+                })
                 .collect();
             let resp = serde_json::json!({
                 "items": items,
