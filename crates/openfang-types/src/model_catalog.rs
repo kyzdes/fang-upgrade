@@ -53,6 +53,12 @@ pub const VOLCENGINE_CODING_BASE_URL: &str = "https://ark.cn-beijing.volces.com/
 // ── Chutes.ai ────────────────────────────────────────────────────
 pub const CHUTES_BASE_URL: &str = "https://llm.chutes.ai/v1";
 
+// ── Azure OpenAI ────────────────────────────────────────────────────
+/// Azure OpenAI requires a per-resource URL. Users must set their own via
+/// `base_url` or `[provider_urls] azure = "https://{resource}.openai.azure.com/openai/deployments"`.
+/// This constant is intentionally empty — it is never used as a default.
+pub const AZURE_OPENAI_BASE_URL: &str = "";
+
 // ── AWS Bedrock ───────────────────────────────────────────────────
 pub const BEDROCK_BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 
@@ -297,5 +303,11 @@ mod tests {
         assert_eq!(parsed.id, "anthropic");
         assert_eq!(parsed.auth_status, AuthStatus::Configured);
         assert_eq!(parsed.model_count, 3);
+    }
+
+    #[test]
+    fn test_azure_openai_base_url_empty() {
+        // Azure requires user-supplied URL, so the constant must be empty.
+        assert!(AZURE_OPENAI_BASE_URL.is_empty());
     }
 }
