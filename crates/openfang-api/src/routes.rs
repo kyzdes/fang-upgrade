@@ -639,6 +639,70 @@ pub async fn kill_agent(
     }
 }
 
+/// POST /api/agents/{id}/restart — Restart a crashed/stuck agent.
+///
+/// Cancels any active task, resets agent state to Running, and updates last_active.
+/// Returns the agent's new state.
+pub async fn restart_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let agent_id: AgentId = match id.parse() {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Invalid agent ID"})),
+            );
+        }
+    };
+
+    // Check agent exists
+    let entry = match state.kernel.registry.get(agent_id) {
+        Some(e) => e,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Agent not found"})),
+            );
+        }
+    };
+
+    let agent_name = entry.name.clone();
+    let previous_state = format!("{:?}", entry.state);
+    drop(entry);
+
+    // Cancel any running task
+    let was_running = state
+        .kernel
+        .stop_agent_run(agent_id)
+        .unwrap_or(false);
+
+    // Reset state to Running (also updates last_active)
+    let _ = state
+        .kernel
+        .registry
+        .set_state(agent_id, openfang_types::agent::AgentState::Running);
+
+    tracing::info!(
+        agent = %agent_name,
+        previous_state = %previous_state,
+        task_cancelled = was_running,
+        "Agent restarted via API"
+    );
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "restarted",
+            "agent": agent_name,
+            "agent_id": id,
+            "previous_state": previous_state,
+            "task_cancelled": was_running,
+        })),
+    )
+}
+
 /// GET /api/status — Kernel status.
 pub async fn status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let agents: Vec<serde_json::Value> = state

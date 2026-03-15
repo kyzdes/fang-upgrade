@@ -147,6 +147,14 @@ pub async fn build_router(
         )
         .route("/api/profiles", axum::routing::get(routes::list_profiles))
         .route(
+            "/api/agents/{id}/restart",
+            axum::routing::post(routes::restart_agent),
+        )
+        .route(
+            "/api/agents/{id}/start",
+            axum::routing::post(routes::restart_agent),
+        )
+        .route(
             "/api/agents/{id}/message",
             axum::routing::post(routes::send_message),
         )
