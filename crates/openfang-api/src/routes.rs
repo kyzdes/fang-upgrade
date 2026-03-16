@@ -10121,6 +10121,69 @@ pub async fn cron_job_status(
 }
 
 // ---------------------------------------------------------------------------
+// Run cron job on demand
+// ---------------------------------------------------------------------------
+
+/// POST /api/cron/jobs/{id}/run — Trigger a cron job immediately.
+///
+/// Returns `{"status": "triggered", "job_id": "..."}` and spawns the execution
+/// in the background.  The job's status can be polled via
+/// `GET /api/cron/jobs/{id}/status`.
+pub async fn run_cron_job(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let uuid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "error": "Invalid job ID"})),
+            );
+        }
+    };
+    let job_id = openfang_types::scheduler::CronJobId(uuid);
+    let job = match state.kernel.cron_scheduler.get_job(job_id) {
+        Some(j) => j,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"status": "error", "error": "Job not found"})),
+            );
+        }
+    };
+    if !job.enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"status": "error", "error": "Job is disabled"})),
+        );
+    }
+
+    // Pre-advance next_run so the background scheduler tick won't also fire
+    // this job while the manual run is in progress.
+    state.kernel.cron_scheduler.reserve_run(job_id);
+
+    // Spawn execution in the background so we don't block the HTTP response.
+    // `job` is already a clone from `get_job()`, so move it directly.
+    let kernel = Arc::clone(&state.kernel);
+    let job_name = job.name.clone();
+    tokio::spawn(async move {
+        match kernel.cron_run_job(&job).await {
+            Ok(_) => tracing::info!(job = %job_name, "On-demand cron job completed"),
+            Err(e) => tracing::warn!(job = %job_name, error = %e, "On-demand cron job failed"),
+        }
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "triggered",
+            "job_id": id,
+        })),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Webhook trigger endpoints
 // ---------------------------------------------------------------------------
 

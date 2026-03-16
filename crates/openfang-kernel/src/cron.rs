@@ -306,6 +306,25 @@ impl CronScheduler {
         due
     }
 
+    /// Pre-advance a job's `next_run` so the background scheduler won't also
+    /// fire it while a manual (on-demand) run is in progress.
+    ///
+    /// Only advances `next_run` when the job is already due (`next_run <= now`),
+    /// matching the same guard used by `due_jobs()`. This avoids silently
+    /// skipping an imminent scheduled run when the user triggers a manual run
+    /// on a job that isn't due yet.
+    ///
+    /// Call this **before** spawning the manual execution task to close the race
+    /// window between the API handler and the next scheduler tick.
+    pub fn reserve_run(&self, id: CronJobId) {
+        if let Some(mut meta) = self.jobs.get_mut(&id) {
+            let now = Utc::now();
+            if meta.job.next_run.map(|t| t <= now).unwrap_or(false) {
+                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+            }
+        }
+    }
+
     // -- Outcome recording --------------------------------------------------
 
     /// Record a successful execution for a job.
@@ -1206,5 +1225,48 @@ mod tests {
             assert!(sched.list_jobs(agent).is_empty());
             assert_eq!(sched.list_jobs(other).len(), 1);
         }
+    }
+
+    // -- reserve_run ---------------------------------------------------------
+
+    #[test]
+    fn reserve_run_skips_not_yet_due_job() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
+        // Schedule is Every 3600s; next_run will be ~1 hour from now after add.
+        job.schedule = CronSchedule::Every { every_secs: 3600 };
+        let id = sched.add_job(job, false).unwrap();
+
+        let original_next_run = sched.get_job(id).unwrap().next_run;
+        assert!(original_next_run.is_some());
+
+        // Manual trigger on a not-yet-due job should NOT move next_run.
+        sched.reserve_run(id);
+
+        let after = sched.get_job(id).unwrap().next_run;
+        assert_eq!(original_next_run, after, "reserve_run must not move next_run for a job that is not yet due");
+    }
+
+    #[test]
+    fn reserve_run_advances_overdue_job() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
+        job.schedule = CronSchedule::Every { every_secs: 3600 };
+        let id = sched.add_job(job, false).unwrap();
+
+        // Force next_run into the past to simulate an overdue job.
+        if let Some(mut meta) = sched.jobs.get_mut(&id) {
+            meta.job.next_run = Some(Utc::now() - Duration::seconds(10));
+        }
+
+        let before = sched.get_job(id).unwrap().next_run.unwrap();
+        assert!(before < Utc::now(), "precondition: job should be overdue");
+
+        sched.reserve_run(id);
+
+        let after = sched.get_job(id).unwrap().next_run.unwrap();
+        assert!(after > Utc::now(), "reserve_run should advance next_run past now for overdue jobs");
     }
 }

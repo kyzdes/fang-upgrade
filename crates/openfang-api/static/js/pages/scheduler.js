@@ -201,15 +201,15 @@ function schedulerPage() {
     async runNow(job) {
       this.runningJobId = job.id;
       try {
-        var result = await OpenFangAPI.post('/api/schedules/' + job.id + '/run', {});
-        if (result.status === 'completed') {
-          OpenFangToast.success('Schedule "' + (job.name || 'job') + '" executed successfully');
+        var result = await OpenFangAPI.post('/api/cron/jobs/' + job.id + '/run', {});
+        if (result.status === 'triggered' || result.status === 'completed') {
+          OpenFangToast.success('Job "' + (job.name || 'job') + '" triggered');
           job.last_run = new Date().toISOString();
         } else {
-          OpenFangToast.error('Schedule run failed: ' + (result.error || 'Unknown error'));
+          OpenFangToast.error('Run failed: ' + (result.error || 'Unknown error'));
         }
       } catch(e) {
-        OpenFangToast.error('Run Now is not yet available for cron jobs');
+        OpenFangToast.error('Run failed: ' + (e.message || e));
       }
       this.runningJobId = '';
     },

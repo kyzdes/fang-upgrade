@@ -23,6 +23,7 @@ All responses include security headers (CSP, X-Frame-Options, X-Content-Type-Opt
 - [Usage & Analytics Endpoints](#usage--analytics-endpoints)
 - [Migration Endpoints](#migration-endpoints)
 - [Session Management Endpoints](#session-management-endpoints)
+- [Cron/Scheduler Endpoints](#cronscheduler-endpoints)
 - [WebSocket Protocol](#websocket-protocol)
 - [SSE Streaming](#sse-streaming)
 - [OpenAI-Compatible API](#openai-compatible-api)
@@ -1767,6 +1768,95 @@ Switch an agent's LLM model at runtime.
   "model": "claude-sonnet-4-20250514"
 }
 ```
+
+---
+
+## Cron/Scheduler Endpoints
+
+Manage recurring and one-shot scheduled jobs. Jobs can trigger agent turns, system events, or workflow runs on a schedule.
+
+### GET /api/cron/jobs
+
+List all cron jobs.
+
+**Response** `200 OK`: Array of `CronJob` objects.
+
+### POST /api/cron/jobs
+
+Create a new cron job.
+
+**Request Body**:
+
+```json
+{
+  "agent_id": "uuid",
+  "name": "daily-report",
+  "enabled": true,
+  "schedule": { "kind": "every", "every_secs": 3600 },
+  "action": {
+    "kind": "agent_turn",
+    "message": "Generate the daily report",
+    "timeout_secs": 120
+  },
+  "delivery": {
+    "kind": "channel",
+    "channel": "slack",
+    "to": "#reports"
+  }
+}
+```
+
+**Response** `200 OK`: The created `CronJob` object with assigned `id`.
+
+### DELETE /api/cron/jobs/{id}
+
+Delete a cron job by ID.
+
+**Response** `200 OK`:
+
+```json
+{ "status": "deleted" }
+```
+
+### PUT /api/cron/jobs/{id}/enable
+
+Enable or disable a cron job.
+
+**Request Body**:
+
+```json
+{ "enabled": false }
+```
+
+**Response** `200 OK`:
+
+```json
+{ "status": "updated", "enabled": false }
+```
+
+### GET /api/cron/jobs/{id}/status
+
+Get job metadata including last run time, status, and error history.
+
+**Response** `200 OK`: `JobMeta` object with fields like `last_run`, `last_status`, `consecutive_errors`.
+
+### POST /api/cron/jobs/{id}/run
+
+Trigger a cron job immediately. The job executes asynchronously in the background — this endpoint returns immediately without waiting for completion. Poll `GET /api/cron/jobs/{id}/status` to check the result.
+
+**Response** `200 OK`:
+
+```json
+{
+  "status": "triggered",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**Error Responses**:
+
+- `400 Bad Request` — Invalid job ID or job is disabled
+- `404 Not Found` — Job not found
 
 ---
 
