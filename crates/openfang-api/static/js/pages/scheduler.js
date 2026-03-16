@@ -204,7 +204,9 @@ function schedulerPage() {
         var result = await OpenFangAPI.post('/api/cron/jobs/' + job.id + '/run', {});
         if (result.status === 'triggered' || result.status === 'completed') {
           OpenFangToast.success('Job "' + (job.name || 'job') + '" triggered');
-          job.last_run = new Date().toISOString();
+          // Don't update job.last_run here — the job runs asynchronously in the
+          // background. The real last_run is set by the server on completion and
+          // will appear on the next data refresh.
         } else {
           OpenFangToast.error('Run failed: ' + (result.error || 'Unknown error'));
         }

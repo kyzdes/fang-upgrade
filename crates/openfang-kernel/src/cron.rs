@@ -387,7 +387,13 @@ impl CronScheduler {
                 );
                 meta.job.enabled = false;
             } else {
-                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, Utc::now()));
+                // Only recompute next_run if the job was already overdue. This
+                // preserves the scheduled fire time when a manual (on-demand) run
+                // fails before the job's natural next_run.
+                let now = Utc::now();
+                if meta.job.next_run.map(|t| t <= now).unwrap_or(true) {
+                    meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+                }
             }
         }
     }
