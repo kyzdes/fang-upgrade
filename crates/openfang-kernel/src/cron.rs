@@ -1256,7 +1256,10 @@ mod tests {
     fn try_claim_not_found() {
         let (sched, _tmp) = make_scheduler(100);
         let id = CronJobId::new();
-        assert!(matches!(sched.try_claim_for_run(id), Err(ClaimError::NotFound)));
+        assert!(matches!(
+            sched.try_claim_for_run(id),
+            Err(ClaimError::NotFound)
+        ));
     }
 
     #[test]
@@ -1266,7 +1269,10 @@ mod tests {
         let mut job = make_job(agent);
         job.enabled = false;
         let id = sched.add_job(job, false).unwrap();
-        assert!(matches!(sched.try_claim_for_run(id), Err(ClaimError::Disabled)));
+        assert!(matches!(
+            sched.try_claim_for_run(id),
+            Err(ClaimError::Disabled)
+        ));
     }
 
     #[test]
@@ -1285,7 +1291,10 @@ mod tests {
         assert_eq!(claimed.id, id);
 
         let after = sched.get_job(id).unwrap().next_run;
-        assert_eq!(original_next_run, after, "try_claim must not move next_run for a job that is not yet due");
+        assert_eq!(
+            original_next_run, after,
+            "try_claim must not move next_run for a job that is not yet due"
+        );
     }
 
     #[test]
@@ -1308,6 +1317,9 @@ mod tests {
         assert_eq!(claimed.id, id);
 
         let after = sched.get_job(id).unwrap().next_run.unwrap();
-        assert!(after > Utc::now(), "try_claim should advance next_run past now for overdue jobs");
+        assert!(
+            after > Utc::now(),
+            "try_claim should advance next_run past now for overdue jobs"
+        );
     }
 }
