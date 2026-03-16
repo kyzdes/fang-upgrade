@@ -20,6 +20,15 @@ use tracing::{debug, info, warn};
 /// Maximum consecutive errors before a job is auto-disabled.
 const MAX_CONSECUTIVE_ERRORS: u32 = 5;
 
+/// Error returned by [`CronScheduler::try_claim_for_run`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimError {
+    /// Job ID does not exist.
+    NotFound,
+    /// Job exists but is disabled.
+    Disabled,
+}
+
 // ---------------------------------------------------------------------------
 // JobMeta — extra runtime state not stored in CronJob itself
 // ---------------------------------------------------------------------------
@@ -306,21 +315,29 @@ impl CronScheduler {
         due
     }
 
-    /// Pre-advance a job's `next_run` so the background scheduler won't also
-    /// fire it while a manual (on-demand) run is in progress.
+    /// Atomically look up a job, verify it is enabled, pre-advance `next_run`
+    /// if overdue, and return a snapshot of the job for execution.
     ///
-    /// Only advances `next_run` when the job is already due (`next_run <= now`),
-    /// matching the same guard used by `due_jobs()`. This avoids silently
-    /// skipping an imminent scheduled run when the user triggers a manual run
-    /// on a job that isn't due yet.
+    /// This combines the existence check, enabled guard, and scheduler
+    /// reservation into a single `DashMap::get_mut` hold so no concurrent
+    /// request can disable/delete the job between the check and the claim.
     ///
-    /// Call this **before** spawning the manual execution task to close the race
-    /// window between the API handler and the next scheduler tick.
-    pub fn reserve_run(&self, id: CronJobId) {
-        if let Some(mut meta) = self.jobs.get_mut(&id) {
-            let now = Utc::now();
-            if meta.job.next_run.map(|t| t <= now).unwrap_or(false) {
-                meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+    /// `next_run` is only advanced when the job is already due
+    /// (`next_run <= now`), matching `due_jobs()`, so triggering a manual run
+    /// on a not-yet-due job won't skip the upcoming scheduled fire.
+    pub fn try_claim_for_run(&self, id: CronJobId) -> Result<CronJob, ClaimError> {
+        match self.jobs.get_mut(&id) {
+            None => Err(ClaimError::NotFound),
+            Some(mut entry) => {
+                let meta = entry.value_mut();
+                if !meta.job.enabled {
+                    return Err(ClaimError::Disabled);
+                }
+                let now = Utc::now();
+                if meta.job.next_run.map(|t| t <= now).unwrap_or(false) {
+                    meta.job.next_run = Some(compute_next_run_after(&meta.job.schedule, now));
+                }
+                Ok(meta.job.clone())
             }
         }
     }
@@ -1227,14 +1244,30 @@ mod tests {
         }
     }
 
-    // -- reserve_run ---------------------------------------------------------
+    // -- try_claim_for_run ---------------------------------------------------
 
     #[test]
-    fn reserve_run_skips_not_yet_due_job() {
+    fn try_claim_not_found() {
+        let (sched, _tmp) = make_scheduler(100);
+        let id = CronJobId::new();
+        assert!(matches!(sched.try_claim_for_run(id), Err(ClaimError::NotFound)));
+    }
+
+    #[test]
+    fn try_claim_disabled() {
         let (sched, _tmp) = make_scheduler(100);
         let agent = AgentId::new();
         let mut job = make_job(agent);
-        // Schedule is Every 3600s; next_run will be ~1 hour from now after add.
+        job.enabled = false;
+        let id = sched.add_job(job, false).unwrap();
+        assert!(matches!(sched.try_claim_for_run(id), Err(ClaimError::Disabled)));
+    }
+
+    #[test]
+    fn try_claim_skips_not_yet_due_job() {
+        let (sched, _tmp) = make_scheduler(100);
+        let agent = AgentId::new();
+        let mut job = make_job(agent);
         job.schedule = CronSchedule::Every { every_secs: 3600 };
         let id = sched.add_job(job, false).unwrap();
 
@@ -1242,14 +1275,15 @@ mod tests {
         assert!(original_next_run.is_some());
 
         // Manual trigger on a not-yet-due job should NOT move next_run.
-        sched.reserve_run(id);
+        let claimed = sched.try_claim_for_run(id).unwrap();
+        assert_eq!(claimed.id, id);
 
         let after = sched.get_job(id).unwrap().next_run;
-        assert_eq!(original_next_run, after, "reserve_run must not move next_run for a job that is not yet due");
+        assert_eq!(original_next_run, after, "try_claim must not move next_run for a job that is not yet due");
     }
 
     #[test]
-    fn reserve_run_advances_overdue_job() {
+    fn try_claim_advances_overdue_job() {
         let (sched, _tmp) = make_scheduler(100);
         let agent = AgentId::new();
         let mut job = make_job(agent);
@@ -1264,9 +1298,10 @@ mod tests {
         let before = sched.get_job(id).unwrap().next_run.unwrap();
         assert!(before < Utc::now(), "precondition: job should be overdue");
 
-        sched.reserve_run(id);
+        let claimed = sched.try_claim_for_run(id).unwrap();
+        assert_eq!(claimed.id, id);
 
         let after = sched.get_job(id).unwrap().next_run.unwrap();
-        assert!(after > Utc::now(), "reserve_run should advance next_run past now for overdue jobs");
+        assert!(after > Utc::now(), "try_claim should advance next_run past now for overdue jobs");
     }
 }

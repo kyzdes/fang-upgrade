@@ -10143,28 +10143,25 @@ pub async fn run_cron_job(
         }
     };
     let job_id = openfang_types::scheduler::CronJobId(uuid);
-    let job = match state.kernel.cron_scheduler.get_job(job_id) {
-        Some(j) => j,
-        None => {
+
+    // Atomically check existence + enabled + reserve next_run in one lock hold.
+    let job = match state.kernel.cron_scheduler.try_claim_for_run(job_id) {
+        Ok(j) => j,
+        Err(openfang_kernel::cron::ClaimError::NotFound) => {
             return (
                 StatusCode::NOT_FOUND,
                 Json(serde_json::json!({"status": "error", "error": "Job not found"})),
             );
         }
+        Err(openfang_kernel::cron::ClaimError::Disabled) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"status": "error", "error": "Job is disabled"})),
+            );
+        }
     };
-    if !job.enabled {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"status": "error", "error": "Job is disabled"})),
-        );
-    }
-
-    // Pre-advance next_run so the background scheduler tick won't also fire
-    // this job while the manual run is in progress.
-    state.kernel.cron_scheduler.reserve_run(job_id);
 
     // Spawn execution in the background so we don't block the HTTP response.
-    // `job` is already a clone from `get_job()`, so move it directly.
     let kernel = Arc::clone(&state.kernel);
     let job_name = job.name.clone();
     tokio::spawn(async move {
