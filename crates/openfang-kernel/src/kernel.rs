@@ -5715,6 +5715,12 @@ impl KernelHandle for OpenFangKernel {
             .collect()
     }
 
+    fn touch_agent(&self, agent_id: &str) {
+        if let Ok(id) = agent_id.parse::<AgentId>() {
+            self.registry.touch(id);
+        }
+    }
+
     fn kill_agent(&self, agent_id: &str) -> Result<(), String> {
         let id: AgentId = agent_id
             .parse()
