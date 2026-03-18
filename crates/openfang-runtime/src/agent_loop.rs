@@ -244,13 +244,32 @@ pub async fn run_agent_loop(
     }
 
     // Build the messages for the LLM, filtering system messages
-    // System prompt goes into the separate `system` field
+    // System prompt goes into the separate `system` field.
+    // NOTE: We build llm_messages BEFORE stripping images so the LLM
+    // sees the full image data for the current turn.
     let llm_messages: Vec<Message> = session
         .messages
         .iter()
         .filter(|m| m.role != Role::System)
         .cloned()
         .collect();
+
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
 
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
@@ -421,7 +440,7 @@ pub async fn run_agent_loop(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
@@ -1221,6 +1240,23 @@ pub async fn run_agent_loop_streaming(
         .cloned()
         .collect();
 
+    // Strip Image blocks from session to prevent base64 bloat.
+    // The LLM already received them via llm_messages above.
+    for msg in session.messages.iter_mut() {
+        if let MessageContent::Blocks(blocks) = &mut msg.content {
+            let had_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
+            if had_images {
+                blocks.retain(|b| !matches!(b, ContentBlock::Image { .. }));
+                if blocks.is_empty() {
+                    blocks.push(ContentBlock::Text {
+                        text: "[Image processed]".to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+    }
+
     // Validate and repair session history (drop orphans, merge consecutive)
     let mut messages = crate::session_repair::validate_and_repair(&llm_messages);
 
@@ -1408,7 +1444,7 @@ pub async fn run_agent_loop_streaming(
                 // One-shot retry: if the LLM returns empty text with no tool use,
                 // try once more before accepting the empty result.
                 // Triggers on first call OR when input_tokens=0 (silently failed request).
-                if text.trim().is_empty() && response.tool_calls.is_empty() {
+                if text.trim().is_empty() && response.tool_calls.is_empty() && !response.has_any_content() {
                     let is_silent_failure =
                         response.usage.input_tokens == 0 && response.usage.output_tokens == 0;
                     if iteration == 0 || is_silent_failure {
