@@ -844,7 +844,26 @@ pub async fn create_workflow(
         created_at: chrono::Utc::now(),
     };
 
-    let id = state.kernel.register_workflow(workflow).await;
+    let id = state.kernel.register_workflow(workflow.clone()).await;
+
+    // Persist workflow to disk so it survives daemon restarts (#751)
+    let wf_dir = state
+        .kernel
+        .config
+        .workflows_dir
+        .clone()
+        .unwrap_or_else(|| state.kernel.config.home_dir.join("workflows"));
+    if let Err(e) = std::fs::create_dir_all(&wf_dir) {
+        tracing::warn!("Failed to create workflows dir: {e}");
+    } else {
+        let wf_path = wf_dir.join(format!("{}.json", id));
+        if let Ok(json) = serde_json::to_string_pretty(&workflow) {
+            if let Err(e) = std::fs::write(&wf_path, json) {
+                tracing::warn!("Failed to persist workflow {id}: {e}");
+            }
+        }
+    }
+
     (
         StatusCode::CREATED,
         Json(serde_json::json!({"workflow_id": id.to_string()})),
@@ -9713,78 +9732,84 @@ pub async fn config_schema(State(state): State<Arc<AppState>>) -> impl IntoRespo
         .collect();
     drop(catalog);
 
+    // Helper: normalize field definitions to objects with {name, type, label}
+    // so the frontend template can iterate and render inputs correctly.
+    let f = |name: &str, ftype: &str, label: &str| -> serde_json::Value {
+        serde_json::json!({"name": name, "type": ftype, "label": label})
+    };
+
     Json(serde_json::json!({
         "sections": {
             "general": {
                 "root_level": true,
-                "fields": {
-                    "api_listen": "string",
-                    "api_key": "string",
-                    "log_level": "string"
-                }
+                "fields": [
+                    f("api_listen", "string", "API Listen Address"),
+                    f("api_key", "string", "API Key"),
+                    f("log_level", "string", "Log Level")
+                ]
             },
             "default_model": {
                 "hot_reloadable": true,
-                "fields": {
-                    "provider": { "type": "select", "options": provider_options },
-                    "model": { "type": "select", "options": model_options },
-                    "api_key_env": "string",
-                    "base_url": "string"
-                }
+                "fields": [
+                    { "name": "provider", "type": "select", "label": "Provider", "options": provider_options },
+                    { "name": "model", "type": "select", "label": "Model", "options": model_options },
+                    f("api_key_env", "string", "API Key Env Var"),
+                    f("base_url", "string", "Base URL")
+                ]
             },
             "memory": {
-                "fields": {
-                    "decay_rate": "number",
-                    "vector_dims": "number"
-                }
+                "fields": [
+                    f("decay_rate", "number", "Decay Rate"),
+                    f("vector_dims", "number", "Vector Dimensions")
+                ]
             },
             "web": {
-                "fields": {
-                    "provider": "string",
-                    "timeout_secs": "number",
-                    "max_results": "number"
-                }
+                "fields": [
+                    f("provider", "string", "Search Provider"),
+                    f("timeout_secs", "number", "Timeout (seconds)"),
+                    f("max_results", "number", "Max Results")
+                ]
             },
             "browser": {
-                "fields": {
-                    "headless": "boolean",
-                    "timeout_secs": "number",
-                    "executable_path": "string"
-                }
+                "fields": [
+                    f("headless", "boolean", "Headless Mode"),
+                    f("timeout_secs", "number", "Timeout (seconds)"),
+                    f("executable_path", "string", "Chrome/Chromium Path")
+                ]
             },
             "network": {
-                "fields": {
-                    "enabled": "boolean",
-                    "listen_addr": "string",
-                    "shared_secret": "string"
-                }
+                "fields": [
+                    f("enabled", "boolean", "Enable OFP Network"),
+                    f("listen_addr", "string", "Listen Address"),
+                    f("shared_secret", "string", "Shared Secret")
+                ]
             },
             "extensions": {
-                "fields": {
-                    "auto_connect": "boolean",
-                    "health_check_interval_secs": "number"
-                }
+                "fields": [
+                    f("auto_connect", "boolean", "Auto Connect"),
+                    f("health_check_interval_secs", "number", "Health Check Interval (s)")
+                ]
             },
             "vault": {
-                "fields": {
-                    "path": "string"
-                }
+                "fields": [
+                    f("path", "string", "Vault Path")
+                ]
             },
             "a2a": {
-                "fields": {
-                    "enabled": "boolean",
-                    "name": "string",
-                    "description": "string",
-                    "url": "string"
-                }
+                "fields": [
+                    f("enabled", "boolean", "Enable A2A"),
+                    f("name", "string", "Agent Name"),
+                    f("description", "string", "Description"),
+                    f("url", "string", "URL")
+                ]
             },
             "channels": {
-                "fields": {
-                    "telegram": "object",
-                    "discord": "object",
-                    "slack": "object",
-                    "whatsapp": "object"
-                }
+                "fields": [
+                    f("telegram", "object", "Telegram"),
+                    f("discord", "object", "Discord"),
+                    f("slack", "object", "Slack"),
+                    f("whatsapp", "object", "WhatsApp")
+                ]
             }
         }
     }))

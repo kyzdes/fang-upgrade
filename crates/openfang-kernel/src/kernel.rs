@@ -4579,6 +4579,9 @@ impl OpenFangKernel {
         if let Err(e) = resolver.remove_from_vault(key) {
             debug!("Vault remove skipped for {key}: {e}");
         }
+        // Also clear from the in-memory dotenv cache so the resolver
+        // doesn't return a stale value from the boot-time snapshot (#736).
+        resolver.clear_dotenv_cache(key);
     }
 
     fn lookup_provider_url(&self, provider: &str) -> Option<String> {
