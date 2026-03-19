@@ -3366,7 +3366,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <span class="text-xs text-dim ml-2" x-text="customModelStatus"></span>
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredModels.length + ' of ' + models.length + ' models'"></div>
-            <div x-show="!filteredModels.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+            <div x-show="!filteredModels.length && !loading" style="text-align:center;padding:32px 16px">
               <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F916;</div>
               <h3 style="margin:0 0 4px;font-size:14px" x-text="models.length ? 'No models match your search' : 'No models available'"></h3>
               <p class="text-xs text-dim" x-text="models.length ? 'Try a different search term or clear filters.' : 'Configure an LLM provider to see available models.'"></p>
@@ -3400,7 +3400,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
               <input placeholder="Search tools..." x-model="toolSearch">
             </div>
             <div class="text-xs text-dim mb-2" x-text="filteredTools.length + ' of ' + tools.length + ' tools'"></div>
-            <div x-show="!filteredTools.length && !settingsLoading" style="text-align:center;padding:32px 16px">
+            <div x-show="!filteredTools.length && !loading" style="text-align:center;padding:32px 16px">
               <div style="font-size:32px;margin-bottom:8px;opacity:0.5">&#x1F527;</div>
               <h3 style="margin:0 0 4px;font-size:14px" x-text="tools.length ? 'No tools match your search' : 'No tools available'"></h3>
               <p class="text-xs text-dim" x-text="tools.length ? 'Try a different search term.' : 'Tools will appear once agents are configured.'"></p>
