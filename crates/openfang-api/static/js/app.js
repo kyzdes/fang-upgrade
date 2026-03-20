@@ -66,26 +66,6 @@ function renderMarkdown(text) {
   return escapeHtml(text);
 }
 
-// Render LaTeX math in the chat message container using KaTeX auto-render.
-// Call this after new messages are inserted into the DOM.
-function renderLatex(el) {
-  if (typeof renderMathInElement !== 'function') return;
-  var target = el || document.getElementById('messages');
-  if (!target) return;
-  try {
-    renderMathInElement(target, {
-      delimiters: [
-        { left: '$$', right: '$$', display: true },
-        { left: '\\[', right: '\\]', display: true },
-        { left: '$', right: '$', display: false },
-        { left: '\\(', right: '\\)', display: false }
-      ],
-      throwOnError: false,
-      trust: false
-    });
-  } catch(e) { /* KaTeX render error — ignore gracefully */ }
-}
-
 function copyCode(btn) {
   var code = btn.nextElementSibling;
   if (code) {
