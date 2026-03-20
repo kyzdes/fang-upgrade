@@ -9506,25 +9506,28 @@ pub async fn serve_upload(Path(file_id): Path<String>) -> impl IntoResponse {
 // Execution Approval System — backed by kernel.approval_manager
 // ---------------------------------------------------------------------------
 
-/// GET /api/approvals — List pending approval requests.
+/// GET /api/approvals — List pending and recent approval requests.
 ///
 /// Transforms field names to match the dashboard template expectations:
 /// `action_summary` → `action`, `agent_id` → `agent_name`, `requested_at` → `created_at`.
 pub async fn list_approvals(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let pending = state.kernel.approval_manager.list_pending();
-    let total = pending.len();
+    let recent = state.kernel.approval_manager.list_recent(50);
 
     // Resolve agent names for display
     let registry_agents = state.kernel.registry.list();
+    let agent_name_for = |agent_id: &str| {
+        registry_agents
+            .iter()
+            .find(|ag| ag.id.to_string() == agent_id || ag.name == agent_id)
+            .map(|ag| ag.name.clone())
+            .unwrap_or_else(|| agent_id.to_string())
+    };
 
-    let approvals: Vec<serde_json::Value> = pending
+    let mut approvals: Vec<serde_json::Value> = pending
         .into_iter()
         .map(|a| {
-            let agent_name = registry_agents
-                .iter()
-                .find(|ag| ag.id.to_string() == a.agent_id || ag.name == a.agent_id)
-                .map(|ag| ag.name.as_str())
-                .unwrap_or(&a.agent_id);
+            let agent_name = agent_name_for(&a.agent_id);
             serde_json::json!({
                 "id": a.id,
                 "agent_id": a.agent_id,
@@ -9541,6 +9544,42 @@ pub async fn list_approvals(State(state): State<Arc<AppState>>) -> impl IntoResp
             })
         })
         .collect();
+
+    approvals.extend(recent.into_iter().map(|record| {
+        let request = record.request;
+        let agent_name = agent_name_for(&request.agent_id);
+        let status = match record.decision {
+            openfang_types::approval::ApprovalDecision::Approved => "approved",
+            openfang_types::approval::ApprovalDecision::Denied => "rejected",
+            openfang_types::approval::ApprovalDecision::TimedOut => "expired",
+        };
+        serde_json::json!({
+            "id": request.id,
+            "agent_id": request.agent_id,
+            "agent_name": agent_name,
+            "tool_name": request.tool_name,
+            "description": request.description,
+            "action_summary": request.action_summary,
+            "action": request.action_summary,
+            "risk_level": request.risk_level,
+            "requested_at": request.requested_at,
+            "created_at": request.requested_at,
+            "timeout_secs": request.timeout_secs,
+            "status": status,
+            "decided_at": record.decided_at,
+            "decided_by": record.decided_by,
+        })
+    }));
+
+    approvals.sort_by(|a, b| {
+        let a_pending = a["status"].as_str() == Some("pending");
+        let b_pending = b["status"].as_str() == Some("pending");
+        b_pending
+            .cmp(&a_pending)
+            .then_with(|| b["created_at"].as_str().cmp(&a["created_at"].as_str()))
+    });
+
+    let total = approvals.len();
 
     Json(serde_json::json!({"approvals": approvals, "total": total}))
 }
