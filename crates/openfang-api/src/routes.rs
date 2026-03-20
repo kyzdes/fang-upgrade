@@ -8836,20 +8836,16 @@ pub async fn patch_agent_config(
         if !new_model.is_empty() {
             if let Some(ref new_provider) = req.provider {
                 if !new_provider.is_empty() {
-                    // Explicit provider given — use it directly
-                    if state
-                        .kernel
-                        .registry
-                        .update_model_and_provider(
-                            agent_id,
-                            new_model.clone(),
-                            new_provider.clone(),
-                        )
-                        .is_err()
+                    // Explicit provider given — still route through set_agent_model
+                    // so provider-specific auth/env hints stay in sync.
+                    if let Err(e) =
+                        state
+                            .kernel
+                            .set_agent_model(agent_id, new_model, Some(new_provider))
                     {
                         return (
-                            StatusCode::NOT_FOUND,
-                            Json(serde_json::json!({"error": "Agent not found"})),
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(serde_json::json!({"error": format!("{e}")})),
                         );
                     }
                 } else {
