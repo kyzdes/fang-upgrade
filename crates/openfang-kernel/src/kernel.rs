@@ -4703,6 +4703,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             // Resolve env vars from vault/dotenv before passing to MCP subprocess.
@@ -4721,6 +4722,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             match McpConnection::connect(mcp_config).await {
@@ -4822,6 +4824,7 @@ impl OpenFangKernel {
                     args: args.clone(),
                 },
                 McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+                McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
             };
 
             let mcp_config = McpServerConfig {
@@ -4829,6 +4832,7 @@ impl OpenFangKernel {
                 transport,
                 timeout_secs: server_config.timeout_secs,
                 env: server_config.env.clone(),
+                headers: server_config.headers.clone(),
             };
 
             self.extension_health.register(&server_config.name);
@@ -4940,6 +4944,7 @@ impl OpenFangKernel {
                 args: args.clone(),
             },
             McpTransportEntry::Sse { url } => McpTransport::Sse { url: url.clone() },
+            McpTransportEntry::Http { url } => McpTransport::Http { url: url.clone() },
         };
 
         let mcp_config = McpServerConfig {
@@ -4947,6 +4952,7 @@ impl OpenFangKernel {
             transport,
             timeout_secs: server_config.timeout_secs,
             env: server_config.env.clone(),
+            headers: server_config.headers.clone(),
         };
 
         match McpConnection::connect(mcp_config).await {
@@ -5032,7 +5038,16 @@ impl OpenFangKernel {
         agent_id: AgentId,
         skill_snapshot: Option<&openfang_skills::registry::SkillRegistry>,
     ) -> Vec<ToolDefinition> {
-        let all_builtins = builtin_tool_definitions();
+        let all_builtins = if self.config.browser.enabled {
+            builtin_tool_definitions()
+        } else {
+            // When built-in browser is disabled (replaced by an external
+            // browser MCP server such as CamoFox), filter out browser_* tools.
+            builtin_tool_definitions()
+                .into_iter()
+                .filter(|t| !t.name.starts_with("browser_"))
+                .collect()
+        };
 
         // Look up agent entry for profile, skill/MCP allowlists, and declared tools
         let entry = self.registry.get(agent_id);
