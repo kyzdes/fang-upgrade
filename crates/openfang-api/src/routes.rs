@@ -3110,9 +3110,13 @@ pub async fn list_templates() -> impl IntoResponse {
                         .map(|m| m.description)
                         .unwrap_or_default();
 
+                    // Add category based on template name
+                    let category = get_template_category(&name);
+
                     templates.push(serde_json::json!({
                         "name": name,
                         "description": description,
+                        "category": category,
                     }));
                 }
             }
@@ -3123,6 +3127,24 @@ pub async fn list_templates() -> impl IntoResponse {
         "templates": templates,
         "total": templates.len(),
     }))
+}
+
+fn get_template_category(name: &str) -> &str {
+    match name {
+        "hello-world" | "assistant" => "General",
+        "researcher" | "analyst" => "Research",
+        "coder" | "debugger" | "devops-lead" => "Development",
+        "writer" | "doc-writer" => "Writing",
+        "ops" | "planner" => "Operations",
+        "architect" | "security-auditor" => "Development",
+        "code-reviewer" | "data-scientist" | "test-engineer" => "Development",
+        "legal-assistant" | "email-assistant" | "social-media" => "Business",
+        "customer-support" | "sales-assistant" | "recruiter" => "Business",
+        "meeting-assistant" => "Business",
+        "translator" | "tutor" | "health-tracker" => "General",
+        "personal-finance" | "travel-planner" | "home-automation" => "General",
+        _ => "General",
+    }
 }
 
 /// GET /api/templates/:name — Get template details.
