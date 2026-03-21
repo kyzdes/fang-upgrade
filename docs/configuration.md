@@ -1467,6 +1467,22 @@ Configured in agent manifests via `ModelRoutingConfig`:
 | `simple_threshold` | `100` | Token count below which a query is classified as simple. |
 | `complex_threshold` | `500` | Token count above which a query is classified as complex. |
 
+### Heartbeat Monitor
+
+Global heartbeat settings in `[heartbeat]`:
+
+```toml
+[heartbeat]
+# Seconds of inactivity before a reactive agent is marked as unresponsive.
+# Increase this if you have hands that sit idle between infrequent requests.
+# Default: 180
+default_timeout_secs = 300
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `default_timeout_secs` | `180` | Seconds of inactivity before marking an agent as unresponsive. Per-agent `heartbeat_interval_secs` in autonomous config overrides this. |
+
 ### Autonomous Guardrails (per-agent manifest)
 
 Configured in agent manifests via `AutonomousConfig`:
