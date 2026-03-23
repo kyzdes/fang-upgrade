@@ -282,6 +282,13 @@ impl LlmDriver for ClaudeCodeDriver {
 
         Self::apply_env_filter(&mut cmd);
 
+        // Inject HOME so the CLI can find its credentials (~/.claude/) when
+        // OpenFang runs as a service without a login shell.
+        if let Some(home) = home_dir() {
+            cmd.env("HOME", &home);
+        }
+        // Detach stdin so the CLI does not block waiting for interactive input.
+        cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
@@ -303,13 +310,35 @@ impl LlmDriver for ClaudeCodeDriver {
             debug!(pid = pid, model = %pid_label, "Claude Code CLI subprocess started");
         }
 
-        // Read stdout/stderr before waiting (take ownership of pipes)
+        // Drain stdout and stderr concurrently while waiting for the process.
+        // Sequential drain (wait → read) deadlocks when the subprocess writes
+        // more than the OS pipe buffer (~64 KB): the child blocks on write,
+        // child.wait() never returns, the timeout fires, and output is lost.
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
+
+        let stdout_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut out) = child_stdout {
+                let _ = out.read_to_end(&mut buf).await;
+            }
+            buf
+        });
+        let stderr_task = tokio::spawn(async move {
+            let mut buf = Vec::new();
+            if let Some(mut err) = child_stderr {
+                let _ = err.read_to_end(&mut buf).await;
+            }
+            buf
+        });
 
         // Wait with timeout
         let timeout_duration = std::time::Duration::from_secs(self.message_timeout_secs);
         let wait_result = tokio::time::timeout(timeout_duration, child.wait()).await;
+
+        // Collect pipe output — tasks complete once the process closes its end
+        let stdout_bytes = stdout_task.await.unwrap_or_default();
+        let stderr_bytes = stderr_task.await.unwrap_or_default();
 
         // Clear PID tracking regardless of outcome
         self.active_pids.remove(&pid_label);
@@ -335,16 +364,6 @@ impl LlmDriver for ClaudeCodeDriver {
                     self.message_timeout_secs
                 )));
             }
-        };
-
-        // Read captured output from pipes
-        let mut stdout_bytes = Vec::new();
-        let mut stderr_bytes = Vec::new();
-        if let Some(mut out) = child_stdout {
-            let _ = out.read_to_end(&mut stdout_bytes).await;
-        }
-        if let Some(mut err) = child_stderr {
-            let _ = err.read_to_end(&mut stderr_bytes).await;
         };
 
         if !status.success() {
