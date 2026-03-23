@@ -1855,4 +1855,141 @@ mod tests {
             _ => panic!("Expected Text block"),
         }
     }
+
+    // ── sanitize_gemini_turns tests ─────────────────────────────────────
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_call() {
+        // A model turn with functionCall but no following functionResponse
+        // should have the functionCall stripped.
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Hello".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![
+                    GeminiPart::Text {
+                        text: "I'll search.".to_string(),
+                        thought_signature: None,
+                    },
+                    GeminiPart::FunctionCall {
+                        function_call: GeminiFunctionCallData {
+                            name: "web_search".to_string(),
+                            args: serde_json::json!({"q": "rust"}),
+                        },
+                        thought_signature: None,
+                    },
+                ],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 2);
+        // functionCall should be stripped, text kept
+        assert_eq!(sanitized[1].parts.len(), 1);
+        assert!(matches!(&sanitized[1].parts[0], GeminiPart::Text { .. }));
+    }
+
+    #[test]
+    fn test_sanitize_keeps_valid_function_call_response_pair() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Search".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::FunctionCall {
+                    function_call: GeminiFunctionCallData {
+                        name: "web_search".to_string(),
+                        args: serde_json::json!({"q": "rust"}),
+                    },
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "Rust is great"}),
+                    },
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 3);
+        // functionCall should be preserved
+        assert!(matches!(
+            &sanitized[1].parts[0],
+            GeminiPart::FunctionCall { .. }
+        ));
+    }
+
+    #[test]
+    fn test_sanitize_drops_orphaned_function_response() {
+        // A user turn with functionResponse but no preceding functionCall
+        let contents = vec![
+            GeminiContent {
+                role: Some("user".to_string()),
+                parts: vec![GeminiPart::FunctionResponse {
+                    function_response: GeminiFunctionResponseData {
+                        name: "web_search".to_string(),
+                        response: serde_json::json!({"result": "data"}),
+                    },
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Done.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        // Orphaned functionResponse removed, empty user turn removed
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].role.as_deref(), Some("model"));
+    }
+
+    #[test]
+    fn test_sanitize_merges_consecutive_same_role() {
+        let contents = vec![
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "First.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+            GeminiContent {
+                role: Some("model".to_string()),
+                parts: vec![GeminiPart::Text {
+                    text: "Second.".to_string(),
+                    thought_signature: None,
+                }],
+            },
+        ];
+
+        let sanitized = sanitize_gemini_turns(contents);
+        assert_eq!(sanitized.len(), 1);
+        assert_eq!(sanitized[0].parts.len(), 2);
+    }
+
+    #[test]
+    fn test_sanitize_empty_input() {
+        let sanitized = sanitize_gemini_turns(vec![]);
+        assert!(sanitized.is_empty());
+    }
 }
