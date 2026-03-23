@@ -192,7 +192,7 @@ const PROVIDERS: &[ProviderInfo] = &[
         name: "nvidia",
         display: "NVIDIA NIM",
         env_var: "NVIDIA_API_KEY",
-        default_model: "meta/llama-3.3-70b-instruct",
+        default_model: "nvidia/llama-3.1-nemotron-70b-instruct",
         needs_key: true,
         hint: "",
     },
