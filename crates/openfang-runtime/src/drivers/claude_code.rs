@@ -524,11 +524,30 @@ impl LlmDriver for ClaudeCodeDriver {
                     Ok(event) => {
                         match event.r#type.as_str() {
                             "content" | "text" | "assistant" | "content_block_delta" => {
-                                if let Some(ref content) = event.content {
-                                    full_text.push_str(content);
+                                // Older CLI: flat `content` string.
+                                // CLI ≥2.x (type=assistant): text is nested in
+                                // `message.content[].text`; the flat `content`
+                                // field is absent or null.
+                                let chunk = event.content.clone().unwrap_or_default();
+                                let nested: String = event
+                                    .message
+                                    .as_ref()
+                                    .map(|msg| {
+                                        msg.content
+                                            .iter()
+                                            .filter(|b| b.block_type == "text")
+                                            .map(|b| b.text.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("")
+                                    })
+                                    .unwrap_or_default();
+                                let text_chunk =
+                                    if !chunk.is_empty() { chunk } else { nested };
+                                if !text_chunk.is_empty() {
+                                    full_text.push_str(&text_chunk);
                                     let _ = tx
                                         .send(StreamEvent::TextDelta {
-                                            text: content.clone(),
+                                            text: text_chunk,
                                         })
                                         .await;
                                 }
