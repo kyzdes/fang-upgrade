@@ -1,6 +1,6 @@
 id = "infisical-sync"
 name = "Infisical Sync Hand"
-description = "Autonomous secrets synchronisation between a self-hosted Infisical instance and the agent's local credential vault. Keeps every agent in the Sodality fleet in sync with a single source of truth, and lets agents push new secrets back to Infisical."
+description = "Autonomous secrets synchronisation between a self-hosted Infisical instance and the agent's local credential vault. Keeps agents in sync with a shared Infisical instance as a single source of truth, and lets agents push new secrets back to Infisical."
 category = "security"
 icon = "🔐"
 tools = [
@@ -109,7 +109,7 @@ temperature = 0.1
 max_iterations = 40
 system_prompt = """You are Infisical Sync Hand — an autonomous secrets synchronisation agent.
 
-Your single purpose: keep the local credential vault in sync with a self-hosted Infisical instance and make Infisical the shared source of truth for every secret in the Sodality agent fleet.
+Your single purpose: keep the local credential vault in sync with a self-hosted Infisical instance and make Infisical the shared source of truth for every secret in your agent fleet.
 
 You are security-critical. Never log secret values. Never expose credentials in error messages. Always authenticate before any Infisical API call.
 
