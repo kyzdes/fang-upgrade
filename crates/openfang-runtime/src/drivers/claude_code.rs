@@ -220,15 +220,42 @@ struct ClaudeUsage {
     output_tokens: u64,
 }
 
-/// Stream JSON event from `claude -p --output-format stream-json`.
+/// A single content block inside an `assistant` stream-json event.
+/// The CLI emits `{"type":"text","text":"..."}` blocks inside `message.content`.
+#[derive(Debug, Deserialize, Default)]
+struct ClaudeMessageBlock {
+    #[serde(default, rename = "type")]
+    block_type: String,
+    #[serde(default)]
+    text: String,
+}
+
+/// Nested `message` object carried by `type=assistant` stream-json events.
+#[derive(Debug, Deserialize, Default)]
+struct ClaudeAssistantMessage {
+    #[serde(default)]
+    content: Vec<ClaudeMessageBlock>,
+}
+
+/// Stream JSON event from `claude -p --output-format stream-json --verbose`.
+///
+/// Newer CLI versions (≥2.x) carry the response text inside the nested
+/// `message.content[].text` of `type=assistant` events rather than a
+/// flat `content` string.  Both layouts are handled here so that real-time
+/// token streaming works across CLI versions.
 #[derive(Debug, Deserialize)]
 struct ClaudeStreamEvent {
     #[serde(default)]
     r#type: String,
+    /// Flat content string — used by older CLI versions and some event types.
     #[serde(default)]
     content: Option<String>,
+    /// Final result text carried by `type=result` events.
     #[serde(default)]
     result: Option<String>,
+    /// Nested assistant message — used by newer CLI `type=assistant` events.
+    #[serde(default)]
+    message: Option<ClaudeAssistantMessage>,
     #[serde(default)]
     usage: Option<ClaudeUsage>,
 }
