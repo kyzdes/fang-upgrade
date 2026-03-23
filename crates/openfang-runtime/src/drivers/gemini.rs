@@ -60,6 +60,7 @@ struct GeminiRequest {
 struct GeminiContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     role: Option<String>,
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
@@ -336,7 +337,117 @@ fn convert_messages(
         }
     }
 
+    // Sanitize for Gemini's strict turn-ordering rules:
+    // - A model turn with functionCall MUST be followed by a user turn with functionResponse
+    // - No consecutive same-role turns
+    let contents = sanitize_gemini_turns(contents);
+
     (contents, system_instruction)
+}
+
+/// Enforce Gemini's strict turn-ordering constraints.
+///
+/// Gemini requires: functionCall (model) → functionResponse (user) → model.
+/// After message trimming, this ordering can break. This function:
+/// 1. Merges consecutive same-role turns
+/// 2. Drops orphaned functionCall parts (no following functionResponse)
+/// 3. Drops orphaned functionResponse parts (no preceding functionCall)
+fn sanitize_gemini_turns(contents: Vec<GeminiContent>) -> Vec<GeminiContent> {
+    if contents.is_empty() {
+        return contents;
+    }
+
+    // Step 1: Merge consecutive same-role turns
+    let mut merged: Vec<GeminiContent> = Vec::with_capacity(contents.len());
+    for entry in contents {
+        if let Some(last) = merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        merged.push(entry);
+    }
+
+    // Step 2: Drop orphaned functionCall parts from model turns.
+    // A model turn with functionCall must be followed by a user turn with functionResponse.
+    let len = merged.len();
+    for i in 0..len {
+        let is_model = merged[i].role.as_deref() == Some("model");
+        if !is_model {
+            continue;
+        }
+
+        let has_function_call = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+        if !has_function_call {
+            continue;
+        }
+
+        // Check if next turn is a user turn with functionResponse
+        let next_has_response = i + 1 < len
+            && merged[i + 1].role.as_deref() == Some("user")
+            && merged[i + 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+
+        if !next_has_response {
+            // Drop the functionCall parts from this model turn (keep text parts)
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionCall { .. }));
+        }
+    }
+
+    // Step 3: Drop orphaned functionResponse parts from user turns.
+    // A user turn with functionResponse must be preceded by a model turn with functionCall.
+    for i in 0..merged.len() {
+        let is_user = merged[i].role.as_deref() == Some("user");
+        if !is_user {
+            continue;
+        }
+
+        let has_function_response = merged[i]
+            .parts
+            .iter()
+            .any(|p| matches!(p, GeminiPart::FunctionResponse { .. }));
+        if !has_function_response {
+            continue;
+        }
+
+        let prev_has_call = i > 0
+            && merged[i - 1].role.as_deref() == Some("model")
+            && merged[i - 1]
+                .parts
+                .iter()
+                .any(|p| matches!(p, GeminiPart::FunctionCall { .. }));
+
+        if !prev_has_call {
+            merged[i]
+                .parts
+                .retain(|p| !matches!(p, GeminiPart::FunctionResponse { .. }));
+        }
+    }
+
+    // Step 4: Remove turns that ended up empty after filtering
+    merged.retain(|c| !c.parts.is_empty());
+
+    // Step 5: Final merge pass (removing parts may have created new consecutive same-role)
+    let mut final_merged: Vec<GeminiContent> = Vec::with_capacity(merged.len());
+    for entry in merged {
+        if let Some(last) = final_merged.last_mut() {
+            if last.role == entry.role {
+                last.parts.extend(entry.parts);
+                continue;
+            }
+        }
+        final_merged.push(entry);
+    }
+
+    final_merged
 }
 
 /// Extract system prompt from messages or the explicit system field.
@@ -1351,6 +1462,15 @@ mod tests {
                     provider_metadata: None,
                 }]),
             },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id: "call_456".to_string(),
+                    tool_name: "read_file".to_string(),
+                    content: "file contents".to_string(),
+                    is_error: false,
+                }]),
+            },
         ];
 
         let (contents, _) = convert_messages(&messages, &None);
@@ -1581,12 +1701,27 @@ mod tests {
             _ => panic!("Expected ToolUse"),
         }
 
+        // Extract the generated tool_use_id for the ToolResult
+        let tool_use_id = match &completion.content[1] {
+            ContentBlock::ToolUse { id, .. } => id.clone(),
+            _ => panic!("Expected ToolUse"),
+        };
+
         // Now convert back to Gemini format and verify signatures are echoed
         let messages = vec![
             Message::user("Search for rust"),
             Message {
                 role: Role::Assistant,
                 content: MessageContent::Blocks(completion.content),
+            },
+            Message {
+                role: Role::User,
+                content: MessageContent::Blocks(vec![ContentBlock::ToolResult {
+                    tool_use_id,
+                    tool_name: "web_search".to_string(),
+                    content: "search results".to_string(),
+                    is_error: false,
+                }]),
             },
         ];
         let (contents, _) = convert_messages(&messages, &None);
