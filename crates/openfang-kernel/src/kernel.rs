@@ -4756,26 +4756,44 @@ impl OpenFangKernel {
                 String,
             )> = vec![(primary.clone(), String::new())];
             for fb in &manifest.fallback_models {
+                // Resolve "default" provider/model to the kernel's configured defaults,
+                // mirroring the overlay logic for the primary model.
+                let dm = &self.config.default_model;
+                let fb_provider = if fb.provider.is_empty() || fb.provider == "default" {
+                    dm.provider.clone()
+                } else {
+                    fb.provider.clone()
+                };
+                let fb_model_name = if fb.model.is_empty() || fb.model == "default" {
+                    dm.model.clone()
+                } else {
+                    fb.model.clone()
+                };
+                let _ = &fb_model_name; // used below in strip_provider_prefix
+
                 let fb_api_key = if let Some(env) = &fb.api_key_env {
                     std::env::var(env).ok()
+                } else if fb_provider == dm.provider && !dm.api_key_env.is_empty() {
+                    std::env::var(&dm.api_key_env).ok()
                 } else {
                     // Resolve using provider_api_keys / convention for custom providers
-                    let env_var = self.config.resolve_api_key_env(&fb.provider);
+                    let env_var = self.config.resolve_api_key_env(&fb_provider);
                     std::env::var(&env_var).ok()
                 };
                 let config = DriverConfig {
-                    provider: fb.provider.clone(),
+                    provider: fb_provider.clone(),
                     api_key: fb_api_key,
                     base_url: fb
                         .base_url
                         .clone()
-                        .or_else(|| self.lookup_provider_url(&fb.provider)),
+                        .or_else(|| dm.base_url.clone())
+                        .or_else(|| self.lookup_provider_url(&fb_provider)),
                     skip_permissions: true,
                 };
                 match drivers::create_driver(&config) {
-                    Ok(d) => chain.push((d, strip_provider_prefix(&fb.model, &fb.provider))),
+                    Ok(d) => chain.push((d, strip_provider_prefix(&fb_model_name, &fb_provider))),
                     Err(e) => {
-                        warn!("Fallback driver '{}' failed to init: {e}", fb.provider);
+                        warn!("Fallback driver '{}' failed to init: {e}", fb_provider);
                     }
                 }
             }
