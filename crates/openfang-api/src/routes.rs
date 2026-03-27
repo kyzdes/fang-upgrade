@@ -3107,15 +3107,21 @@ pub async fn list_templates() -> impl IntoResponse {
                         .to_string_lossy()
                         .to_string();
 
-                    let description = std::fs::read_to_string(&manifest_path)
-                        .ok()
+                    let manifest_content = std::fs::read_to_string(&manifest_path).ok();
+                    let description = manifest_content
+                        .as_ref()
                         .and_then(|content| toml::from_str::<AgentManifest>(&content).ok())
                         .map(|m| m.description)
                         .unwrap_or_default();
 
+                    // Add category based on template name
+                    let category = get_template_category(&name);
+
                     templates.push(serde_json::json!({
                         "name": name,
                         "description": description,
+                        "category": category,
+                        "manifest_toml": manifest_content.unwrap_or_default(),
                     }));
                 }
             }
@@ -3126,6 +3132,24 @@ pub async fn list_templates() -> impl IntoResponse {
         "templates": templates,
         "total": templates.len(),
     }))
+}
+
+fn get_template_category(name: &str) -> &str {
+    match name {
+        "hello-world" | "assistant" => "General",
+        "researcher" | "analyst" => "Research",
+        "coder" | "debugger" | "devops-lead" => "Development",
+        "writer" | "doc-writer" => "Writing",
+        "ops" | "planner" => "Operations",
+        "architect" | "security-auditor" => "Development",
+        "code-reviewer" | "data-scientist" | "test-engineer" => "Development",
+        "legal-assistant" | "email-assistant" | "social-media" => "Business",
+        "customer-support" | "sales-assistant" | "recruiter" => "Business",
+        "meeting-assistant" => "Business",
+        "translator" | "tutor" | "health-tracker" => "General",
+        "personal-finance" | "travel-planner" | "home-automation" => "General",
+        _ => "General",
+    }
 }
 
 /// GET /api/templates/:name — Get template details.
