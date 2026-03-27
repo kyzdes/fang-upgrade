@@ -4369,7 +4369,10 @@ impl OpenFangKernel {
         use crate::heartbeat::{check_agents, is_quiet_hours, HeartbeatConfig, RecoveryTracker};
 
         let kernel = Arc::clone(self);
-        let config = HeartbeatConfig::default();
+        let config = HeartbeatConfig {
+            default_timeout_secs: self.config.heartbeat.default_timeout_secs,
+            ..HeartbeatConfig::default()
+        };
         let interval_secs = config.check_interval_secs;
         let recovery_tracker = RecoveryTracker::new();
 

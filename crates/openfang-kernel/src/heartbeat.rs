@@ -477,6 +477,17 @@ mod tests {
     }
 
     #[test]
+    fn test_heartbeat_config_custom_timeout() {
+        let config = HeartbeatConfig {
+            default_timeout_secs: 600,
+            ..HeartbeatConfig::default()
+        };
+        assert_eq!(config.default_timeout_secs, 600);
+        assert_eq!(config.check_interval_secs, DEFAULT_CHECK_INTERVAL_SECS);
+        assert_eq!(config.max_recovery_attempts, DEFAULT_MAX_RECOVERY_ATTEMPTS);
+    }
+
+    #[test]
     fn test_recovery_tracker() {
         let tracker = RecoveryTracker::new();
         let agent_id = AgentId::new();
