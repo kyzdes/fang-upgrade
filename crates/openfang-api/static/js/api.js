@@ -308,15 +308,15 @@ var OpenFangAPI = (function() {
   function getToken() { return _authToken; }
 
   function upload(agentId, file) {
-    var hdrs = {
-      'Content-Type': file.type || 'application/octet-stream',
-      'X-Filename': file.name
-    };
+    var hdrs = {};
     if (_authToken) hdrs['Authorization'] = 'Bearer ' + _authToken;
+	var form = new FormData();
+    form.append('file', file);
+    form.append('filename', file.name);
     return fetch(BASE + '/api/agents/' + agentId + '/upload', {
       method: 'POST',
       headers: hdrs,
-      body: file
+      body: form
     }).then(function(r) {
       if (!r.ok) throw new Error('Upload failed');
       return r.json();
