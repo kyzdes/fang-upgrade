@@ -40,6 +40,9 @@ pub struct AppState {
     /// Avoids blocking the `/api/providers` endpoint on TCP timeouts to
     /// unreachable local services. 60-second TTL.
     pub provider_probe_cache: openfang_runtime::provider_health::ProbeCache,
+    /// Thread-safe mutable budget config. Updated via PUT /api/budget.
+    /// Initialized from `kernel.config.budget` at startup.
+    pub budget_config: Arc<tokio::sync::RwLock<openfang_types::config::BudgetConfig>>,
 }
 
 /// POST /api/agents — Spawn a new agent.
@@ -5266,10 +5269,8 @@ pub async fn usage_daily(State(state): State<Arc<AppState>>) -> impl IntoRespons
 
 /// GET /api/budget — Current budget status (limits, spend, % used).
 pub async fn budget_status(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
+    let budget = state.budget_config.read().await;
+    let status = state.kernel.metering.budget_status(&budget);
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
@@ -5278,34 +5279,26 @@ pub async fn update_budget(
     State(state): State<Arc<AppState>>,
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // SAFETY: Budget config is updated in-place. Since KernelConfig is behind
-    // an Arc and we only have &self, we use ptr mutation (same pattern as OFP).
-    let config_ptr = &state.kernel.config as *const openfang_types::config::KernelConfig
-        as *mut openfang_types::config::KernelConfig;
-
-    // Apply updates
-    unsafe {
+    {
+        let mut budget = state.budget_config.write().await;
         if let Some(v) = body["max_hourly_usd"].as_f64() {
-            (*config_ptr).budget.max_hourly_usd = v;
+            budget.max_hourly_usd = v;
         }
         if let Some(v) = body["max_daily_usd"].as_f64() {
-            (*config_ptr).budget.max_daily_usd = v;
+            budget.max_daily_usd = v;
         }
         if let Some(v) = body["max_monthly_usd"].as_f64() {
-            (*config_ptr).budget.max_monthly_usd = v;
+            budget.max_monthly_usd = v;
         }
         if let Some(v) = body["alert_threshold"].as_f64() {
-            (*config_ptr).budget.alert_threshold = v.clamp(0.0, 1.0);
+            budget.alert_threshold = v.clamp(0.0, 1.0);
         }
         if let Some(v) = body["default_max_llm_tokens_per_hour"].as_u64() {
-            (*config_ptr).budget.default_max_llm_tokens_per_hour = v;
+            budget.default_max_llm_tokens_per_hour = v;
         }
     }
-
-    let status = state
-        .kernel
-        .metering
-        .budget_status(&state.kernel.config.budget);
+    let budget = state.budget_config.read().await;
+    let status = state.kernel.metering.budget_status(&budget);
     Json(serde_json::to_value(&status).unwrap_or_default())
 }
 
