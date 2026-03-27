@@ -890,8 +890,24 @@ async fn dispatch_message(
     // (which expire typing after ~5s) keep showing it during long LLM calls.
     let typing_task = spawn_typing_loop(adapter_arc.clone(), message.sender.clone());
 
+    // Prepend sender context so the agent knows who is speaking.
+    // In group spaces this is essential for multi-user conversations.
+    let sender_name = &message.sender.display_name;
+    let sender_email = message
+        .metadata
+        .get("sender_email")
+        .and_then(|v| v.as_str());
+    let prefixed_text = if !sender_name.is_empty() {
+        match sender_email {
+            Some(email) => format!("[From: {sender_name} <{email}>] {text}"),
+            None => format!("[From: {sender_name}] {text}"),
+        }
+    } else {
+        text.clone()
+    };
+
     // Send to agent and relay response
-    let result = handle.send_message(agent_id, &text).await;
+    let result = handle.send_message(agent_id, &prefixed_text).await;
 
     // Stop the typing refresh now that we have a response
     typing_task.abort();
