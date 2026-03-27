@@ -2642,9 +2642,7 @@ decay_rate = 0.05
         // Check workspace skills if home dir available
         if skills_dir.exists() {
             match skill_reg.load_workspace_skills(&skills_dir) {
-                Ok(_) => {
-                    let total = skill_reg.count();
-                    let ws_count = total.saturating_sub(bundled_count);
+                Ok(ws_count) => {
                     if ws_count > 0 {
                         if !json {
                             ui::check_ok(&format!("Workspace skills loaded: {ws_count}"));

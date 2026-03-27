@@ -172,6 +172,72 @@ impl ModelCatalog {
         None
     }
 
+    /// Find a model by ID/alias, preferring entries from the given provider.
+    ///
+    /// When `provider` is specified, this method first looks for a matching model
+    /// that belongs to that provider. If no provider-scoped match is found, it
+    /// falls back to the normal `find_model` resolution.
+    ///
+    /// This prevents issue #833 where switching to model "kimi-2.5" with provider
+    /// "model_studio" would incorrectly resolve to moonshot's builtin kimi-2.5
+    /// because `find_model` does not consider provider affinity.
+    pub fn find_model_for_provider(
+        &self,
+        id_or_alias: &str,
+        provider: &str,
+    ) -> Option<&ModelCatalogEntry> {
+        let lower = id_or_alias.to_lowercase();
+
+        // First pass: look for a match scoped to the requested provider.
+        // Priority: exact-case ID > case-insensitive ID > display-name.
+        let mut provider_ci: Option<&ModelCatalogEntry> = None;
+
+        for m in &self.models {
+            if m.provider != provider {
+                continue;
+            }
+            if m.id.to_lowercase() != lower {
+                continue;
+            }
+            if m.id == id_or_alias {
+                return Some(m); // Exact-case match on the right provider — best result
+            }
+            if provider_ci.is_none() {
+                provider_ci = Some(m);
+            }
+        }
+
+        if let Some(entry) = provider_ci {
+            return Some(entry);
+        }
+
+        // Display-name match scoped to provider
+        if let Some(entry) = self
+            .models
+            .iter()
+            .find(|m| m.provider == provider && m.display_name.to_lowercase() == lower)
+        {
+            return Some(entry);
+        }
+
+        // Alias resolution scoped to provider: resolve the alias, then check if
+        // the canonical model belongs to the requested provider.
+        if let Some(canonical) = self.aliases.get(&lower) {
+            if let Some(entry) = self
+                .models
+                .iter()
+                .find(|m| m.id == *canonical && m.provider == provider)
+            {
+                return Some(entry);
+            }
+        }
+
+        // No provider-scoped match — fall back to normal resolution so callers
+        // still get a result when the model genuinely doesn't exist on this provider
+        // (e.g. user typo, or a model name that only exists elsewhere).
+        self.find_model(id_or_alias)
+    }
+
     /// Resolve an alias to a canonical model ID, or None if not an alias.
     pub fn resolve_alias(&self, alias: &str) -> Option<&str> {
         self.aliases.get(&alias.to_lowercase()).map(|s| s.as_str())
@@ -4364,5 +4430,97 @@ mod tests {
         let lower = catalog.find_model("custom-model-7b").unwrap();
         assert_eq!(lower.tier, ModelTier::Local);
         assert_eq!(lower.provider, "ollama");
+    }
+
+    /// Regression test for #833: find_model_for_provider should prefer the entry
+    /// from the specified provider when multiple providers share the same model name.
+    ///
+    /// Scenario: a custom provider "model_studio" has a model "kimi-k2.5", and the
+    /// builtin "moonshot" provider also has "kimi-k2.5". When the user switches to
+    /// "kimi-k2.5" with provider "model_studio", we must resolve to model_studio's
+    /// entry, not moonshot's builtin.
+    #[test]
+    fn test_find_model_for_provider_prefers_specified_provider_833() {
+        let mut catalog = ModelCatalog::new();
+
+        // Verify the builtin moonshot entry exists
+        let builtin = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(builtin.provider, "moonshot");
+
+        // Add a custom model with the same name on a different provider
+        let added = catalog.add_custom_model(ModelCatalogEntry {
+            id: "kimi-k2.5".into(),
+            display_name: "Kimi K2.5 (Model Studio)".into(),
+            provider: "model_studio".into(),
+            tier: ModelTier::Balanced,
+            context_window: 131_072,
+            max_output_tokens: 8_192,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        });
+        assert!(added, "custom model should be added (different provider)");
+
+        // Plain find_model returns the custom entry (Custom tier wins over builtin)
+        let plain = catalog.find_model("kimi-k2.5").unwrap();
+        assert_eq!(plain.tier, ModelTier::Custom);
+
+        // find_model_for_provider with "model_studio" must return model_studio's entry
+        let ms = catalog
+            .find_model_for_provider("kimi-k2.5", "model_studio")
+            .unwrap();
+        assert_eq!(ms.provider, "model_studio");
+        assert_eq!(ms.display_name, "Kimi K2.5 (Model Studio)");
+
+        // find_model_for_provider with "moonshot" must return moonshot's builtin
+        let moonshot = catalog
+            .find_model_for_provider("kimi-k2.5", "moonshot")
+            .unwrap();
+        assert_eq!(moonshot.provider, "moonshot");
+        assert_eq!(moonshot.display_name, "Kimi K2.5");
+    }
+
+    /// Verify find_model_for_provider falls back to normal resolution when the
+    /// model doesn't exist on the requested provider.
+    #[test]
+    fn test_find_model_for_provider_fallback() {
+        let catalog = ModelCatalog::new();
+
+        // "claude-sonnet-4-20250514" only exists on "anthropic"
+        let entry = catalog
+            .find_model_for_provider("claude-sonnet-4-20250514", "nonexistent_provider")
+            .unwrap();
+        assert_eq!(entry.provider, "anthropic");
+    }
+
+    /// Verify find_model_for_provider is case-insensitive for the model name.
+    #[test]
+    fn test_find_model_for_provider_case_insensitive() {
+        let mut catalog = ModelCatalog::new();
+
+        catalog.add_custom_model(ModelCatalogEntry {
+            id: "My-Custom-LLM".into(),
+            display_name: "My Custom LLM".into(),
+            provider: "custom_provider".into(),
+            tier: ModelTier::Balanced,
+            context_window: 32_768,
+            max_output_tokens: 4_096,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: false,
+            supports_streaming: true,
+            aliases: vec![],
+        });
+
+        // Case-insensitive lookup with the correct provider
+        let found = catalog
+            .find_model_for_provider("my-custom-llm", "custom_provider")
+            .unwrap();
+        assert_eq!(found.provider, "custom_provider");
+        assert_eq!(found.id, "My-Custom-LLM");
     }
 }

@@ -44,6 +44,20 @@ const BASE_RETRY_DELAY_MS: u64 = 1000;
 /// Raised from 60s to 120s for browser automation and long-running builds.
 const TOOL_TIMEOUT_SECS: u64 = 120;
 
+/// Timeout for inter-agent tool calls (seconds).
+/// Agent delegation (agent_send, agent_spawn) can involve a full agent loop on the
+/// target, so these need a significantly longer timeout than regular tools.
+const AGENT_TOOL_TIMEOUT_SECS: u64 = 600;
+
+/// Returns the appropriate timeout duration for a given tool name.
+/// Inter-agent calls get a longer timeout since they may trigger full agent loops.
+fn tool_timeout_for(tool_name: &str) -> Duration {
+    match tool_name {
+        "agent_send" | "agent_spawn" => Duration::from_secs(AGENT_TOOL_TIMEOUT_SECS),
+        _ => Duration::from_secs(TOOL_TIMEOUT_SECS),
+    }
+}
+
 /// Maximum consecutive MaxTokens continuations before returning partial response.
 /// Raised from 3 to 5 to allow longer-form generation.
 const MAX_CONTINUATIONS: u32 = 5;
@@ -738,8 +752,10 @@ pub async fn run_agent_loop(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -768,12 +784,12 @@ pub async fn run_agent_loop(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -1881,8 +1897,10 @@ pub async fn run_agent_loop_streaming(
                     let effective_exec_policy = manifest.exec_policy.as_ref();
 
                     // Timeout-wrapped execution
+                    let timeout = tool_timeout_for(&tool_call.name);
+                    let timeout_secs = timeout.as_secs();
                     let result = match tokio::time::timeout(
-                        Duration::from_secs(TOOL_TIMEOUT_SECS),
+                        timeout,
                         tool_runner::execute_tool(
                             &tool_call.id,
                             &tool_call.name,
@@ -1911,12 +1929,12 @@ pub async fn run_agent_loop_streaming(
                     {
                         Ok(result) => result,
                         Err(_) => {
-                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", TOOL_TIMEOUT_SECS);
+                            warn!(tool = %tool_call.name, "Tool execution timed out after {}s (streaming)", timeout_secs);
                             openfang_types::tool::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 content: format!(
                                     "Tool '{}' timed out after {}s.",
-                                    tool_call.name, TOOL_TIMEOUT_SECS
+                                    tool_call.name, timeout_secs
                                 ),
                                 is_error: true,
                             }
@@ -2980,6 +2998,15 @@ mod tests {
     #[test]
     fn test_tool_timeout_constant() {
         assert_eq!(TOOL_TIMEOUT_SECS, 120);
+        assert_eq!(AGENT_TOOL_TIMEOUT_SECS, 600);
+    }
+
+    #[test]
+    fn test_tool_timeout_for_agent_tools() {
+        assert_eq!(tool_timeout_for("agent_send"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("agent_spawn"), Duration::from_secs(600));
+        assert_eq!(tool_timeout_for("file_read"), Duration::from_secs(120));
+        assert_eq!(tool_timeout_for("shell_exec"), Duration::from_secs(120));
     }
 
     #[test]
