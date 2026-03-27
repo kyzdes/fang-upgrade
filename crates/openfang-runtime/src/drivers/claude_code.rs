@@ -133,10 +133,6 @@ impl ClaudeCodeDriver {
     fn build_prompt(request: &CompletionRequest) -> String {
         let mut parts = Vec::new();
 
-        if let Some(ref sys) = request.system {
-            parts.push(format!("[System]\n{sys}"));
-        }
-
         for msg in &request.messages {
             let role_label = match msg.role {
                 Role::User => "User",
@@ -271,6 +267,10 @@ impl LlmDriver for ClaudeCodeDriver {
             .arg(&prompt)
             .arg("--output-format")
             .arg("json");
+
+        if let Some(ref sys) = request.system {
+            cmd.arg("--system-prompt").arg(sys);
+        }
 
         if self.skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
@@ -463,6 +463,10 @@ impl LlmDriver for ClaudeCodeDriver {
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose");
+
+        if let Some(ref sys) = request.system {
+            cmd.arg("--system-prompt").arg(sys);
+        }
 
         if self.skip_permissions {
             cmd.arg("--dangerously-skip-permissions");
@@ -720,8 +724,8 @@ mod tests {
         };
 
         let prompt = ClaudeCodeDriver::build_prompt(&request);
-        assert!(prompt.contains("[System]"));
-        assert!(prompt.contains("You are helpful."));
+        assert!(!prompt.contains("[System]"));
+        assert!(!prompt.contains("You are helpful."));
         assert!(prompt.contains("[User]"));
         assert!(prompt.contains("Hello"));
     }
