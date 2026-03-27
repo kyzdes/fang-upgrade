@@ -367,7 +367,11 @@ pub async fn send_message(
     // (not as a separate session message which the LLM may not process).
     let content_blocks = if !req.attachments.is_empty() {
         let image_blocks = resolve_attachments(&req.attachments);
-        if image_blocks.is_empty() { None } else { Some(image_blocks) }
+        if image_blocks.is_empty() {
+            None
+        } else {
+            Some(image_blocks)
+        }
     } else {
         None
     };
@@ -3129,7 +3133,7 @@ pub async fn list_templates() -> impl IntoResponse {
                     let manifest_content = std::fs::read_to_string(&manifest_path).ok();
                     let description = manifest_content
                         .as_ref()
-                        .and_then(|content| toml::from_str::<AgentManifest>(&content).ok())
+                        .and_then(|content| toml::from_str::<AgentManifest>(content).ok())
                         .map(|m| m.description)
                         .unwrap_or_default();
 
@@ -4868,6 +4872,12 @@ pub async fn list_mcp_servers(State(state): State<Arc<AppState>>) -> impl IntoRe
                 openfang_types::config::McpTransportEntry::Sse { url } => {
                     serde_json::json!({
                         "type": "sse",
+                        "url": url,
+                    })
+                }
+                openfang_types::config::McpTransportEntry::Http { url } => {
+                    serde_json::json!({
+                        "type": "http",
                         "url": url,
                     })
                 }
