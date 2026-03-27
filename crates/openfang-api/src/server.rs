@@ -587,6 +587,10 @@ pub async fn build_router(
             "/api/cron/jobs/{id}/status",
             axum::routing::get(routes::cron_job_status),
         )
+        .route(
+            "/api/cron/jobs/{id}/run",
+            axum::routing::post(routes::run_cron_job),
+        )
         // Webhook trigger endpoints (external event injection)
         .route("/hooks/wake", axum::routing::post(routes::webhook_wake))
         .route("/hooks/agent", axum::routing::post(routes::webhook_agent))
