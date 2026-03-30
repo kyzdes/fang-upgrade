@@ -55,7 +55,7 @@ impl WebSearchEngine {
             SearchProvider::Tavily => self.search_tavily(query, max_results).await,
             SearchProvider::Perplexity => self.search_perplexity(query).await,
             SearchProvider::DuckDuckGo => self.search_duckduckgo(query, max_results).await,
-            SearchProvider::Searxng => self.search_searxng(query, max_results, None).await,
+            SearchProvider::Searxng => self.search_searxng(query, max_results, None, 1).await,
             SearchProvider::Auto => self.search_auto(query, max_results).await,
         };
 
@@ -100,7 +100,7 @@ impl WebSearchEngine {
         // Searxng fourth (self-hosted, no API key needed)
         if !self.config.searxng.url.is_empty() {
             debug!("Auto: trying Searxng");
-            match self.search_searxng(query, max_results, None).await {
+            match self.search_searxng(query, max_results, None, 1).await {
                 Ok(result) => return Ok(result),
                 Err(e) => warn!("Searxng failed, falling back: {e}"),
             }
@@ -330,6 +330,7 @@ impl WebSearchEngine {
         query: &str,
         max_results: usize,
         category: Option<&str>,
+        page: u32,
     ) -> Result<String, String> {
         if self.config.searxng.url.is_empty() {
             return Err("SearXNG URL is not configured".to_string());
@@ -362,6 +363,7 @@ impl WebSearchEngine {
                 ("q", query),
                 ("format", "json"),
                 ("categories", category),
+                ("page", &page.to_string()),
             ])
             .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
             .send()
