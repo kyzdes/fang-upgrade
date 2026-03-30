@@ -342,6 +342,10 @@ pub async fn run_agent_loop(
         // pair across the cut boundary, leaving orphaned blocks that cause the LLM
         // to return empty responses (input_tokens=0).
         messages = crate::session_repair::validate_and_repair(&messages);
+        // Ensure history starts with a user turn: trimming may have left an
+        // assistant turn at position 0, which strict providers (e.g. Gemini)
+        // reject with INVALID_ARGUMENT on function-call turns.
+        messages = crate::session_repair::ensure_starts_with_user(messages);
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -381,6 +385,8 @@ pub async fn run_agent_loop(
         // which may have broken assistant→tool ordering invariants.
         if recovery != RecoveryStage::None {
             messages = crate::session_repair::validate_and_repair(&messages);
+            // Ensure history starts with a user turn after overflow recovery.
+            messages = crate::session_repair::ensure_starts_with_user(messages);
         }
 
         // Context guard: compact oversized tool results before LLM call
@@ -1504,6 +1510,10 @@ pub async fn run_agent_loop_streaming(
         // pair across the cut boundary, leaving orphaned blocks that cause the LLM
         // to return empty responses (input_tokens=0).
         messages = crate::session_repair::validate_and_repair(&messages);
+        // Ensure history starts with a user turn: trimming may have left an
+        // assistant turn at position 0, which strict providers (e.g. Gemini)
+        // reject with INVALID_ARGUMENT on function-call turns.
+        messages = crate::session_repair::ensure_starts_with_user(messages);
     }
 
     // Use autonomous config max_iterations if set, else default
@@ -1561,6 +1571,8 @@ pub async fn run_agent_loop_streaming(
         // be followed by tool messages" errors after context overflow recovery.)
         if recovery != RecoveryStage::None {
             messages = crate::session_repair::validate_and_repair(&messages);
+            // Ensure history starts with a user turn after overflow recovery.
+            messages = crate::session_repair::ensure_starts_with_user(messages);
         }
 
         // Context guard: compact oversized tool results before LLM call
