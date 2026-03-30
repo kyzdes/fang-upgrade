@@ -337,10 +337,11 @@ cache_ttl_minutes = 15
 
 | Value | Description |
 |-------|-------------|
-| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then DuckDuckGo, based on which API keys are available. |
+| `auto` | Cascading fallback: tries Tavily, then Brave, then Perplexity, then SearXNG, then DuckDuckGo, based on which API keys/configs are available. |
 | `brave` | Brave Search API. Requires `BRAVE_API_KEY`. |
 | `tavily` | Tavily AI-native search. Requires `TAVILY_API_KEY`. |
 | `perplexity` | Perplexity AI search. Requires `PERPLEXITY_API_KEY`. |
+| `searxng` | Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. |
 | `duck_duck_go` | DuckDuckGo HTML scraping. No API key needed. |
 
 #### `[web.brave]`
@@ -391,6 +392,19 @@ model = "sonar"
 |-------|------|---------|-------------|
 | `api_key_env` | string | `"PERPLEXITY_API_KEY"` | Environment variable name holding the Perplexity API key. |
 | `model` | string | `"sonar"` | Perplexity model to use for search queries. |
+
+#### `[web.searxng]`
+
+**SearXNG** — Self-hosted search engine aggregator. No API key required, just point to your SearXNG instance. Supports 30+ search categories (general, images, news, videos, etc.) and pagination.
+
+```toml
+[web.searxng]
+url = "https://searxng.example.com"    # SearXNG instance URL (required)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `url` | string | (required) | Full URL of your SearXNG instance (e.g., `https://searxng.example.com`). Must be accessible. |
 
 #### `[web.fetch]`
 

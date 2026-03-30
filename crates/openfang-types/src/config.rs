@@ -173,7 +173,9 @@ pub enum SearchProvider {
     Perplexity,
     /// DuckDuckGo HTML (no API key needed).
     DuckDuckGo,
-    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → DuckDuckGo).
+    /// SearXNG self-hosted search (no API key needed).
+    Searxng,
+    /// Auto-select based on available API keys (Tavily → Brave → Perplexity → Searxng → DuckDuckGo).
     #[default]
     Auto,
 }
@@ -192,6 +194,8 @@ pub struct WebConfig {
     pub tavily: TavilySearchConfig,
     /// Perplexity Search configuration.
     pub perplexity: PerplexitySearchConfig,
+    /// SearXNG Search configuration.
+    pub searxng: SearxngSearchConfig,
     /// Web fetch configuration.
     pub fetch: WebFetchConfig,
 }
@@ -204,6 +208,7 @@ impl Default for WebConfig {
             brave: BraveSearchConfig::default(),
             tavily: TavilySearchConfig::default(),
             perplexity: PerplexitySearchConfig::default(),
+            searxng: SearxngSearchConfig::default(),
             fetch: WebFetchConfig::default(),
         }
     }
@@ -279,6 +284,14 @@ impl Default for PerplexitySearchConfig {
             model: "sonar".to_string(),
         }
     }
+}
+
+/// SearXNG self-hosted search configuration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SearxngSearchConfig {
+    /// Base URL of the SearXNG instance (e.g., "https://search.example.com").
+    pub url: String,
 }
 
 /// Web fetch configuration.
@@ -3596,6 +3609,13 @@ impl KernelConfig {
                         "Perplexity search selected but {} is not set",
                         self.web.perplexity.api_key_env
                     ));
+                }
+            }
+            SearchProvider::Searxng => {
+                if self.web.searxng.url.is_empty() {
+                    warnings.push(
+                        "Searxng search selected but searxng.url is not configured".to_string(),
+                    );
                 }
             }
             SearchProvider::DuckDuckGo | SearchProvider::Auto => {}
