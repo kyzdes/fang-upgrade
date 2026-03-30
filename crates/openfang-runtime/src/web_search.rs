@@ -55,6 +55,7 @@ impl WebSearchEngine {
             SearchProvider::Tavily => self.search_tavily(query, max_results).await,
             SearchProvider::Perplexity => self.search_perplexity(query).await,
             SearchProvider::DuckDuckGo => self.search_duckduckgo(query, max_results).await,
+            SearchProvider::Searxng => self.search_searxng(query, max_results).await,
             SearchProvider::Auto => self.search_auto(query, max_results).await,
         };
 
@@ -67,7 +68,7 @@ impl WebSearchEngine {
     }
 
     /// Auto-select provider based on available API keys.
-    /// Priority: Tavily → Brave → Perplexity → DuckDuckGo
+    /// Priority: Tavily → Brave → Perplexity → Searxng → DuckDuckGo
     async fn search_auto(&self, query: &str, max_results: usize) -> Result<String, String> {
         // Tavily first (AI-agent-native)
         if resolve_api_key(&self.config.tavily.api_key_env).is_some() {
@@ -93,6 +94,15 @@ impl WebSearchEngine {
             match self.search_perplexity(query).await {
                 Ok(result) => return Ok(result),
                 Err(e) => warn!("Perplexity failed, falling back: {e}"),
+            }
+        }
+
+        // Searxng fourth (self-hosted, no API key needed)
+        if !self.config.searxng.url.is_empty() {
+            debug!("Auto: trying Searxng");
+            match self.search_searxng(query, max_results).await {
+                Ok(result) => return Ok(result),
+                Err(e) => warn!("Searxng failed, falling back: {e}"),
             }
         }
 
@@ -312,6 +322,99 @@ impl WebSearchEngine {
         }
 
         Ok(output)
+    }
+
+    /// Search via SearXNG self-hosted instance.
+    async fn search_searxng(&self, query: &str, max_results: usize) -> Result<String, String> {
+        if self.config.searxng.url.is_empty() {
+            return Err("SearXNG URL is not configured".to_string());
+        }
+
+        let limit = max_results.min(self.config.searxng.max_results);
+
+        debug!(query, "Searching via SearXNG");
+
+        let resp = self
+            .client
+            .get(format!("{}/search", self.config.searxng.url.trim_end_matches('/')))
+            .query(&[
+                ("q", query),
+                ("format", "json"),
+                ("engines", "general"),
+                ("limit", &limit.to_string()),
+            ])
+            .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
+            .send()
+            .await
+            .map_err(|e| format!("SearXNG request failed: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("SearXNG API returned {}", resp.status()));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SearxngResponse {
+            results: Vec<SearxngResult>,
+            query: String,
+        }
+
+        #[derive(serde::Deserialize)]
+        struct SearxngResult {
+            url: String,
+            title: String,
+            content: Option<String>,
+        }
+
+        let data: SearxngResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("SearXNG JSON parse failed: {e}"))?;
+
+        if data.results.is_empty() {
+            return Err(format!("No results found for '{query}' (SearXNG)."));
+        }
+
+        #[derive(serde::Serialize)]
+        struct OutputResult<'a> {
+            title: &'a str,
+            url: &'a str,
+            content: &'a str,
+        }
+
+        #[derive(serde::Serialize)]
+        struct Output<'a> {
+            query: &'a str,
+            results: Vec<OutputResult<'a>>,
+        }
+
+        let results: Vec<OutputResult> = data
+            .results
+            .iter()
+            .map(|r| OutputResult {
+                title: &r.title,
+                url: &r.url,
+                content: r.content.as_deref().unwrap_or(""),
+            })
+            .collect();
+
+        let output = Output {
+            query: &data.query,
+            results,
+        };
+
+        serde_json::to_string(&output)
+            .map_err(|e| format!("Failed to serialize SearXNG results: {e}"))
+    }
+
+    /// Return all non-Auto search providers (for provider listing/discovery).
+    pub fn all_providers() -> Vec<SearchProvider> {
+        vec![
+            SearchProvider::Brave,
+            SearchProvider::Tavily,
+            SearchProvider::Perplexity,
+            SearchProvider::DuckDuckGo,
+            SearchProvider::Searxng,
+        ]
     }
 }
 
