@@ -287,22 +287,11 @@ impl Default for PerplexitySearchConfig {
 }
 
 /// SearXNG self-hosted search configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SearxngSearchConfig {
     /// Base URL of the SearXNG instance (e.g., "https://search.example.com").
     pub url: String,
-    /// Maximum results to return.
-    pub max_results: usize,
-}
-
-impl Default for SearxngSearchConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            max_results: 5,
-        }
-    }
 }
 
 /// Web fetch configuration.

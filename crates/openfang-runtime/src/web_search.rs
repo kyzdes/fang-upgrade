@@ -330,7 +330,7 @@ impl WebSearchEngine {
             return Err("SearXNG URL is not configured".to_string());
         }
 
-        let limit = max_results.min(self.config.searxng.max_results);
+        let limit = max_results;
 
         debug!(query, "Searching via SearXNG");
 
