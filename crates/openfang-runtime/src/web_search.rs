@@ -341,7 +341,6 @@ impl WebSearchEngine {
                 ("q", query),
                 ("format", "json"),
                 ("engines", "general"),
-                ("limit", &limit.to_string()),
             ])
             .header("User-Agent", "Mozilla/5.0 (compatible; OpenFangAgent/0.1)")
             .send()
@@ -390,6 +389,7 @@ impl WebSearchEngine {
         let results: Vec<OutputResult> = data
             .results
             .iter()
+            .take(limit)
             .map(|r| OutputResult {
                 title: &r.title,
                 url: &r.url,
