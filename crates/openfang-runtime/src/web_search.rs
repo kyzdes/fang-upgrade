@@ -362,6 +362,8 @@ impl WebSearchEngine {
             url: String,
             title: String,
             content: Option<String>,
+            #[serde(alias = "pubdate")]
+            published_date: Option<String>,
         }
 
         let data: SearxngResponse = resp
@@ -378,6 +380,8 @@ impl WebSearchEngine {
             title: &'a str,
             url: &'a str,
             content: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            published_date: Option<&'a str>,
         }
 
         #[derive(serde::Serialize)]
@@ -394,6 +398,7 @@ impl WebSearchEngine {
                 title: &r.title,
                 url: &r.url,
                 content: r.content.as_deref().unwrap_or(""),
+                published_date: r.published_date.as_deref(),
             })
             .collect();
 
