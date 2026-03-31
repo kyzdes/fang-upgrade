@@ -745,6 +745,52 @@ mod tests {
     }
 
     #[test]
+    fn test_provider_defaults_novita() {
+        let d = provider_defaults("novita").unwrap();
+        assert_eq!(d.base_url, "https://api.novita.ai/openai/v1");
+        assert_eq!(d.api_key_env, "NOVITA_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_novita_ai_alias() {
+        let d = provider_defaults("novita-ai").unwrap();
+        assert_eq!(d.base_url, "https://api.novita.ai/openai/v1");
+        assert_eq!(d.api_key_env, "NOVITA_API_KEY");
+        assert!(d.key_required);
+    }
+
+    #[test]
+    fn test_novita_provider_with_env_key() {
+        let unique_key = "test-novita-key-12345";
+        std::env::set_var("NOVITA_API_KEY", unique_key);
+        let config = DriverConfig {
+            provider: "novita".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(
+            driver.is_ok(),
+            "Novita provider with env var should succeed"
+        );
+        std::env::remove_var("NOVITA_API_KEY");
+    }
+
+    #[test]
+    fn test_novita_provider_no_key_errors() {
+        let config = DriverConfig {
+            provider: "novita".to_string(),
+            api_key: None,
+            base_url: None,
+            skip_permissions: true,
+        };
+        let driver = create_driver(&config);
+        assert!(driver.is_err());
+    }
+
+    #[test]
     fn test_nvidia_provider_with_env_key() {
         // NVIDIA NIM is a known provider — set API key and verify driver creation succeeds.
         let unique_key = "test-nvidia-key-12345";
