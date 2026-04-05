@@ -332,6 +332,10 @@ pub async fn run_agent_loop(
 
     let mut total_usage = TokenUsage::default();
     let final_response;
+    // Accumulate text from intermediate iterations (tool_use turns may include text
+    // alongside tool calls — this text would otherwise be lost when the final
+    // EndTurn iteration has empty text).
+    let mut accumulated_text = String::new();
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
     // The full compaction system handles sophisticated summarization, but this prevents
@@ -524,20 +528,30 @@ pub async fn run_agent_loop(
                     }
                 }
 
-                // Guard against empty response — covers both iteration 0 and post-tool cycles
+                // Guard against empty response — covers both iteration 0 and post-tool cycles.
+                // Use accumulated_text from intermediate tool_use iterations as fallback.
                 let text = if text.trim().is_empty() {
-                    warn!(
-                        agent = %manifest.name,
-                        iteration,
-                        input_tokens = total_usage.input_tokens,
-                        output_tokens = total_usage.output_tokens,
-                        messages_count = messages.len(),
-                        "Empty response from LLM — guard activated"
-                    );
-                    if any_tools_executed {
-                        "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
+                    if !accumulated_text.is_empty() {
+                        debug!(
+                            agent = %manifest.name,
+                            accumulated_len = accumulated_text.len(),
+                            "Using accumulated text from intermediate tool_use iterations"
+                        );
+                        accumulated_text.clone()
                     } else {
-                        "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = total_usage.input_tokens,
+                            output_tokens = total_usage.output_tokens,
+                            messages_count = messages.len(),
+                            "Empty response from LLM — guard activated"
+                        );
+                        if any_tools_executed {
+                            "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
+                        } else {
+                            "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        }
                     }
                 } else {
                     text
@@ -657,6 +671,18 @@ pub async fn run_agent_loop(
                 // Reset MaxTokens continuation counter on tool use
                 consecutive_max_tokens = 0;
                 any_tools_executed = true;
+
+                // Capture any text content from this tool_use turn — the LLM may
+                // produce text alongside tool calls (e.g., a message to the user
+                // before calling memory_store). Without this, the text is lost if
+                // the next iteration returns EndTurn with empty text.
+                let intermediate_text = response.text();
+                if !intermediate_text.trim().is_empty() {
+                    if !accumulated_text.is_empty() {
+                        accumulated_text.push_str("\n\n");
+                    }
+                    accumulated_text.push_str(intermediate_text.trim());
+                }
 
                 // Execute tool calls
                 let assistant_blocks = response.content.clone();
@@ -1497,6 +1523,7 @@ pub async fn run_agent_loop_streaming(
 
     let mut total_usage = TokenUsage::default();
     let final_response;
+    let mut accumulated_text = String::new();
 
     // Safety valve: trim excessively long message histories to prevent context overflow.
     if messages.len() > MAX_HISTORY_MESSAGES {
@@ -1703,20 +1730,29 @@ pub async fn run_agent_loop_streaming(
                     }
                 }
 
-                // Guard against empty response — covers both iteration 0 and post-tool cycles
+                // Guard against empty response — use accumulated text as fallback (streaming).
                 let text = if text.trim().is_empty() {
-                    warn!(
-                        agent = %manifest.name,
-                        iteration,
-                        input_tokens = total_usage.input_tokens,
-                        output_tokens = total_usage.output_tokens,
-                        messages_count = messages.len(),
-                        "Empty response from LLM (streaming) — guard activated"
-                    );
-                    if any_tools_executed {
-                        "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
+                    if !accumulated_text.is_empty() {
+                        debug!(
+                            agent = %manifest.name,
+                            accumulated_len = accumulated_text.len(),
+                            "Using accumulated text from intermediate tool_use iterations (streaming)"
+                        );
+                        accumulated_text.clone()
                     } else {
-                        "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        warn!(
+                            agent = %manifest.name,
+                            iteration,
+                            input_tokens = total_usage.input_tokens,
+                            output_tokens = total_usage.output_tokens,
+                            messages_count = messages.len(),
+                            "Empty response from LLM (streaming) — guard activated"
+                        );
+                        if any_tools_executed {
+                            "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
+                        } else {
+                            "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        }
                     }
                 } else {
                     text
@@ -1815,6 +1851,15 @@ pub async fn run_agent_loop_streaming(
                 // Reset MaxTokens continuation counter on tool use
                 consecutive_max_tokens = 0;
                 any_tools_executed = true;
+
+                // Capture text from intermediate tool_use turns (streaming path).
+                let intermediate_text = response.text();
+                if !intermediate_text.trim().is_empty() {
+                    if !accumulated_text.is_empty() {
+                        accumulated_text.push_str("\n\n");
+                    }
+                    accumulated_text.push_str(intermediate_text.trim());
+                }
 
                 let assistant_blocks = response.content.clone();
 
