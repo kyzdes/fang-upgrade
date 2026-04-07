@@ -56,45 +56,11 @@
     </div>
 
     <div class="sidebar-nav" role="navigation" aria-label="Main navigation">
-      <!-- Chat — primary action -->
-      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Chat">
-        <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Chat</span>
-          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
-        </div>
-        <template x-if="!collapsed">
-          <div x-transition>
-            <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
-              <span class="nav-label">Chat</span>
-            </a>
-          </div>
-        </template>
-      </div>
-
-      <!-- Monitor -->
-      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
-        <div class="nav-section-title" @click="collapsed = !collapsed">
-          <span class="nav-label">Monitor</span>
-          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
-        </div>
-        <template x-if="!collapsed">
-          <div x-transition>
-            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false">
+      <!-- Overview — primary action as first screen -->
+            <a class="nav-item" :class="{ active: page === 'overview' }" @click="navigate('overview')" :aria-current="page === 'overview' ? 'page' : false" style="margin-bottom: 4px;">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg></span>
               <span class="nav-label">Overview</span>
             </a>
-            <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
-              <span class="nav-label">Analytics</span>
-            </a>
-            <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
-              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
-              <span class="nav-label">Logs</span>
-            </a>
-          </div>
-        </template>
-      </div>
 
       <!-- Agents -->
       <div class="nav-section" x-data="{ collapsed: false }" aria-label="Agents">
@@ -104,6 +70,10 @@
         </div>
         <template x-if="!collapsed">
           <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'agents' }" @click="navigate('agents')" :aria-current="page === 'agents' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span>
+              <span class="nav-label">Chat</span>
+            </a>
             <a class="nav-item" :class="{ active: page === 'sessions' }" @click="navigate('sessions')" :aria-current="page === 'sessions' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m12 2-10 5 10 5 10-5z"/><path d="m2 17 10 5 10-5"/><path d="m2 12 10 5 10-5"/></svg></span>
               <span class="nav-label">Sessions</span>
@@ -160,6 +130,26 @@
             <a class="nav-item" :class="{ active: page === 'hands' }" @click="navigate('hands')" :aria-current="page === 'hands' ? 'page' : false">
               <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v6"/><path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-5.7-2.4L3.4 16a2 2 0 0 1 3.2-2.4L8 15"/></svg></span>
               <span class="nav-label">Hands</span>
+            </a>
+          </div>
+        </template>
+      </div>
+
+      <!-- Monitor -->
+      <div class="nav-section" x-data="{ collapsed: false }" aria-label="Monitor">
+        <div class="nav-section-title" @click="collapsed = !collapsed">
+          <span class="nav-label">Monitor</span>
+          <span class="nav-section-chevron" :style="collapsed ? '' : 'transform:rotate(90deg)'">&rsaquo;</span>
+        </div>
+        <template x-if="!collapsed">
+          <div x-transition>
+            <a class="nav-item" :class="{ active: page === 'analytics' }" @click="navigate('analytics')" :aria-current="page === 'analytics' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></svg></span>
+              <span class="nav-label">Analytics</span>
+            </a>
+            <a class="nav-item" :class="{ active: page === 'logs' }" @click="navigate('logs')" :aria-current="page === 'logs' ? 'page' : false">
+              <span class="nav-icon"><svg viewBox="0 0 24 24"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg></span>
+              <span class="nav-label">Logs</span>
             </a>
           </div>
         </template>
@@ -869,7 +859,7 @@
                   </div>
                   <span class="badge" :class="'badge-' + agent.state.toLowerCase()" x-text="agent.state" style="font-size:10px"></span>
                   <button class="agent-chip-config-btn" @click.stop="showDetail(agent)" title="Agent settings" style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;border:1px solid var(--border);background:transparent;cursor:pointer;color:var(--text-dim);transition:all 0.15s;flex-shrink:0" @mouseenter="$el.style.borderColor='var(--accent)';$el.style.color='var(--accent)';$el.style.background='var(--surface2)'" @mouseleave="$el.style.borderColor='var(--border)';$el.style.color='var(--text-dim)';$el.style.background='transparent'">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                   </button>
                 </div>
               </template>

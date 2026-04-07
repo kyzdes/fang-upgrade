@@ -120,11 +120,11 @@
 }
 
 .nav-section-title {
-  font-size: 9px;
+  font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 1.5px;
   color: var(--text-muted);
-  padding: 12px 12px 4px;
+  padding: 12px 12px 6px 3px;
   font-weight: 600;
 }
 

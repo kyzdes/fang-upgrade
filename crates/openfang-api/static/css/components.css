@@ -2693,7 +2693,7 @@ mark.search-highlight {
   justify-content: space-between;
 }
 .nav-section-chevron {
-  font-size: 8px;
+  font-size: 16px;
   transition: transform var(--transition-fast);
   color: var(--text-muted);
 }
