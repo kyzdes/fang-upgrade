@@ -262,6 +262,23 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
+/// Strip trailing empty assistant messages from the message list.
+/// Some API proxies (e.g. Copilot proxying Claude/Gemini) reject these as
+/// unsupported "assistant message prefill".
+fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
+    while messages.last().map_or(false, |m| {
+        m.role == "assistant"
+            && m.tool_calls.is_none()
+            && match &m.content {
+                None => true,
+                Some(OaiMessageContent::Text(t)) => t.trim().is_empty(),
+                _ => false,
+            }
+    }) {
+        messages.pop();
+    }
+}
+
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
@@ -416,6 +433,8 @@ impl LlmDriver for OpenAIDriver {
                 _ => {}
             }
         }
+
+        strip_trailing_empty_assistant(&mut oai_messages);
 
         let oai_tools: Vec<OaiTool> = request
             .tools
@@ -872,6 +891,8 @@ impl LlmDriver for OpenAIDriver {
                 _ => {}
             }
         }
+
+        strip_trailing_empty_assistant(&mut oai_messages);
 
         let oai_tools: Vec<OaiTool> = request
             .tools
