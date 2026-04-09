@@ -1339,6 +1339,16 @@ impl LlmDriver for OpenAIDriver {
             }
 
             for (id, name, arguments) in &tool_accum {
+                // Skip malformed tool calls (empty ID or name can happen if
+                // streaming chunks arrive out of order or are dropped by proxy).
+                if id.is_empty() || name.is_empty() {
+                    warn!(
+                        tool_id = %id,
+                        tool_name = %name,
+                        "Skipping tool call with empty ID or name from streaming response"
+                    );
+                    continue;
+                }
                 let input: serde_json::Value =
                     serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
                 content.push(ContentBlock::ToolUse {
