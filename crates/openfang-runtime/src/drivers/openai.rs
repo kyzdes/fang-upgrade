@@ -464,24 +464,6 @@ impl LlmDriver for OpenAIDriver {
             (Some(request.max_tokens), None)
         };
 
-        // Debug: log message structure for troubleshooting Copilot proxy issues
-        for (i, msg) in oai_messages.iter().enumerate() {
-            let tc_info = msg.tool_calls.as_ref().map(|tcs| {
-                tcs.iter()
-                    .map(|tc| format!("{}:{}", tc.id, tc.function.name))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            });
-            debug!(
-                idx = i,
-                role = %msg.role,
-                has_content = msg.content.is_some(),
-                tool_call_id = ?msg.tool_call_id,
-                tool_calls = ?tc_info,
-                "OAI message"
-            );
-        }
-
         let mut oai_request = OaiRequest {
             model: request.model.clone(),
             messages: oai_messages,
