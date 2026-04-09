@@ -3490,6 +3490,15 @@ impl OpenFangKernel {
         let saved_triggers = old_agent_id
             .map(|id| self.triggers.take_agent_triggers(id))
             .unwrap_or_default();
+        // Snapshot cron jobs before kill_agent destroys them. kill_agent calls
+        // remove_agent_jobs() which deletes the jobs from memory and persists
+        // an empty cron_jobs.json to disk. The reassign_agent_jobs() call below
+        // would always be a no-op without this snapshot — same pattern as
+        // saved_triggers above. Fixes the silent loss of cron jobs across
+        // every daemon restart for hand-style agents.
+        let saved_crons: Vec<openfang_types::scheduler::CronJob> = old_agent_id
+            .map(|id| self.cron_scheduler.list_jobs(id))
+            .unwrap_or_default();
         if let Some(old) = existing {
             info!(agent = %old.name, id = %old.id, "Removing existing hand agent for reactivation");
             let _ = self.kill_agent(old.id);
@@ -3520,9 +3529,38 @@ impl OpenFangKernel {
             }
         }
 
-        // Migrate cron jobs from old agent to new agent so they survive restarts.
-        // Without this, persisted cron jobs would reference the stale old UUID
-        // and fail silently (issue #461).
+        // Restore cron jobs that were snapshotted before kill_agent. They're
+        // re-added under the new agent_id (which equals old.id when fixed_id is
+        // derived from hand_id, but be explicit). Runtime state is reset so
+        // jobs get a fresh start.
+        if !saved_crons.is_empty() {
+            let mut restored = 0usize;
+            for mut job in saved_crons {
+                job.agent_id = agent_id;
+                job.next_run = None;
+                job.last_run = None;
+                if self.cron_scheduler.add_job(job, false).is_ok() {
+                    restored += 1;
+                }
+            }
+            if restored > 0 {
+                info!(
+                    agent = %agent_id,
+                    restored,
+                    "Restored cron jobs after hand reactivation"
+                );
+                if let Err(e) = self.cron_scheduler.persist() {
+                    warn!("Failed to persist cron jobs after restoration: {e}");
+                }
+            }
+        }
+
+        // Belt-and-braces: also reassign any jobs that somehow still reference
+        // the old UUID (shouldn't happen after the snapshot/restore above, but
+        // kept as a safety net for edge cases like out-of-band cron creation
+        // between kill and respawn). Removed reassign as primary path because
+        // kill_agent's remove_agent_jobs always wipes saved_crons before this
+        // could fire — see issue with #461's original fix.
         if let Some(old_id) = old_agent_id {
             let migrated = self.cron_scheduler.reassign_agent_jobs(old_id, agent_id);
             if migrated > 0 {
