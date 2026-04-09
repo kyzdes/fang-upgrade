@@ -262,18 +262,13 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
-/// Strip trailing empty assistant messages from the message list.
-/// Some API proxies (e.g. Copilot proxying Claude/Gemini) reject these as
-/// unsupported "assistant message prefill".
+/// Strip trailing assistant messages without tool calls from the message list.
+/// The Copilot API proxy for Claude rejects conversations ending with an
+/// assistant message as unsupported "assistant message prefill". Assistant
+/// messages with tool_calls are kept (they're part of the tool call protocol).
 fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
     while messages.last().map_or(false, |m| {
-        m.role == "assistant"
-            && m.tool_calls.is_none()
-            && match &m.content {
-                None => true,
-                Some(OaiMessageContent::Text(t)) => t.trim().is_empty(),
-                _ => false,
-            }
+        m.role == "assistant" && m.tool_calls.is_none()
     }) {
         messages.pop();
     }
