@@ -262,19 +262,27 @@ struct OaiUsage {
     completion_tokens: u64,
 }
 
-/// Strip trailing empty assistant messages without tool calls.
-/// Some API proxies (e.g. Copilot proxying Claude) reject conversations
-/// ending with an empty assistant message as "assistant message prefill".
-/// Only strips messages with no content and no tool_calls — non-empty
-/// assistant messages are kept to avoid breaking the agent loop.
-fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>) {
+/// Strip trailing assistant messages that would trigger "prefill not supported"
+/// errors on the Copilot proxy for Claude models.
+/// Only strips assistant messages that have no tool_calls (tool call messages
+/// are part of the protocol and must stay). Checks the model name to only
+/// apply for Claude models which enforce this restriction.
+fn strip_trailing_empty_assistant(messages: &mut Vec<OaiMessage>, model: &str) {
+    let is_claude = model.contains("claude");
+
     while messages.last().map_or(false, |m| {
         m.role == "assistant"
             && m.tool_calls.is_none()
-            && match &m.content {
-                None => true,
-                Some(OaiMessageContent::Text(t)) => t.trim().is_empty(),
-                _ => false,
+            && if is_claude {
+                // Claude via Copilot: strip any trailing assistant without tool_calls
+                true
+            } else {
+                // Other models: only strip truly empty messages
+                match &m.content {
+                    None => true,
+                    Some(OaiMessageContent::Text(t)) => t.trim().is_empty(),
+                    _ => false,
+                }
             }
     }) {
         messages.pop();
@@ -436,7 +444,7 @@ impl LlmDriver for OpenAIDriver {
             }
         }
 
-        strip_trailing_empty_assistant(&mut oai_messages);
+        strip_trailing_empty_assistant(&mut oai_messages, &request.model);
 
         let oai_tools: Vec<OaiTool> = request
             .tools
@@ -895,7 +903,7 @@ impl LlmDriver for OpenAIDriver {
             }
         }
 
-        strip_trailing_empty_assistant(&mut oai_messages);
+        strip_trailing_empty_assistant(&mut oai_messages, &request.model);
 
         let oai_tools: Vec<OaiTool> = request
             .tools
