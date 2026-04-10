@@ -484,9 +484,7 @@ pub async fn get_agent_session(
             let filtered_messages: Vec<&openfang_types::message::Message> = session
                 .messages
                 .iter()
-                .filter(|m| {
-                    include_system || m.role != openfang_types::message::Role::System
-                })
+                .filter(|m| include_system || m.role != openfang_types::message::Role::System)
                 .collect();
 
             // Two-pass approach: ToolUse blocks live in Assistant messages while
