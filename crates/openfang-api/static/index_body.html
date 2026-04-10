@@ -4491,7 +4491,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           </div>
 
           <!-- Send Message Modal -->
-          <div x-show="showSendModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showSendModal=false" x-transition>
+          <div style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showSendModal=false" :style="{ display: showSendModal ? 'flex' : 'none' }" x-transition>
             <div class="card" style="width:420px;max-width:90vw" @click.stop>
               <div class="card-header">Send Agent Message</div>
               <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
@@ -4529,7 +4529,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]</pre>
           </div>
 
           <!-- Post Task Modal -->
-          <div x-show="showTaskModal" style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" @click.self="showTaskModal=false" x-transition>
+          <div style="position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.5);backdrop-filter:blur(4px)" :style="{ display: showTaskModal ? 'flex' : 'none' }" @click.self="showTaskModal=false" x-transition>
             <div class="card" style="width:420px;max-width:90vw" @click.stop>
               <div class="card-header">Post Task</div>
               <div style="display:flex;flex-direction:column;gap:12px;margin-top:12px">
