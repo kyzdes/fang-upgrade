@@ -176,21 +176,13 @@ of this repository because they contain output from our own instance.
 
 Licence and copyright are upstream's: Apache-2.0 OR MIT.
 
-## A note on CI
+## CI
 
-Upstream's `.github/workflows/` is not included here. Two reasons: the token used to publish
-this repo lacks GitHub's `workflow` scope, and upstream's own CI is currently red on
-`feishu.rs` (`clippy::question_mark`) regardless of these changes.
+Upstream's `.github/workflows/` is included as-is. Note that upstream's own CI is currently
+red on `feishu.rs` (`clippy::question_mark`), independently of anything changed here — so a
+red run on a fresh fork is not necessarily your doing.
 
-If you want it, copy it from upstream:
-
-```bash
-git remote add upstream https://github.com/RightNow-AI/openfang.git
-git fetch upstream
-git checkout upstream/main -- .github/workflows
-```
-
-The checks themselves are worth running locally:
+Worth running locally either way:
 
 ```bash
 cargo test --workspace
