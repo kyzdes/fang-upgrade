@@ -175,3 +175,24 @@ at [kyzdes/openfang](https://github.com/kyzdes/openfang) under `tests/fang/`. Th
 of this repository because they contain output from our own instance.
 
 Licence and copyright are upstream's: Apache-2.0 OR MIT.
+
+## A note on CI
+
+Upstream's `.github/workflows/` is not included here. Two reasons: the token used to publish
+this repo lacks GitHub's `workflow` scope, and upstream's own CI is currently red on
+`feishu.rs` (`clippy::question_mark`) regardless of these changes.
+
+If you want it, copy it from upstream:
+
+```bash
+git remote add upstream https://github.com/RightNow-AI/openfang.git
+git fetch upstream
+git checkout upstream/main -- .github/workflows
+```
+
+The checks themselves are worth running locally:
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
