@@ -1,0 +1,41 @@
+=== FANG-40-sigterm.sh as committed at 8990041, run against openfang:sprint3 ===
+date  : 2026-08-14T17:25Z
+why   : sprint3 is the image from before the whole FANG-40 change. Its reload
+        does not stop the adapter, so there is no drain, nothing is in flight
+        when the SIGTERM lands, and the daemon exits cleanly because it was
+        never in the trap. The script's only criterion was OF40S_STOP_RC=0, so
+        it called that GREEN: the guard passed on the unfixed image.
+
+        Note OF40S_RELOAD_SECS=3.64 in the run below. It is not a drain: the
+        reload is the two "hot-reload complete" lines 2 ms apart in the log.
+        The 3.64 s is the script's own `sleep 3` plus the stop it then timed.
+
+=== FANG-40 follow-up · SIGTERM during a channel hot-reload ===
+date              : 2026-08-14T17:25:17Z
+image             : openfang:sprint3 (sha256:cbbebc3f9e38)
+container         : of-sigterm-probe on http://127.0.0.1:4207, volume of-sigterm-probe-data
+stub long-poll    : 30s     docker stop grace: 10s
+
+--- control: SIGTERM with a 30s long-poll outstanding, no reload ---
+docker stop: 0.44s  exit=0
+
+--- experiment: SIGTERM 3 s into a reload that is draining the long-poll ---
+docker stop: 0.61s  exit=0
+
+--- daemon log (tail) ---
+2026-08-14T17:25:25.384920595Z 2026-08-14T17:25:25.384790Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T17:25:25.387954826Z 2026-08-14T17:25:25.387850Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T17:25:27.412815614Z 2026-08-14T17:25:27.411513Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T17:25:27.412824588Z 2026-08-14T17:25:27.412221Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T17:25:27.414601980Z 2026-08-14T17:25:27.414354Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T17:25:30.483573797Z 2026-08-14T17:25:30.483335Z  INFO openfang_api::server: Received SIGTERM, shutting down...
+2026-08-14T17:25:30.485844582Z 2026-08-14T17:25:30.485776Z  INFO openfang_api::server: OpenFang daemon stopped
+2026-08-14T17:25:30.485875419Z   OpenFang daemon stopped.
+
+OF40S_RELOAD_SECS=3.64
+OF40S_STOP_SECS=0.61
+OF40S_STOP_RC=0              # 0 = clean exit, 137 = SIGKILL after the grace ran out
+OF40S_PLAIN_STOP_SECS=0.44
+OF40S_PLAIN_STOP_RC=0
+
+RESULT: GREEN — the daemon reached its own exit path inside the 10s grace

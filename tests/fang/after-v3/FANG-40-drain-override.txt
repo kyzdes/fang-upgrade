@@ -1,0 +1,33 @@
+=== OPENFANG_SHUTDOWN_DRAIN_SECS: a parseable value that killed the daemon ===
+
+=== OPENFANG_SHUTDOWN_DRAIN_SECS=1e30 · openfang:fang40b (the image under review) ===
+date  : 2026-08-14T17:48:17Z
+cmd   : docker run --rm -e OPENFANG_SHUTDOWN_DRAIN_SECS=1e30 openfang:fang40b start
+
+The value parses as an f64, so shutdown_drain_timeout() accepted it and handed
+it to Duration::from_secs_f64, which panics on anything it cannot represent.
+The call sits before axum::serve, i.e. on the START path, so the daemon dies on
+the way up — the opposite of what the function's own doc-comment promised
+("ignored rather than fatal ... this runs on the shutdown path").
+
+[2m2026-08-14T17:48:17.638485Z[0m [32m INFO[0m [2mopenfang_kernel::kernel[0m[2m:[0m OpenFang kernel booted successfully
+[2m2026-08-14T17:48:17.638623Z[0m [32m INFO[0m [2mopenfang_kernel::kernel[0m[2m:[0m Heartbeat monitor started (interval: 30s)
+[2m2026-08-14T17:48:17.638635Z[0m [32m INFO[0m [2mopenfang_kernel::kernel[0m[2m:[0m Memory consolidation scheduled every 24 hour(s)
+[2m2026-08-14T17:48:17.658984Z[0m [32m INFO[0m [2mopenfang_api::server[0m[2m:[0m OpenFang API server listening on http://127.0.0.1:4200
+[2m2026-08-14T17:48:17.659005Z[0m [32m INFO[0m [2mopenfang_api::server[0m[2m:[0m WebChat UI available at http://127.0.0.1:4200/
+[2m2026-08-14T17:48:17.659009Z[0m [32m INFO[0m [2mopenfang_api::server[0m[2m:[0m WebSocket endpoint: ws://127.0.0.1:4200/api/agents/{id}/ws
+
+thread 'main' (1) panicked at /rustc/8bab26f4f68e0e26f0bb7960be334d5b520ea452/library/core/src/time.rs:962:23:
+cannot convert float seconds to Duration: value is either too big or NaN
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+process exit code: 101   (101 = panic)
+
+
+=== the same value on openfang:fang40c (patched) ===
+date  : 2026-08-14T18:01:38Z
+
+{"status":"ok","version":"0.6.9"}   <- GET /api/health after boot
+2026-08-14T18:01:17.031607Z  INFO openfang_api::server: OpenFang API server listening on http://0.0.0.0:4200
+2026-08-14T18:01:17.031675Z  WARN openfang_api::server: Ignoring unusable OPENFANG_SHUTDOWN_DRAIN_SECS="1e30"; using the 3s default
+exit code after docker stop -t 10: 0

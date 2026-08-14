@@ -19,7 +19,8 @@ use tower_http::trace::TraceLayer;
 use tracing::{info, warn};
 
 /// How long the daemon lets in-flight HTTP requests finish after a shutdown
-/// signal before it closes them and proceeds with its own exit path.
+/// signal before it stops waiting for them and proceeds with its own exit path.
+/// It does not close them — see the WARN on the timeout branch.
 ///
 /// This is a budget, not a preference. Everything the daemon does on the way
 /// out happens *after* `axum::serve(..).with_graceful_shutdown(..).await`
@@ -964,9 +965,13 @@ pub async fn run_daemon(
             match tokio::time::timeout(drain_timeout, &mut serve).await {
                 Ok(result) => result,
                 Err(_) => {
+                    // Not "closing them": dropping the `serve` future stops
+                    // accepting and stops waiting, but axum's per-connection
+                    // tasks are `tokio::spawn`ed and outlive it. They end when
+                    // the process does, a few lines below.
                     warn!(
                         "Requests still in flight after {}s of graceful shutdown; \
-                         closing them and continuing to exit",
+                         leaving them and continuing to exit",
                         drain_timeout.as_secs_f32()
                     );
                     Ok(())
@@ -987,21 +992,33 @@ pub async fn run_daemon(
     //
     // Both halves of that are measured by tests/fang/FANG-40-sigterm.sh against
     // a stub whose getUpdates holds for 30 s (output in
-    // tests/fang/after-v2/FANG-40-sigterm.txt). `OF40S_PLAIN_STOP_SECS` is a
+    // tests/fang/after-v3/FANG-40-sigterm.txt). `OF40S_PLAIN_STOP_SECS` is a
     // whole SIGTERM-to-exit with such a poll outstanding and stays under a
-    // second; `OF40S_RELOAD_SECS`, the same drain taken by hot-reload's
-    // `stop()`, is the remainder of the poll.
+    // second; `OF40S_DRAIN_SECS` is the same poll drained by hot-reload's
+    // `stop()` and runs to the remainder of the poll — the two numbers are
+    // seconds apart in the same run, which is the point of using different
+    // stops in the two places.
     //
-    // `try_lock` rather than `lock`: a hot-reload holding this mutex is exactly
-    // the case that gets us here on a deadline, and blocking on it would undo
-    // the bounded drain above. Losing the race costs nothing — the reload owns
-    // the bridge and the process is about to exit.
+    // `try_lock` rather than `lock`: nothing here may block on a mutex a
+    // request handler holds, on a deadline the supervisor is counting down.
+    // `reload_channels_from_disk` no longer holds it across its drain — it
+    // `take()`s the bridge and drains it unlocked — so contention is a short
+    // window around two moves rather than the ~30 s it used to be, and losing
+    // the race costs nothing: the reload owns that bridge and is stopping it
+    // itself.
+    //
+    // The empty slot is the more likely of the two: for the length of a reload
+    // the mutex holds `None`, so a SIGTERM arriving then finds nothing to stop.
+    // Both cases are logged, because in both of them this line stops no adapter
+    // and a silent skip here is indistinguishable from a clean stop in the log.
     match state.bridge_manager.try_lock() {
-        Ok(mut guard) => {
-            if let Some(ref mut b) = *guard {
-                b.stop_fast().await;
-            }
-        }
+        Ok(mut guard) => match *guard {
+            Some(ref mut b) => b.stop_fast().await,
+            None => info!(
+                "No channel bridge to stop at shutdown \
+                 (none configured, or a hot-reload holds it)"
+            ),
+        },
         Err(_) => {
             warn!("Channel hot-reload in progress at shutdown; leaving its bridge to the exit");
         }
@@ -1041,21 +1058,51 @@ pub fn read_daemon_info(home_dir: &Path) -> Option<DaemonInfo> {
 /// [`SHUTDOWN_DRAIN_TIMEOUT_DEFAULT`].
 ///
 /// `OPENFANG_SHUTDOWN_DRAIN_SECS` overrides it; `0` disables draining entirely
-/// (in-flight requests are cut immediately). An unparseable value is ignored
-/// rather than fatal: this runs on the shutdown path, where refusing to start
-/// is not an option and the default is always safe.
+/// (in-flight requests are cut immediately).
+///
+/// Resolved once at **startup**, before `axum::serve`, because the value has to
+/// be in hand before the signal lands — so a bad value must not be fatal. It
+/// used to be: `Duration::from_secs_f64` panics on a value it cannot represent,
+/// and `1e30` parses as an `f64` perfectly well, so
+/// `OPENFANG_SHUTDOWN_DRAIN_SECS=1e30` aborted the daemon at boot with
+/// "cannot convert float seconds to Duration" and exit 101 — a shutdown knob
+/// taking the process down on the way up. Every rejected value now falls back to
+/// the default with a warning.
+///
+/// Not clamped at the top end: a representable-but-huge value is a deliberate
+/// "wait as long as it takes", which defeats the bound this exists to impose.
+/// That is the operator's call to make, and the supervisor's SIGKILL is the
+/// backstop.
 fn shutdown_drain_timeout() -> std::time::Duration {
-    match std::env::var("OPENFANG_SHUTDOWN_DRAIN_SECS") {
-        Ok(raw) => match raw.trim().parse::<f64>() {
-            Ok(secs) if secs.is_finite() && secs >= 0.0 => {
-                std::time::Duration::from_secs_f64(secs)
-            }
-            _ => {
-                warn!("Ignoring unparseable OPENFANG_SHUTDOWN_DRAIN_SECS={raw:?}");
-                SHUTDOWN_DRAIN_TIMEOUT_DEFAULT
-            }
-        },
-        Err(_) => SHUTDOWN_DRAIN_TIMEOUT_DEFAULT,
+    parse_drain_timeout(std::env::var("OPENFANG_SHUTDOWN_DRAIN_SECS").ok().as_deref())
+}
+
+/// The body of [`shutdown_drain_timeout`], without the environment.
+///
+/// Split out so the parsing is testable without `set_var`, which is racy across
+/// a test binary's threads and unsafe from Rust 2024 on.
+fn parse_drain_timeout(raw: Option<&str>) -> std::time::Duration {
+    let Some(raw) = raw else {
+        return SHUTDOWN_DRAIN_TIMEOUT_DEFAULT;
+    };
+    // `try_from_secs_f64` is the whole point: it rejects NaN, infinity,
+    // negatives and anything too large for a `Duration` by returning `Err`
+    // instead of panicking.
+    match raw
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .and_then(|secs| std::time::Duration::try_from_secs_f64(secs).ok())
+    {
+        Some(d) => d,
+        None => {
+            warn!(
+                "Ignoring unusable OPENFANG_SHUTDOWN_DRAIN_SECS={raw:?}; \
+                 using the {}s default",
+                SHUTDOWN_DRAIN_TIMEOUT_DEFAULT.as_secs_f32()
+            );
+            SHUTDOWN_DRAIN_TIMEOUT_DEFAULT
+        }
     }
 }
 
@@ -1149,5 +1196,49 @@ fn is_daemon_responding(addr: &str) -> bool {
         std::net::TcpStream::connect(addr_only)
             .map(|_| true)
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_drain_timeout, SHUTDOWN_DRAIN_TIMEOUT_DEFAULT};
+    use std::time::Duration;
+
+    /// `OPENFANG_SHUTDOWN_DRAIN_SECS` is read at startup, so no value of it may
+    /// stop the daemon from starting.
+    ///
+    /// Before this was fixed, every input on the second list below reached
+    /// `Duration::from_secs_f64` and panicked there — the daemon printed
+    /// "OpenFang API server listening on ..." and then died with
+    /// "cannot convert float seconds to Duration" and exit 101.
+    #[test]
+    fn no_value_of_the_drain_override_can_stop_the_daemon_starting() {
+        // Honoured.
+        assert_eq!(parse_drain_timeout(Some("0")), Duration::ZERO);
+        assert_eq!(parse_drain_timeout(Some("7")), Duration::from_secs(7));
+        assert_eq!(parse_drain_timeout(Some(" 2.5 ")), Duration::from_secs_f64(2.5));
+
+        // Rejected, each falling back to the default rather than aborting.
+        for raw in [
+            "1e30",     // parses as f64, far too large for a Duration
+            "1e400",    // parses as f64 infinity
+            "inf",
+            "-inf",
+            "NaN",
+            "-1",
+            "",
+            "  ",
+            "three",
+            "3s",
+        ] {
+            assert_eq!(
+                parse_drain_timeout(Some(raw)),
+                SHUTDOWN_DRAIN_TIMEOUT_DEFAULT,
+                "{raw:?} should fall back to the default"
+            );
+        }
+
+        // Unset.
+        assert_eq!(parse_drain_timeout(None), SHUTDOWN_DRAIN_TIMEOUT_DEFAULT);
     }
 }

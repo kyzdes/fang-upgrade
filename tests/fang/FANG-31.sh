@@ -6,8 +6,17 @@
 # What this script measures (the metric that must go to 0 after the fix):
 #   OF31_409_COUNT   — number of "Telegram 409 Conflict" WARNs caused by ONE
 #                      `POST /api/channels/reload` while a long-poll is in flight
-#   OF31_DEAF_SECS   — seconds between the reload and the first getUpdates that
-#                      the (emulated) Telegram server actually accepted
+#   OF31_REATTACHED  — whether the stub accepted a fresh getUpdates after the
+#                      reload, i.e. the channel is listening again and not
+#                      merely quiet
+#
+# OF31_DEAF_SECS is gone. It was the difference between two unrelated stub
+# timestamps — the last accepted getUpdates and the first 409 — and when the fix
+# works there are no 409s at all, so its second term defaulted to 0 and the
+# "duration" printed was just the absolute age of the stub. It was garbage
+# precisely in the case the fix produces, which is the worst possible place for
+# a number nobody can read as anything but a measurement. What it was reaching
+# for is above, as a yes/no.
 #
 # How it works: a stub Telegram Bot API is started inside the target daemon's
 # network namespace and enforces Telegram's single-reader rule (409 while another
@@ -151,18 +160,19 @@ echo "poller attached, long-poll in flight (timeout=30s)"
 
 # ------------------------------------------------------------- the experiment --
 BEFORE="$(docker logs "$CONTAINER" 2>&1 | grep -c '409 Conflict')"
-T_RELOAD="$(date +%s)"
+ACC_BEFORE="$(grep -c "getUpdates ACCEPTED" "$WORK/stub.log")"
 echo "--- POST /api/channels/reload while the long-poll is in flight ---"
 api POST /api/channels/reload '{}'; echo
 sleep 45
 
 AFTER="$(docker logs "$CONTAINER" 2>&1 | grep -c '409 Conflict')"
 OF31_409_COUNT=$((AFTER - BEFORE))
-ACC="$(grep -n "getUpdates ACCEPTED" "$WORK/stub.log" | tail -1 | cut -d: -f1)"
-T_OK="$(awk -v n="$ACC" 'NR==n{print $1}' "$WORK/stub.log")"
-T_RL="$(grep -n "getUpdates 409" "$WORK/stub.log" | head -1 | cut -d: -f1)"
-T_FIRST409="$(awk -v n="$T_RL" 'NR==n{print $1}' "$WORK/stub.log")"
-OF31_DEAF_SECS="$(python3 -c "print('%.1f' % (${T_OK:-0} - ${T_FIRST409:-0}))" 2>/dev/null)"
+ACC_AFTER="$(grep -c "getUpdates ACCEPTED" "$WORK/stub.log")"
+if [ "${ACC_AFTER:-0}" -gt "${ACC_BEFORE:-0}" ]; then
+  OF31_REATTACHED=yes
+else
+  OF31_REATTACHED=no
+fi
 
 echo
 echo "--- stub view (one line per getUpdates) ---"
@@ -173,6 +183,14 @@ docker logs --timestamps --since 3m "$CONTAINER" 2>&1 | sed 's/\x1b\[[0-9;]*m//g
   | grep -E "Shutting down channel adapter|polling loop stopped|bot @|409 Conflict|hot-reload complete"
 echo
 echo "OF31_409_COUNT=$OF31_409_COUNT      # 409 WARNs caused by one reload (want 0)"
-echo "OF31_DEAF_SECS=$OF31_DEAF_SECS      # channel deaf after reload, seconds (want ~0)"
-[ "$OF31_409_COUNT" -gt 0 ] && echo "RESULT: RED — reload collides with the abandoned long-poll" \
-                            || echo "RESULT: GREEN — no conflict on reload"
+echo "OF31_REATTACHED=$OF31_REATTACHED   # stub accepted a getUpdates after the reload (want yes)"
+echo
+if [ "$OF31_409_COUNT" -gt 0 ]; then
+  echo "RESULT: RED — reload collides with the abandoned long-poll"
+  exit 1
+elif [ "$OF31_REATTACHED" != "yes" ]; then
+  echo "RESULT: RED — no 409s, but the channel never polled again after the reload"
+  exit 1
+else
+  echo "RESULT: GREEN — no conflict on reload, and the channel is polling again"
+fi

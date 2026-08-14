@@ -1,0 +1,88 @@
+=== FANG-40 · shutdown-arm audit vs two one-line evasions ===
+date  : 2026-08-14T17:46:48Z
+what  : crates/openfang-channels/tests/shutdown_arm_audit.rs compiled with
+        `rustc --test` (it is std-only) against three copies of
+        crates/openfang-channels/src:
+
+          pristine  the crate as committed
+          varA      bluesky.rs:374, the single line `break;` deleted — the
+                    shutdown arm now only logs, falls through, and the
+                    enclosing loop re-enters select! on a permanently ready
+                    future: the FANG-40 spin, reintroduced
+          varB      mqtt.rs:292, `if changed.is_err() || *shutdown_rx.borrow()`
+                    turned into `if !changed.is_err() && *shutdown_rx.borrow()`
+                    — one `!` and one `&&`, and Err no longer reaches the break
+
+        audit_old.rs is the audit as committed at 8990041 ("walks the crate...
+        a new adapter cannot reintroduce the shape quietly"); audit_new.rs is
+        the strengthened one. Each is run over all three copies.
+
+--- audit_old.rs (8990041): passes on the crate AND on both defects ---
+=== audit_old.rs vs pristine ===
+
+running 3 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+=== audit_old.rs vs varA ===
+
+running 3 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+=== audit_old.rs vs varB ===
+
+running 3 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+
+--- audit_new.rs: passes on the crate, fails on both defects ---
+=== audit_new.rs vs pristine ===
+
+running 7 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test audit_accepts_the_correct_shapes ... ok
+test audit_rejects_every_known_spin_shape ... ok
+test exit_detection_ignores_strings_comments_and_nested_blocks ... ok
+test loop_detection_separates_re_entered_selects_from_one_shot_ones ... ok
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+=== audit_new.rs vs varA ===
+
+thread 'no_shutdown_arm_treats_a_closed_channel_as_keep_going' (69) panicked at /w/audit_new.rs:427:5:
+1 shutdown arm(s) can spin on a closed watch channel (FANG-40):
+  bluesky.rs:372 — discards changed() and does not leave the enclosing loop unconditionally: a closed channel re-arms a ready future
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    no_shutdown_arm_treats_a_closed_channel_as_keep_going
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+=== audit_new.rs vs varB ===
+
+thread 'no_shutdown_arm_treats_a_closed_channel_as_keep_going' (101) panicked at /w/audit_new.rs:427:5:
+1 shutdown arm(s) can spin on a closed watch channel (FANG-40):
+  mqtt.rs:286 — negates changed.is_err(), so a closed channel takes the fall-through branch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    no_shutdown_arm_treats_a_closed_channel_as_keep_going
+
+test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
