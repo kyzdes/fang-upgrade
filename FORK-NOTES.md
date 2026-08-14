@@ -34,7 +34,7 @@ by two different models across iterations and their tokens cannot be split after
   "response": "...",
   "model_used": "google/gemma-4-31b-it",
   "provider_used": "hyperfusion",
-  "fallback": {"used": true, "requested": "ark/glm-5.2",
+  "fallback": {"used": true, "calls": 1, "of": 2, "requested": "ark/glm-5.2",
                "served_by": ["google/gemma-4-31b-it"], "reason": "API error (502)"},
   "calls": [
     {"n": 0, "model": "google/gemma-4-31b-it", "requested": "ark/glm-5.2",
