@@ -47,6 +47,17 @@ RIG="$HERE/harness/fangrig"
 BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 CONTAINER="${OF_CONTAINER:-openfang-staging}"
 CONFIG="${OF_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}"
+
+# The target is a URL *and* a container *and* a config file, and fangrig —
+# which does the actual creating on the stand — reads all three from the
+# environment (harness/lib.sh:16-18), never from our argv. Without these
+# exports, `./FANG-x.sh http://127.0.0.1:4213` politely reported one stand in
+# its header while fangrig edited the config.toml of, and spawned an agent on,
+# whatever sat on lib.sh's default :4201. Export them; one target, one place.
+export OPENFANG_URL="$BASE_URL"
+export OF_CONTAINER="$CONTAINER"
+export OF_CONFIG="$CONFIG"
+export OPENFANG_CONFIG="$CONFIG"
 CLAIMED_PATH="output/fang9-report.md"
 
 case "$BASE_URL" in
@@ -156,7 +167,16 @@ echo "            (2 iterations for 1 user message, and a WARN in the daemon log
 echo
 
 echo "FANG9_TURN1_STATUS=$S1          # want: not a bare 200 for an unbacked claim"
-echo "FANG9_TURN1_TOOL_CALLS=$TOOLS1  # the agent called nothing at all"
+# The gloss on tool_calls used to read "# the agent called nothing at all"
+# unconditionally — a sentence that is only true when the number next to it is
+# 0, and that would have gone on asserting it in a green run where the agent
+# did call a tool. Say what the measurement says.
+case "$TOOLS1" in
+  0)  T1NOTE="the agent called nothing at all" ;;
+  -1) T1NOTE="unreadable: the response body did not parse" ;;
+  *)  T1NOTE="the agent did make $TOOLS1 tool call(s) this turn" ;;
+esac
+echo "FANG9_TURN1_TOOL_CALLS=$TOOLS1  # $T1NOTE"
 echo "FANG9_TURN1_ITERATIONS=$ITER1   # want: 2, i.e. the claim was challenged"
 echo "FANG9_CLAIMED_FILE=$FILE        # want: present, or the turn should not be a success"
 

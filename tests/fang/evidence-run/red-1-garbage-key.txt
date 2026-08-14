@@ -1,0 +1,28 @@
+### RED-1: garbage key -> run.sh reports PASS / exit 0
+$ OF_CONTAINER=openfang-fangrun OPENFANG_API_KEY=of-garbage-not-a-real-key ./run.sh --only A-2 --base-url http://127.0.0.1:4203
+======================================================================
+tests/fang/run.sh — 20260814-151119
+target      : http://127.0.0.1:4203   container: openfang-fangrun
+staging     : up (image openfang:sprint3)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-151119
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (1s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           A-2      GREEN
+
+PASS=1  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+5891b2b   direct  A-2                base+after fix(runtime): recount provider model_count on custom model removal
+366d62f   direct  A-7                base+after fix(kernel): resolve fallback base_url per provider, not from default_model
+cdd70de   direct  A-4                base+after fix(runtime): wrap runtime prompt data in tags, not ## headings
+EXIT=0

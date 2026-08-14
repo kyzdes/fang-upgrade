@@ -1,0 +1,60 @@
+### GREEN-5: --base-url now takes FANG-9/10/13/47 (and fangrig) to the named stand
+outer env still says OPENFANG_URL=http://127.0.0.1:4203 (stand A) — it must lose
+$ ./run.sh --only FANG-9,FANG-10,FANG-13,FANG-47 --base-url http://127.0.0.1:4213 --container openfang-fangrun-b
+======================================================================
+tests/fang/run.sh — 20260814-152541
+target      : http://127.0.0.1:4213   container: openfang-fangrun-b
+data dir    : /var/lib/docker/volumes/openfang-fangrun-b-data/_data   (from openfang-fangrun-b:/data)
+config      : /var/lib/docker/volumes/openfang-fangrun-b-data/_data/config.toml
+api key     : 51 chars from /var/lib/docker/volumes/openfang-fangrun-b-data/_data/config.toml
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-152541
+======================================================================
+
+FANG-9   running   (FANG-9.sh, mode=exit4, expect=RED) ... PASS (6s)
+FANG-10  running   (FANG-10.sh, mode=exit4, expect=RED) ... PASS (11s)
+FANG-13  running   (FANG-13.sh, mode=exit4, expect=RED) ... PASS (9s)
+FANG-47  running   (FANG-47.sh, mode=exit4, expect=RED) ... PASS (11s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           FANG-9   RED
+PASS           FANG-10  RED
+PASS           FANG-13  RED
+PASS           FANG-47  RED
+
+PASS=4  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4213
+======================================================================
+  removed agent test-a1-probe (51dc418c-d1ed-452a-b7f1-88a89a6acdf8)
+  the stand carries no probe agent now.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+EXIT=0
+
+--- proof of where the work landed ---
+FANG-13 log header:
+  === FANG-13 — empty provider content returns HTTP 200 ===
+  target: http://127.0.0.1:4213   container: openfang-fangrun-b
+  image : openfang:sprint3
+fangrig run state (which config.toml it took hold of):
+  container=openfang-fangrun-b
+  config_path=None
+stand A (:4203) agents matching test-*/fangrig-*: []
+stand B (:4213) agents matching test-*/fangrig-*: []

@@ -1,0 +1,138 @@
+### GREEN-1: garbage key -> not PASS, not exit 0
+$ OPENFANG_API_KEY=of-garbage-not-a-real-key ./run.sh --only A-2 --base-url http://127.0.0.1:4203 --container openfang-fangrun
+======================================================================
+tests/fang/run.sh — 20260814-152337
+target      : http://127.0.0.1:4203   container: openfang-fangrun
+data dir    : /var/lib/docker/volumes/openfang-fangrun-data/_data   (from openfang-fangrun:/data)
+config      : /var/lib/docker/volumes/openfang-fangrun-data/_data/config.toml
+api key     : 25 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : REJECTED — http://127.0.0.1:4203 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-152337
+======================================================================
+
+PREFLIGHT FAILED — the stand rejects the key the probes would use.
+  http://127.0.0.1:4203 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+
+Nothing below was run. Every probe here measures a difference it makes
+itself; with no credential it makes no difference, measures zero, and
+zero reads as 'no defect'. That is the false green this gate exists to
+stop, so these are INCONCLUSIVE and not one of them is a pass.
+
+A-2      INCONCLUSIVE  credential rejected by the target — not run
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-2      not run: the target rejected the api_key from $OPENFANG_API_KEY (environment)
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: rejected (tested on /api/usage/by-model) — http://127.0.0.1:4203 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4203
+======================================================================
+EXIT=2
+### GREEN-1b: A-2.sh alone, garbage key -> INCONCLUSIVE (exit 4), was 'GREEN' (exit 1)
+$ OPENFANG_API_KEY=of-garbage ./A-2.sh http://127.0.0.1:4203
+== A-2 baseline probe ==
+date:     2026-08-14T16:25:11+01:00
+base_url: http://127.0.0.1:4203
+version:  0.6.9
+provider: hyperfusion
+probe id: test-a2/drift-probe
+
+step 0 (initial):        providers.model_count=9  actual=/api/models=9  drift=0
+
+step 1: POST /api/models/custom
+{
+    "error": "Invalid API key"
+}
+ofctl: HTTP 401 on POST /api/models/custom
+step 1 (after create):   providers.model_count=9  actual=9  drift=0
+
+step 2: DELETE /api/models/custom/test-a2/drift-probe
+{
+    "error": "Invalid API key"
+}
+ofctl: HTTP 401 on DELETE /api/models/custom/test-a2/drift-probe
+step 2 (after delete):   providers.model_count=9  actual=9  drift=0
+
+--- control: did this probe actually change anything? ---
+  models of hyperfusion: before=9  after POST=9  after DELETE=9
+  the POST did not add a model (expected 10, got 9).
+VERDICT: INCONCLUSIVE — nothing was created, so nothing was removed, so
+         the drift below is 0 for want of an experiment, not for want of
+         a defect. Check the log above for HTTP 401/4xx on the POST.
+EXIT=4
+
+### GREEN-1c: A-2.sh alone, the stand's real key -> unchanged, still GREEN (exit 1)
+== A-2 baseline probe ==
+date:     2026-08-14T16:25:12+01:00
+base_url: http://127.0.0.1:4203
+version:  0.6.9
+provider: hyperfusion
+probe id: test-a2/drift-probe
+
+step 0 (initial):        providers.model_count=9  actual=/api/models=9  drift=0
+
+step 1: POST /api/models/custom
+{
+    "id": "test-a2/drift-probe",
+    "provider": "hyperfusion",
+    "status": "added"
+}
+step 1 (after create):   providers.model_count=10  actual=10  drift=0
+
+step 2: DELETE /api/models/custom/test-a2/drift-probe
+{
+    "status": "removed"
+}
+step 2 (after delete):   providers.model_count=9  actual=9  drift=0
+
+--- control: did this probe actually change anything? ---
+  models of hyperfusion: before=9  after POST=10  after DELETE=9
+  control OK: the model was really created and really removed.
+
+RESULT: drift after delete = 0 model(s)
+  expected if defect present: drift=1 (counter stuck at 10, actual back to 9)
+  expected if fixed:          drift=0
+VERDICT: GREEN — counter consistent
+EXIT=1
+
+### the acceptance line, verbatim, against the default stand (:4201)
+$ OPENFANG_API_KEY=of-deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbe ./run.sh --only A-2
+======================================================================
+tests/fang/run.sh — 20260814-152939
+target      : http://127.0.0.1:4201   container: openfang-staging
+data dir    : /var/lib/docker/volumes/openfang-staging-data/_data   (from openfang-staging:/data)
+config      : /var/lib/docker/volumes/openfang-staging-data/_data/config.toml
+api key     : 49 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:fang40)
+credential  : REJECTED — http://127.0.0.1:4201 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-152939
+======================================================================
+
+PREFLIGHT FAILED — the stand rejects the key the probes would use.
+  http://127.0.0.1:4201 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+
+Nothing below was run. Every probe here measures a difference it makes
+itself; with no credential it makes no difference, measures zero, and
+zero reads as 'no defect'. That is the false green this gate exists to
+stop, so these are INCONCLUSIVE and not one of them is a pass.
+
+A-2      INCONCLUSIVE  credential rejected by the target — not run
+
+======================================================================
+RESULTS
+======================================================================
+EXIT=2

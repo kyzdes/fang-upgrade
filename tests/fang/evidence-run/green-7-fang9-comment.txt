@@ -1,0 +1,15 @@
+### GREEN-7: FANG-9's tool_calls gloss now follows the measurement
+before (fe7abf76, line 159): 
+echo "FANG9_TURN1_TOOL_CALLS=$TOOLS1  # the agent called nothing at all"
+
+after, in a live RED run (tool_calls really was 0):
+30:FANG9_TURN1_TOOL_CALLS=0  # the agent called nothing at all
+
+and the gloss now has three branches, one per measurement:
+174:case "$TOOLS1" in
+175-  0)  T1NOTE="the agent called nothing at all" ;;
+176-  -1) T1NOTE="unreadable: the response body did not parse" ;;
+177-  *)  T1NOTE="the agent did make $TOOLS1 tool call(s) this turn" ;;
+178-esac
+179-echo "FANG9_TURN1_TOOL_CALLS=$TOOLS1  # $T1NOTE"
+180-echo "FANG9_TURN1_ITERATIONS=$ITER1   # want: 2, i.e. the claim was challenged"

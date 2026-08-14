@@ -26,18 +26,55 @@
 #   gated behind --costly and reported as SKIPPED, with the reason, when the
 #   gate is closed. A skip is never a pass here.
 #
+# WHY A VERDICT IS NOT BELIEVED ON ITS OWN  (the false-green this runner had)
+#
+#   Every probe here reports on the DIFFERENCE between two observations. A
+#   probe that could not make either observation still computes a difference,
+#   and that difference is zero, and zero is the shape of "no defect". Run
+#   A-2.sh with a wrong api_key and it says, in full:
+#
+#       step 1: POST /api/models/custom -> HTTP 401 "Invalid API key"
+#       step 2: DELETE .../drift-probe  -> HTTP 401 "Invalid API key"
+#       RESULT: drift after delete = 0 model(s)
+#       VERDICT: GREEN — counter consistent
+#
+#   It created nothing, deleted nothing, measured 0-0, exited 1, and this
+#   runner used to print PASS and exit 0 — on a build with the fix AND on
+#   v0.6.9-pristine, which does not have it. A verdict from a probe that was
+#   never able to work is not a verdict, and it is emphatically not a pass.
+#
+#   Two barriers now stand in front of every grade, in every mode:
+#
+#     1. PREFLIGHT. The credential the probes will use is resolved once, here,
+#        and proven against the target before anything runs (see AUTH GATE).
+#        If the target rejects it, nothing is graded: every selected repro is
+#        reported INCONCLUSIVE and the run fails.
+#     2. AUTHENTICITY SCREEN. After each repro, its log is checked for
+#        (a) authentication/transport failures — the signatures of a probe
+#        that could not reach or could not enter the stand, and
+#        (b) its WITNESS: a pattern the log must contain to show the probe
+#        really created or changed the thing it then measured. Either check
+#        failing turns the verdict into INCONCLUSIVE, whatever the mode said,
+#        including REVIEW and including a would-be PASS.
+#
+#   Both barriers only ever turn a verdict INTO INCONCLUSIVE. Neither can
+#   manufacture a pass, so a bug in them costs a false alarm, never a false
+#   all-clear.
+#
 # VERDICT MODES
 #   exit4    0=RED(reproduced) 1=GREEN(not reproduced) 2=REFUSED 3=SKIPPED
 #            4=INCONCLUSIVE(the script's own control failed)
-#   a2       A-2.sh's own convention: 0=RED 1=GREEN, anything else = ERROR
+#   a2       A-2.sh's own convention: 0=RED 1=GREEN 3=SKIPPED 4=INCONCLUSIVE
 #   result   last "RESULT: RED|GREEN|INCONCLUSIVE" line on stdout wins;
 #            the exit code is recorded but not believed
 #   manual   no machine-readable verdict exists -> REVIEW
 #
 # OUTCOMES
-#   PASS          the verdict matched what this build is expected to produce
+#   PASS          the verdict matched what this build is expected to produce,
+#                 AND the probe demonstrably did its work
 #   FAIL          it did not (a fixed defect came back, or a repro rotted)
-#   INCONCLUSIVE  the repro ran but disqualified itself -> counted as failure
+#   INCONCLUSIVE  the repro ran but disqualified itself, or could not prove it
+#                 did any work -> counted as failure
 #   REVIEW        ran, produced evidence, needs a human -> not a pass
 #   SKIPPED       did not run, with a reason -> never a pass
 #   ERROR         crashed, timed out, or returned a code its mode cannot read
@@ -45,7 +82,8 @@
 # EXIT CODE
 #   0  every repro that ran reached its expected verdict, and at least one ran
 #   1  at least one FAIL or INCONCLUSIVE
-#   2  at least one ERROR (harness problem, not a product verdict)
+#   2  at least one ERROR, a usage error, or the preflight could not establish
+#      that the probes can talk to the target (harness problem, not a verdict)
 #   3  refused: pointed at production
 #   4  nothing ran at all — everything was skipped. Deliberately not 0: a run
 #      that executed no repro has proven nothing, and "no failures" out of an
@@ -53,7 +91,7 @@
 #
 # Usage:
 #   ./run.sh [--costly] [--only id[,id...]] [--list] [--timeout SECS]
-#            [--out DIR] [--base-url URL]
+#            [--out DIR] [--base-url URL] [--container NAME] [--keep-probes]
 
 set -uo pipefail
 
@@ -65,53 +103,119 @@ RUN_COSTLY=0
 ONLY=""
 OUT_DIR=""
 LIST_ONLY=0
+KEEP_PROBES=0
+
+usage_error() { echo "run.sh: $*" >&2; echo "run.sh: try --help" >&2; exit 2; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --costly)   RUN_COSTLY=1; shift ;;
-    --only)     ONLY="$2"; shift 2 ;;
-    --list)     LIST_ONLY=1; shift ;;
-    --timeout)  TIMEOUT_SECS="$2"; shift 2 ;;
-    --out)      OUT_DIR="$2"; shift 2 ;;
-    --base-url) BASE_URL="$2"; shift 2 ;;
-    -h|--help)  sed -n '2,60p' "$0"; exit 0 ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
+    --costly)     RUN_COSTLY=1; shift ;;
+    --only)       [ $# -ge 2 ] || usage_error "--only needs a value"; ONLY="$2"; shift 2 ;;
+    --list)       LIST_ONLY=1; shift ;;
+    --timeout)    [ $# -ge 2 ] || usage_error "--timeout needs a value"; TIMEOUT_SECS="$2"; shift 2 ;;
+    --out)        [ $# -ge 2 ] || usage_error "--out needs a value"; OUT_DIR="$2"; shift 2 ;;
+    --base-url)   [ $# -ge 2 ] || usage_error "--base-url needs a value"; BASE_URL="$2"; shift 2 ;;
+    --container)  [ $# -ge 2 ] || usage_error "--container needs a value"; CONTAINER="$2"; shift 2 ;;
+    --keep-probes) KEEP_PROBES=1; shift ;;
+    # Print the header comment, and only it: stop at the first line that is
+    # not a comment, so this never drifts out of date when the header grows.
+    -h|--help)    sed -n '2,${/^[^#]/q;p;}' "$0"; exit 0 ;;
+    *) usage_error "unknown flag: $1" ;;
   esac
 done
 
 # ---------------------------------------------------------------- registry --
-# id | script | mode | expect | cost | covers
+# id | script | mode | expect | cost | witness | covers
 #
 # `expect` is what THIS branch should produce, and it is a claim about the
 # code, not a wish: RED for defects with no fix commit on `ours`, GREEN for
 # defects a fix commit claims to have closed. If a GREEN entry comes back RED
 # the fix regressed; if a RED entry comes back GREEN either someone fixed it
 # or the repro stopped reproducing — both are FAIL, both need a human.
+#
+# `witness` is the authenticity precondition: an ERE (several joined by `&&`)
+# that the repro's log MUST contain before its verdict is graded at all. It
+# names the moment the probe demonstrably DID something to the stand — the
+# agent it created, the model the API confirmed it added, the control turn the
+# stand actually served. Not "the script ran"; "the script got its hands on
+# the system under test". `-` means no witness could be grounded in the
+# script's own output; those rows are listed as such in the report rather than
+# quietly enjoying the benefit of the doubt.
 REPROS=(
-  "A-1|A-1.sh|manual|-|cheap|PUT /api/agents/{id}/update was a 200-returning no-op (fixes b86e65b, 6cb20be)"
-  "A-2|A-2.sh|a2|GREEN|cheap|remove_custom_model did not recompute provider.model_count (fix 5891b2b)"
-  "A-4|A-4.sh|manual|-|costly|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
-  "A-6|A-6.sh|manual|-|costly|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
-  "A-7|A-7.sh|manual|-|costly|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
-  "FANG-31|FANG-31.sh|result|RED|cheap|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
-  "FANG-43|FANG-43.sh|result|GREEN|costly|the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
-  "FANG-45|FANG-45.sh|manual|-|costly|file_read truncated silently with no way to page the rest (fix 8b502f9)"
-  "FANG-9|FANG-9.sh|exit4|RED|cheap|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
-  "FANG-10|FANG-10.sh|exit4|RED|cheap|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
-  "FANG-13|FANG-13.sh|exit4|RED|cheap|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
-  "FANG-47|FANG-47.sh|exit4|RED|cheap|the max-iterations exit discards the whole turn's accounting (NO FIX)"
+  "A-1|A-1.sh|manual|-|cheap|^agent_id: [0-9a-f]{8}|PUT /api/agents/{id}/update was a 200-returning no-op (fixes b86e65b, 6cb20be)"
+  "A-2|A-2.sh|a2|GREEN|cheap|\"status\": \"added\"&&\"status\": \"removed\"|remove_custom_model did not recompute provider.model_count (fix 5891b2b)"
+  "A-4|A-4.sh|manual|-|costly|^agent_id: +[0-9a-f]{8}|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
+  "A-6|A-6.sh|manual|-|costly|DETERMINABLE: YES|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
+  "A-7|A-7.sh|manual|-|costly|-|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
+  "FANG-31|FANG-31.sh|result|RED|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
+  "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
+  "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
+  "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
+  "FANG-10|FANG-10.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
+  "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
+  "FANG-47|FANG-47.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (NO FIX)"
 )
+
+# Signatures of a probe that never got into the stand. Deliberately narrow:
+# they match the harness's OWN clients complaining (ofctl's stderr line, the
+# `HTTP <code>` line the FANG-* probes print for their own API calls, curl's
+# transport errors), NOT any mention of a status code in passing. A-7, for
+# one, legitimately reports a PROVIDER's 401 inside an agent's answer; that
+# must not disqualify anything.
+#
+# Product-level 4xx/5xx are NOT here on purpose: A-1 expects HTTP 501 from
+# PUT /update, FANG-10 expects HTTP 500 from the max-iterations exit. Those
+# are the findings, not failures to reach the system.
+DISQUALIFY_RE='Invalid API key|Missing Authorization|ofctl: HTTP 40[13] |ofctl: no response from|ofctl: cannot read|^HTTP 40[13]([^0-9]|$)|^ *HTTP 40[13]([^0-9]|$)|curl: \([0-9]+\)|Connection refused|Failed to connect to|Could not resolve host'
 
 field() { printf '%s' "$1" | cut -d'|' -f"$2"; }
 
+ALL_IDS=()
+for r in "${REPROS[@]}"; do ALL_IDS+=("$(field "$r" 1)"); done
+
+# in_list NEEDLE HAYSTACK... — exact string membership. Not `grep "\b$id"`:
+# ids share prefixes and `-` is a word boundary, so a pattern match would let
+# a near-miss select a real repro, which is the opposite of what --only is for.
+in_list() {
+  local needle="$1"; shift
+  local x
+  for x in "$@"; do [ "$x" = "$needle" ] && return 0; done
+  return 1
+}
+
 if [ "$LIST_ONLY" = 1 ]; then
-  printf '%-8s %-13s %-7s %-7s %-7s %s\n' ID SCRIPT MODE EXPECT COST COVERS
+  printf '%-8s %-13s %-7s %-7s %-7s %-9s %s\n' ID SCRIPT MODE EXPECT COST WITNESS COVERS
   for r in "${REPROS[@]}"; do
-    printf '%-8s %-13s %-7s %-7s %-7s %s\n' \
+    w="$(field "$r" 6)"; [ "$w" = "-" ] && w="none" || w="yes"
+    printf '%-8s %-13s %-7s %-7s %-7s %-9s %s\n' \
       "$(field "$r" 1)" "$(field "$r" 2)" "$(field "$r" 3)" \
-      "$(field "$r" 4)" "$(field "$r" 5)" "$(field "$r" 6)"
+      "$(field "$r" 4)" "$(field "$r" 5)" "$w" "$(field "$r" 7)"
   done
   exit 0
+fi
+
+# ------------------------------------------------------------- --only sanity --
+# A misspelt id used to select nothing, and selecting nothing used to look
+# exactly like an honest run in which every repro was skipped. It is a usage
+# error: say which id is wrong, list the real ones, and refuse to run.
+SELECTED=()
+if [ -n "$ONLY" ]; then
+  IFS=',' read -ra want <<<"$ONLY"
+  bad=""
+  for w in "${want[@]}"; do
+    [ -n "$w" ] || continue
+    if in_list "$w" "${ALL_IDS[@]}"; then
+      SELECTED+=("$w")
+    else
+      bad="$bad $w"
+    fi
+  done
+  if [ -n "$bad" ]; then
+    echo "run.sh: --only names no such reproduction:$bad" >&2
+    echo "run.sh: known ids: ${ALL_IDS[*]}" >&2
+    exit 2
+  fi
+  [ "${#SELECTED[@]}" -gt 0 ] || { echo "run.sh: --only was given but selected nothing" >&2; exit 2; }
 fi
 
 # -------------------------------------------------------------- prod guard --
@@ -145,6 +249,94 @@ else
   STAGING_UP=1
 fi
 
+# ------------------------------------------------------------ ONE TARGET --
+# The stand is a URL, a container, a data directory and a key, and every one
+# of them has to name the SAME stand. They used not to. `--base-url` reached
+# the five A-*.sh (which `export OPENFANG_URL`) and the report header, and
+# stopped there: FANG-9/10/13/47 never exported it, so harness/lib.sh:16 fell
+# back to its own default and fangrig edited the config.toml of, and spawned
+# agents on, whatever stand happened to sit on :4201. The header named one
+# machine, the work happened on another.
+#
+# So resolve the whole target here, from the container itself (its /data mount
+# IS the data directory — no second guess about which volume goes with which
+# port), and export the lot. Everything downstream — the probes, fangrig,
+# lib.sh, ofctl — reads these names, so there is exactly one way to be wrong
+# and it is visible in the header.
+DATA_DIR=""
+if [ "$STAGING_UP" = 1 ]; then
+  DATA_DIR="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null)"
+fi
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="${OPENFANG_VOLUME:-/var/lib/docker/volumes/openfang-staging-data/_data}"
+  DATA_DIR_SRC="fallback (container has no /data mount)"
+else
+  DATA_DIR_SRC="$CONTAINER:/data"
+fi
+CONFIG="$DATA_DIR/config.toml"
+
+# The key: the environment wins, exactly as ofctl resolves it, so that
+# `OPENFANG_API_KEY=<rubbish> ./run.sh` is a question this runner can be
+# asked and must answer honestly.
+KEY_SRC=""
+if [ -n "${OPENFANG_API_KEY:-}" ]; then
+  API_KEY="$OPENFANG_API_KEY"; KEY_SRC='$OPENFANG_API_KEY (environment)'
+else
+  API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+  KEY_SRC="$CONFIG"
+fi
+
+export OPENFANG_URL="$BASE_URL"
+export OF_CONTAINER="$CONTAINER"
+export OPENFANG_CONFIG="$CONFIG"
+export OF_CONFIG="$CONFIG"
+export OPENFANG_VOLUME="$DATA_DIR"       # A-1.sh
+export OPENFANG_HOME_HOST="$DATA_DIR"    # A-4.sh / A-6.sh / A-7.sh
+export OPENFANG_API_KEY="$API_KEY"
+
+api_status() { # api_status METHOD PATH KEY -> http code
+  local auth=()
+  [ -n "${3:-}" ] && auth=(-H "Authorization: Bearer $3")
+  curl -sS -o /dev/null -w '%{http_code}' -m 20 -X "$1" \
+       "${auth[@]}" "$BASE_URL$2" 2>/dev/null
+}
+AUTH_HDR=()
+[ -n "$API_KEY" ] && AUTH_HDR=(-H "Authorization: Bearer $API_KEY")
+
+# ---------------------------------------------------------------- AUTH GATE --
+# Prove the credential before trusting anything measured with it.
+#
+# Method: find a route that actually discriminates — one that answers 401/403
+# to a key we know is wrong. (Most GETs on this build are unauthenticated, so
+# "our key got a 200" proves nothing on its own; it has to be a route that
+# would have said no.) Then ask the same route with the real key. Read-only,
+# no side effects, works on v0.6.9-pristine and on `ours`.
+AUTH_STATE=unchecked
+AUTH_WHY="not run (staging down)"
+AUTH_ROUTE=""
+if [ "$STAGING_UP" = 1 ]; then
+  BOGUS="of-run-sh-preflight-deliberately-invalid-key"
+  AUTH_STATE=undecidable
+  AUTH_WHY="no route on this build rejects a known-bad key, so the credential cannot be tested"
+  for route in /api/usage/by-model /api/usage /api/models/custom; do
+    bad="$(api_status GET "$route" "$BOGUS")"
+    case "$bad" in
+      401|403)
+        AUTH_ROUTE="$route"
+        good="$(api_status GET "$route" "$API_KEY")"
+        case "$good" in
+          401|403) AUTH_STATE=rejected
+                   AUTH_WHY="$BASE_URL answered HTTP $good to GET $route with the key from $KEY_SRC" ;;
+          000|"")  AUTH_STATE=undecidable
+                   AUTH_WHY="GET $route gave no answer at all with the real key" ;;
+          *)       AUTH_STATE=accepted
+                   AUTH_WHY="GET $route: bad key -> $bad, this key -> $good" ;;
+        esac
+        break ;;
+    esac
+  done
+fi
+
 TS="$(date -u '+%Y%m%d-%H%M%S')"
 [ -n "$OUT_DIR" ] || OUT_DIR="/tmp/fang-run/$TS"
 mkdir -p "$OUT_DIR" || { echo "cannot create $OUT_DIR" >&2; exit 2; }
@@ -152,12 +344,21 @@ mkdir -p "$OUT_DIR" || { echo "cannot create $OUT_DIR" >&2; exit 2; }
 echo "======================================================================"
 echo "tests/fang/run.sh — $TS"
 echo "target      : $BASE_URL   container: $CONTAINER"
+echo "data dir    : $DATA_DIR   (from $DATA_DIR_SRC)"
+echo "config      : $CONFIG"
+echo "api key     : ${API_KEY:+${#API_KEY} chars} from $KEY_SRC"
 if [ "$STAGING_UP" = 1 ]; then
   echo "staging     : up (image $(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null))"
 else
   echo "staging     : DOWN — $STAGING_WHY"
   echo "              every repro below needs it; they will be SKIPPED, not passed."
 fi
+case "$AUTH_STATE" in
+  accepted)    echo "credential  : ACCEPTED — $AUTH_WHY" ;;
+  rejected)    echo "credential  : REJECTED — $AUTH_WHY" ;;
+  undecidable) echo "credential  : UNVERIFIED — $AUTH_WHY" ;;
+  *)           echo "credential  : not checked — $AUTH_WHY" ;;
+esac
 echo "costly gate : $([ "$RUN_COSTLY" = 1 ] && echo "OPEN (--costly): repros that bill real providers WILL run" \
                                             || echo "closed: repros that bill real providers are SKIPPED (pass --costly)")"
 echo "logs        : $OUT_DIR"
@@ -166,12 +367,36 @@ echo
 
 N_PASS=0; N_FAIL=0; N_SKIP=0; N_REVIEW=0; N_ERROR=0
 SUMMARY=()
+RAN_ANY=0
+
+# ------------------------------------------------------- preflight refusal --
+# A rejected credential is not a reason to run the probes and read their
+# tea leaves; it is a reason not to grade anything they say. Say so once, per
+# selected repro, and fail.
+if [ "$AUTH_STATE" = rejected ]; then
+  echo "PREFLIGHT FAILED — the stand rejects the key the probes would use."
+  echo "  $AUTH_WHY"
+  echo
+  echo "Nothing below was run. Every probe here measures a difference it makes"
+  echo "itself; with no credential it makes no difference, measures zero, and"
+  echo "zero reads as 'no defect'. That is the false green this gate exists to"
+  echo "stop, so these are INCONCLUSIVE and not one of them is a pass."
+  echo
+fi
 
 for r in "${REPROS[@]}"; do
   id="$(field "$r" 1)"; script="$(field "$r" 2)"; mode="$(field "$r" 3)"
-  expect="$(field "$r" 4)"; cost="$(field "$r" 5)"; covers="$(field "$r" 6)"
+  expect="$(field "$r" 4)"; cost="$(field "$r" 5)"; witness="$(field "$r" 6)"
+  covers="$(field "$r" 7)"
 
-  if [ -n "$ONLY" ] && ! printf ',%s,' "$ONLY" | grep -q ",$id,"; then
+  if [ -n "$ONLY" ] && ! in_list "$id" "${SELECTED[@]}"; then
+    continue
+  fi
+
+  if [ "$AUTH_STATE" = rejected ]; then
+    printf '%-8s INCONCLUSIVE  credential rejected by the target — not run\n' "$id"
+    SUMMARY+=("INCONCLUSIVE|$id|not run: the target rejected the api_key from $KEY_SRC|$covers")
+    N_FAIL=$((N_FAIL + 1))
     continue
   fi
 
@@ -209,6 +434,7 @@ for r in "${REPROS[@]}"; do
   timeout --signal=TERM --kill-after=30 "$TIMEOUT_SECS" "$path" "$BASE_URL" >"$log" 2>&1 </dev/null
   rc=$?
   took=$(( $(date +%s) - start ))
+  RAN_ANY=1
 
   # ---- read the verdict --------------------------------------------------
   verdict=""; note=""
@@ -227,10 +453,15 @@ for r in "${REPROS[@]}"; do
         esac
         ;;
       a2)
+        # A-2.sh's own convention, now with the two codes every other repro
+        # here already had: it can say "I could not do my work" instead of
+        # being forced to call a 0−0 subtraction a green.
         case "$rc" in
           0) verdict=RED ;;
           1) verdict=GREEN ;;
-          *) verdict=ERROR; note="exit $rc; A-2.sh only ever means 0=RED or 1=GREEN" ;;
+          3) verdict=SKIPPED; note="$(grep -m1 '^SKIPPED' "$log" 2>/dev/null || echo 'script reported missing prerequisites')" ;;
+          4) verdict=INCONCLUSIVE; note="the script's own control failed" ;;
+          *) verdict=ERROR; note="exit $rc; A-2.sh means 0=RED 1=GREEN 3=SKIPPED 4=INCONCLUSIVE" ;;
         esac
         ;;
       result)
@@ -252,6 +483,34 @@ for r in "${REPROS[@]}"; do
     esac
   fi
 
+  # ---- authenticity screen ------------------------------------------------
+  # Applied to every mode, inherited scripts included. It can only downgrade.
+  case "$verdict" in
+    ERROR|REFUSED|INCONCLUSIVE) ;;   # already not a pass; nothing to demote
+    *)
+      hit="$(grep -m1 -E "$DISQUALIFY_RE" "$log" 2>/dev/null)"
+      if [ -n "$hit" ]; then
+        note="the probe could not reach or could not enter the stand: $(printf '%s' "$hit" | cut -c1-110)"
+        verdict=INCONCLUSIVE
+      elif [ "$witness" != "-" ]; then
+        missing=""
+        # `&&`-joined patterns: every one of them has to be there.
+        rest="$witness"
+        while [ -n "$rest" ]; do
+          case "$rest" in
+            *"&&"*) pat="${rest%%&&*}"; rest="${rest#*&&}" ;;
+            *)      pat="$rest"; rest="" ;;
+          esac
+          grep -qE -- "$pat" "$log" 2>/dev/null || missing="$pat"
+        done
+        if [ -n "$missing" ]; then
+          note="no evidence the probe did its work: nothing in the log matches /$missing/"
+          verdict=INCONCLUSIVE
+        fi
+      fi
+      ;;
+  esac
+
   # ---- grade it ----------------------------------------------------------
   case "$verdict" in
     REVIEW)       outcome=REVIEW;  N_REVIEW=$((N_REVIEW + 1)) ;;
@@ -266,7 +525,10 @@ for r in "${REPROS[@]}"; do
 
   printf '%s (%ss)\n' "$outcome" "$took"
   [ -n "$note" ] && printf '         %s\n' "$note"
-  SUMMARY+=("$outcome|$id|${verdict}${note:+ — $note}|$covers")
+  # SUMMARY rows are split on '|' when printed. A note quoting a log line can
+  # contain one (a regex alternation, a table rule), and that used to lop the
+  # detail off in the very table a reader trusts. Neutralise it here.
+  SUMMARY+=("$outcome|$id|$(printf '%s' "${verdict}${note:+ — $note}" | tr '|' '/')|$covers")
 done
 
 # ------------------------------------------------------------------ report --
@@ -286,6 +548,93 @@ if [ "$N_REVIEW" -gt 0 ]; then
 fi
 if [ "$N_SKIP" -gt 0 ]; then
   echo "SKIPPED is not PASS either. Each skip above carries its reason."
+fi
+
+# --------------------------------------------------- authenticity coverage --
+echo
+echo "======================================================================"
+echo "AUTHENTICITY — what each repro had to show before it was graded"
+echo "======================================================================"
+echo "credential: $AUTH_STATE${AUTH_ROUTE:+ (tested on $AUTH_ROUTE)} — $AUTH_WHY"
+NOWIT=""
+for r in "${REPROS[@]}"; do
+  [ "$(field "$r" 6)" = "-" ] && NOWIT="$NOWIT $(field "$r" 1)"
+done
+if [ -n "$NOWIT" ]; then
+  echo "repros with NO witness pattern — their verdicts rest on the credential"
+  echo "check and the disqualifier scan alone:$NOWIT"
+else
+  echo "every repro in the registry carries a witness pattern."
+fi
+
+# ---------------------------------------------------------- probe clean-up --
+# A-1 ends with "probe agent left in place"; fangrig removes its own agents in
+# `down`, but only if the script got that far. A run that leaves test agents
+# behind changes the stand for the next run, so sweep, and — whether anything
+# was found or not — say what the stand looks like afterwards.
+echo
+echo "======================================================================"
+echo "CLEAN-UP — probe entities on $BASE_URL"
+echo "======================================================================"
+if [ "$KEEP_PROBES" = 1 ]; then
+  echo "--keep-probes: left in place on purpose. Whatever the probes created is"
+  echo "still on the stand; the next run starts from it."
+elif [ "$STAGING_UP" != 1 ]; then
+  echo "staging was down; nothing to sweep."
+elif [ "$AUTH_STATE" = rejected ]; then
+  echo "the credential was rejected, so nothing ran and nothing could be deleted"
+  echo "either. Whatever was on the stand before is still on it."
+else
+  # Only names this directory's probes are known to create. Nothing else is
+  # touched, and the pattern is anchored so an agent merely CONTAINING the
+  # word "test" is safe.
+  removed=0
+  probe_names() { # reads /api/agents, prints "id name" for probe-shaped names only
+    curl -sS -m 30 "${AUTH_HDR[@]}" "$BASE_URL/api/agents" 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+agents = d if isinstance(d, list) else d.get("agents", [])
+pat = re.compile(r"^(test-a[0-9]+[a-z0-9-]*|fangrig-[a-z0-9-]+)$")
+for a in agents:
+    if isinstance(a, dict) and pat.match(str(a.get("name", ""))):
+        print("%s %s" % (a.get("id"), a.get("name")))
+' 2>/dev/null
+  }
+  probe_list="$(probe_names)"
+  if [ -n "$probe_list" ]; then
+    while read -r pid pname; do
+      [ -n "$pid" ] || continue
+      code="$(curl -sS -o /dev/null -w '%{http_code}' -m 60 -X DELETE \
+              "${AUTH_HDR[@]}" "$BASE_URL/api/agents/$pid" 2>/dev/null)"
+      case "$code" in
+        2*) echo "  removed agent $pname ($pid)"; removed=$((removed + 1))
+            if [ -d "$DATA_DIR/agents/$pname" ]; then
+              rm -rf "$DATA_DIR/agents/$pname" && echo "  removed $DATA_DIR/agents/$pname"
+            fi ;;
+        *)  echo "  COULD NOT remove agent $pname ($pid): HTTP $code — still on the stand" ;;
+      esac
+    done <<<"$probe_list"
+  fi
+  # A-2's custom model: its own trap normally gets it, but not if it was killed.
+  mcode="$(curl -sS -o /dev/null -w '%{http_code}' -m 30 -X DELETE \
+           "${AUTH_HDR[@]}" "$BASE_URL/api/models/custom/test-a2/drift-probe" 2>/dev/null)"
+  case "$mcode" in
+    2*) echo "  removed custom model test-a2/drift-probe"; removed=$((removed + 1)) ;;
+  esac
+  # Ask the stand again rather than assuming the DELETEs worked.
+  leftover="$(probe_names | awk '{print $2}' | tr '\n' ' ')"
+  if [ "$removed" = 0 ]; then
+    echo "  nothing to remove — no probe entity was left on the stand."
+  fi
+  leftover="$(printf '%s' "$leftover" | sed 's/ *$//')"
+  if [ -n "$leftover" ]; then
+    echo "  STILL PRESENT after the sweep: $leftover"
+  else
+    echo "  the stand carries no probe agent now."
+  fi
 fi
 
 # ------------------------------------------------------- coverage of fixes --
@@ -373,8 +722,8 @@ echo "Repros in this directory that are NOT tied to a fix commit — they"
 echo "reproduce defects that are still open on 'ours', which is why their"
 echo "expected verdict above is RED:"
 for r in "${REPROS[@]}"; do
-  case "$(field "$r" 6)" in
-    *"NO FIX"*) printf '  %-8s %s\n' "$(field "$r" 1)" "$(field "$r" 6)" ;;
+  case "$(field "$r" 7)" in
+    *"NO FIX"*) printf '  %-8s %s\n' "$(field "$r" 1)" "$(field "$r" 7)" ;;
   esac
 done
 echo
@@ -385,6 +734,11 @@ for f in "$HERE"/baseline/*.txt; do
 done
 
 echo
+if [ "$AUTH_STATE" = rejected ]; then
+  echo "run.sh: PREFLIGHT FAILED — the target rejected the api_key from $KEY_SRC,"
+  echo "        so no verdict here is worth anything. Nothing ran; nothing passed."
+  exit 2
+fi
 if [ "$N_ERROR" -gt 0 ]; then
   echo "run.sh: ERROR — $N_ERROR repro(s) could not produce a verdict at all."
   exit 2
@@ -398,6 +752,12 @@ if [ $((N_PASS + N_FAIL + N_REVIEW)) -eq 0 ]; then
   echo "        proves nothing. Reasons are listed above; fix them or say so."
   exit 4
 fi
-echo "run.sh: every repro that ran reached its expected verdict."
+if [ "$AUTH_STATE" = undecidable ]; then
+  echo "run.sh: every repro that ran reached its expected verdict — but the"
+  echo "        credential could not be verified ($AUTH_WHY),"
+  echo "        so the passes above rest on each repro's own witness alone."
+else
+  echo "run.sh: every repro that ran reached its expected verdict."
+fi
 echo "        ($N_SKIP skipped, $N_REVIEW awaiting a human — neither is a pass.)"
 exit 0

@@ -1,0 +1,20 @@
+### RED-5: run.sh leaves the A-1 probe agent behind on the stand
+before run, test-a1-probe on stand A (:4203): []
+$ OF_CONTAINER=openfang-fangrun ./run.sh --only A-1 --base-url http://127.0.0.1:4203
+A-1      running   (A-1.sh, mode=manual, expect=-) ... REVIEW (0s)
+         no machine-readable verdict; read /tmp/fang-run/20260814-151506/A-1.log against the red criterion in the script header (exit 0)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+REVIEW         A-1      REVIEW — no machine-readable verdict; read /tmp/fang-run/20260814-151506/A-1.log against the red criterion in the script header (exit 0)
+
+PASS=0  FAIL=0  REVIEW=1  SKIPPED=0  ERROR=0
+
+REVIEW is not PASS. Those scripts measure; the verdict is a human's.
+after  run, test-a1-probe on stand A (:4203): ['test-a1-probe']
+on-disk agent dir: /var/lib/docker/volumes/openfang-fangrun-data/_data/agents/test-a1-probe
+
+run.sh's own report says nothing about it; only A-1.sh's last output line does:
+159:echo "probe agent left in place: $AID / $NAME"

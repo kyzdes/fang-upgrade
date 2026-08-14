@@ -55,6 +55,17 @@ BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 CONTAINER="${OF_CONTAINER:-openfang-staging}"
 CONFIG="${OF_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}"
 
+# The target is a URL *and* a container *and* a config file, and fangrig —
+# which does the actual creating on the stand — reads all three from the
+# environment (harness/lib.sh:16-18), never from our argv. Without these
+# exports, `./FANG-x.sh http://127.0.0.1:4213` politely reported one stand in
+# its header while fangrig edited the config.toml of, and spawned an agent on,
+# whatever sat on lib.sh's default :4201. Export them; one target, one place.
+export OPENFANG_URL="$BASE_URL"
+export OF_CONTAINER="$CONTAINER"
+export OF_CONFIG="$CONFIG"
+export OPENFANG_CONFIG="$CONFIG"
+
 # ------------------------------------------------------------- prod guard --
 case "$BASE_URL" in
   *:4200*) echo "REFUSING: $BASE_URL looks like production. Staging is :4201." >&2; exit 2 ;;

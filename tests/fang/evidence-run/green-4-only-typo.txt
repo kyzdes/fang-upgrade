@@ -1,0 +1,15 @@
+### GREEN-4: --only typo is now a usage error
+$ ./run.sh --only A-42 --base-url http://127.0.0.1:4203 --container openfang-fangrun
+run.sh: --only names no such reproduction: A-42
+run.sh: known ids: A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG-47
+EXIT=2
+
+$ ./run.sh --only A-2,FANG-99
+run.sh: --only names no such reproduction: FANG-99
+run.sh: known ids: A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG-47
+EXIT=2
+
+(and a correct --only still selects:)
+ID       SCRIPT        MODE    EXPECT  COST    WITNESS   COVERS
+A-1      A-1.sh        manual  -       cheap   yes       PUT /api/agents/{id}/update was a 200-returning no-op (fixes b86e65b, 6cb20be)
+A-2      A-2.sh        a2      GREEN   cheap   yes       remove_custom_model did not recompute provider.model_count (fix 5891b2b)
