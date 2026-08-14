@@ -84,6 +84,30 @@ esac
 case "$PORT" in
   4200|4201|4202) echo "REFUSING: port $PORT is prod/staging/refstand." >&2; exit 2;;
 esac
+# The volume is the thing this script DESTROYS (`docker volume rm` below), and
+# it was the one input the guard never looked at. Checking the container name
+# while deleting whatever OF_VOLUME happens to say is guarding the wrong door:
+# OF_VOLUME=openfang-staging-data with any throwaway container name wiped the
+# stand. Two rules, both on the name that is actually acted on.
+case "$VOLUME" in
+  openfang_openfang-data|openfang-staging-data|openfang-staging-premigration|openfang-prod-backup-*|openfang-refstand-data)
+    echo "REFUSING: $VOLUME is a real volume, not a throwaway." >&2; exit 2;;
+esac
+case "$VOLUME" in
+  *-sigterm-data|openfang-sigterm-*) ;;
+  *) echo "REFUSING: $VOLUME is not a scratch volume name for this probe." >&2
+     echo "  expected something matching '*-sigterm-data' or 'openfang-sigterm-*'." >&2
+     exit 2;;
+esac
+# A scratch name that already exists is someone else's run, not stale state of
+# ours: recreating it would delete their data mid-flight.
+if docker volume inspect "$VOLUME" >/dev/null 2>&1; then
+  if [ "${OF_REUSE_VOLUME:-0}" != 1 ]; then
+    echo "REFUSING: volume $VOLUME already exists — another run may be using it." >&2
+    echo "  remove it yourself, pick another OF_VOLUME, or set OF_REUSE_VOLUME=1." >&2
+    exit 2
+  fi
+fi
 for bin in docker nsenter python3 curl awk; do
   command -v "$bin" >/dev/null || { echo "missing dependency: $bin" >&2; exit 3; }
 done
