@@ -447,6 +447,35 @@ api_status() { # api_status METHOD PATH KEY -> http code
 AUTH_HDR=()
 [ -n "$API_KEY" ] && AUTH_HDR=(-H "Authorization: Bearer $API_KEY")
 
+# reads /api/agents, prints "id name" for probe-shaped names only.
+# Defined here rather than in the clean-up block because the sweep needs to
+# compare against a reading taken BEFORE anything ran.
+probe_names() {
+  curl -sS -m 30 "${AUTH_HDR[@]}" "$BASE_URL/api/agents" 2>/dev/null | python3 -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit()
+agents = d if isinstance(d, list) else d.get("agents", [])
+pat = re.compile(r"^(test-a[0-9]+[a-z0-9-]*|fangrig-[a-z0-9-]+)$")
+for a in agents:
+    if isinstance(a, dict) and pat.match(str(a.get("name", ""))):
+        print("%s %s" % (a.get("id"), a.get("name")))
+' 2>/dev/null
+}
+
+# WHAT THIS RUN IS ALLOWED TO DELETE.
+#
+# The sweep used to delete every probe-shaped name it found. On a stand shared
+# with a parallel worker that is someone else's live agent: `fangrig-*` is the
+# name a run in flight is using right now. Matching a shape is not evidence that
+# this run created the thing.
+#
+# So take the reading before anything runs. Anything already standing here is
+# not ours, whatever it is called, and the sweep leaves it alone and says so.
+PRE_PROBE_IDS=" $(probe_names | awk '{print $1}' | tr '\n' ' ') "
+
 # ---------------------------------------------------------------- AUTH GATE --
 # Prove the credential before trusting anything measured with it.
 #
@@ -804,25 +833,19 @@ else
   # touched, and the pattern is anchored so an agent merely CONTAINING the
   # word "test" is safe.
   removed=0
-  probe_names() { # reads /api/agents, prints "id name" for probe-shaped names only
-    curl -sS -m 30 "${AUTH_HDR[@]}" "$BASE_URL/api/agents" 2>/dev/null | python3 -c '
-import json, re, sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    sys.exit()
-agents = d if isinstance(d, list) else d.get("agents", [])
-pat = re.compile(r"^(test-a[0-9]+[a-z0-9-]*|fangrig-[a-z0-9-]+)$")
-for a in agents:
-    if isinstance(a, dict) and pat.match(str(a.get("name", ""))):
-        print("%s %s" % (a.get("id"), a.get("name")))
-' 2>/dev/null
-  }
   probe_list="$(probe_names)"
   swept_names=""
+  kept_names=""
   if [ -n "$probe_list" ]; then
     while read -r pid pname; do
       [ -n "$pid" ] || continue
+      # Was it already standing here before this run? Then it is not ours.
+      case "$PRE_PROBE_IDS" in
+        *" $pid "*)
+          echo "  left alone: $pname ($pid) — was on the stand before this run started"
+          kept_names="$kept_names $pname"
+          continue ;;
+      esac
       code="$(curl -sS -o /dev/null -w '%{http_code}' -m 60 -X DELETE \
               "${AUTH_HDR[@]}" "$BASE_URL/api/agents/$pid" 2>/dev/null)"
       case "$code" in
@@ -845,10 +868,23 @@ for a in agents:
     echo "  nothing to remove — no probe entity was left on the stand."
   fi
   leftover="$(printf '%s' "$leftover" | sed 's/ *$//')"
-  if [ -n "$leftover" ]; then
-    echo "  STILL PRESENT after the sweep, per $BASE_URL/api/agents: $leftover"
+  kept_names="$(printf '%s' "$kept_names" | sed 's/^ *//; s/ *$//')"
+  # Anything deliberately spared is not a failure of the sweep, so say which is
+  # which. Reporting a spared agent as "still present" would train the reader to
+  # ignore the line that matters.
+  if [ -n "$kept_names" ]; then
+    echo "  NOT OURS, left standing on purpose: $kept_names"
+  fi
+  still=""
+  for lname in $leftover; do
+    case " $kept_names " in *" $lname "*) continue;; esac
+    still="$still $lname"
+  done
+  still="$(printf '%s' "$still" | sed 's/^ *//')"
+  if [ -n "$still" ]; then
+    echo "  STILL PRESENT after the sweep, per $BASE_URL/api/agents: $still"
   else
-    echo "  $BASE_URL/api/agents lists no probe agent now."
+    echo "  $BASE_URL/api/agents lists no probe agent of this run's making now."
   fi
   # And on disk, read-only: name what is still there instead of removing it.
   if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR/agents" ]; then
