@@ -1,26 +1,26 @@
 === FANG-40 follow-up · SIGTERM during a channel hot-reload ===
-date              : 2026-08-14T16:32:53Z
-image             : openfang:fang40b (sha256:78097333986f)
+date              : 2026-08-14T16:47:18Z
+image             : openfang:fang40b (sha256:cecafaa0a09b)
 container         : openfang-sigterm on http://127.0.0.1:4207, volume openfang-sigterm-data
 stub long-poll    : 30s     docker stop grace: 10s
 
 --- control: SIGTERM with a 30s long-poll outstanding, no reload ---
-docker stop: 0.65s  exit=0
+docker stop: 0.96s  exit=0
 
 --- experiment: SIGTERM 3 s into a reload that is draining the long-poll ---
-docker stop: 3.38s  exit=0
+docker stop: 3.29s  exit=0
 
 --- daemon log (tail) ---
-2026-08-14T16:33:01.094334582Z 2026-08-14T16:33:01.094139Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
-2026-08-14T16:33:01.097586955Z 2026-08-14T16:33:01.097391Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
-2026-08-14T16:33:06.199604135Z 2026-08-14T16:33:06.198823Z  INFO openfang_api::server: Received SIGTERM, shutting down...
-2026-08-14T16:33:09.202898693Z 2026-08-14T16:33:09.202653Z  INFO openfang_api::server: OpenFang daemon stopped
-2026-08-14T16:33:09.202910831Z   OpenFang daemon stopped.
+2026-08-14T16:47:27.461795807Z 2026-08-14T16:47:27.461597Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T16:47:27.464983402Z 2026-08-14T16:47:27.464814Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T16:47:32.517622878Z 2026-08-14T16:47:32.517400Z  INFO openfang_api::server: Received SIGTERM, shutting down...
+2026-08-14T16:47:35.552182014Z 2026-08-14T16:47:35.551762Z  INFO openfang_api::server: OpenFang daemon stopped
+2026-08-14T16:47:35.552203035Z   OpenFang daemon stopped.
 
-OF40S_RELOAD_SECS=6.42
-OF40S_STOP_SECS=3.38
+OF40S_RELOAD_SECS=6.32
+OF40S_STOP_SECS=3.29
 OF40S_STOP_RC=0              # 0 = clean exit, 137 = SIGKILL after the grace ran out
-OF40S_PLAIN_STOP_SECS=0.65
+OF40S_PLAIN_STOP_SECS=0.96
 OF40S_PLAIN_STOP_RC=0
 
 RESULT: GREEN — the daemon reached its own exit path inside the 10s grace
