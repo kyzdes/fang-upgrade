@@ -1,7 +1,7 @@
 # OpenFang v0.6.9 — patched fork
 
 This is [RightNow-AI/openfang](https://github.com/RightNow-AI/openfang) at `v0.6.9` with
-nine defects fixed. Upstream's `main` has not moved since 2026-05-12 while 41 pull requests
+fourteen defects fixed. Upstream's `main` has not moved since 2026-05-12 while 41 pull requests
 sit unmerged, so these fixes live here rather than there.
 
 Everything below was reproduced against the unpatched build first, fixed, then measured
@@ -97,6 +97,45 @@ instead of cutting one open, and says how many it dropped.
   `fallback.reason` and onward to `/v1/chat/completions`, SSE and WS. It now goes through the
   same sanitiser the ordinary error path already used.
 
+### Channel credentials stopped leaving the machine
+
+Two paths, both closed:
+
+- **The Telegram file URL contains the bot token** — that is how the Bot API works — and it
+  was pasted straight into the prompt: `[User sent a file (x.pdf): https://…/file/bot<TOKEN>/…]`.
+  So every file, photo or voice message sent to your bot put the token in the body of a request
+  to your LLM provider, and in the session history on disk. Reproduced against a fake Bot API:
+  the token appeared twice — in the prompt, and in the model's own `web_fetch` call, because it
+  tried to follow the URL. Now redacted before the text is built.
+- **Six adapters leaked credentials through `reqwest` errors.** `reqwest` attaches the request
+  URL to connection errors, and `dingtalk`, `messenger`, `flock`, `threema`, `wecom` and
+  `gotify` put the credential in the URL. A network blip wrote it to the log. (`gotify` was
+  wrongly believed clean earlier — its WebSocket path is fine, but `validate()` and
+  `api_send_message()` go through reqwest.)
+
+If you have been running any of these channels, treat the credentials as exposed and rotate
+them — this fix stops future leaks, it does not unpublish past ones.
+
+### file_read stops lying about how much it gave you
+
+`file_read` returns at most 30% of the context window. It always marked the cut, but there was
+no `offset`/`limit` to read the rest, and the model's own answer would report the file's full
+size as if it had read all of it. Measured: 78 483 of 117 517 bytes delivered, and a summary
+written as though nothing was missing. That is a second, independent cause of thin output —
+separate from the silent model substitution above.
+
+Now: paging via `offset`/`limit`, and a header stating what was actually delivered, what
+remains, and where to continue. The header is corrected at the truncation layer, because a
+`limit` larger than the budget would otherwise promise bytes the model never received and send
+it past the gap.
+
+### openfang_tool_calls_total was always zero
+
+The counter was declared, zeroed in three places, read — and never incremented. It exported to
+Prometheus, looked healthy, and reported zero for every agent since the beginning. It now counts
+the tool calls each response asks for. If you graphed it before, expect a series that was flat
+at zero to start moving; the `HELP` text says so.
+
 ## Database migration
 
 Schema v8 → v9 adds four nullable columns to `usage_events`, two indexes and one `UPDATE`.
@@ -156,16 +195,11 @@ port, and agents can run shell commands.
 
 Kept honest on purpose — these are real and still open:
 
-- `file_read` truncates a file to a fraction of the context window and does not tell the agent.
-  We measured a model receiving 66.8% of a transcript and reporting on it as if complete. This
-  is a second, independent cause of thin output.
 - `ChannelAdapter::stop()` is implemented by all 43 channel adapters and called by none, so a
   channel reload leaks the old poller. Measured on Telegram: 5 conflicts and 31 seconds of
   deafness per reload. In the Discord and Slack adapters the leaked task also spins hot.
 - A turn that hits `max_iterations` loses its usage accounting entirely, and returns HTTP 500
   with no partial result.
-- The Telegram file URL, which contains the bot token, is pasted into the LLM prompt when a
-  user sends a file — so the token reaches your provider and the session store.
 - Upstream's own CI is red on `feishu.rs` (`clippy::question_mark`), unrelated to these changes.
 
 ## Provenance
