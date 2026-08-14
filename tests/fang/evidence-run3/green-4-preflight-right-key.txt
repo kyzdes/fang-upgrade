@@ -1,0 +1,11 @@
+# GREEN 4 — the same measurement as red-4, after the fix to harness/lib.sh.
+#   OPENFANG_URL     = http://127.0.0.1:4211
+#   OPENFANG_CONFIG  = a config.toml carrying a DIFFERENT key
+#   OPENFANG_API_KEY = the key run.sh proved in the preflight
+# api_key() returns : <the proven key>
+#   GET /api/usage/by-model with api_key() -> HTTP 200
+#   (was 401 before the fix, while the preflight was reporting ACCEPTED)
+
+# and with no OPENFANG_API_KEY in the environment it still reads the config,
+# exactly as before, so nothing that relied on the file breaks:
+#   api_key() with OPENFANG_API_KEY unset : <the config.toml key>

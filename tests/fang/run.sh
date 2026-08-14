@@ -43,12 +43,16 @@
 #   v0.6.9-pristine, which does not have it. A verdict from a probe that was
 #   never able to work is not a verdict, and it is emphatically not a pass.
 #
-#   Two barriers now stand in front of every grade, in every mode:
+#   Two barriers stand in front of every GRADE — PASS, FAIL and REVIEW alike,
+#   in every mode:
 #
 #     1. PREFLIGHT. The credential the probes will use is resolved once, here,
 #        and proven against the target before anything runs (see AUTH GATE).
-#        If the target rejects it, nothing is graded: every selected repro is
-#        reported INCONCLUSIVE and the run fails.
+#        Proven means the target ANSWERED it — a 2xx. If the target rejects
+#        it, nothing is graded: every selected repro is reported INCONCLUSIVE
+#        and the run fails. If the target answers neither yes nor no (a 404,
+#        a 500, no answer at all), the credential is UNVERIFIED and the report
+#        says so instead of calling it accepted.
 #     2. AUTHENTICITY SCREEN. After each repro, its log is checked for
 #        (a) authentication/transport failures — the signatures of a probe
 #        that could not reach or could not enter the stand, and
@@ -60,6 +64,41 @@
 #   Both barriers only ever turn a verdict INTO INCONCLUSIVE. Neither can
 #   manufacture a pass, so a bug in them costs a false alarm, never a false
 #   all-clear.
+#
+#   SKIPPED is the one verdict the screen leaves alone, and deliberately. A
+#   skip is not a grade — it is a probe saying "I did not run, and here is
+#   why". It is already not a pass; demoting it to INCONCLUSIVE would replace
+#   the reason it gave ("no fangrig stub on this host") with a reason it never
+#   gave ("no evidence the probe did its work") and turn the run's honest
+#   "nothing ran" exit 4 into a failure exit 1. The operator would be told
+#   something that did not happen.
+#
+# ONE STAND, AND IT HAS TO BE PROVEN  (the rm -rf this runner had)
+#
+#   A stand is a URL, a container, a data directory and a key. `--base-url`
+#   names the first, `--container` names the second, and NOTHING used to check
+#   that the two were the same machine. The data directory was then derived
+#   from the container while every id, agent and verdict came from the URL —
+#   and the clean-up at the end did `rm -rf "$DATA_DIR/agents/$name"` with a
+#   name it had read from the OTHER stand's API. Point --base-url at one stand
+#   and --container at another and the run deleted files, as root, on a stand
+#   it never so much as sent a request to, then reported "removed agent X" and
+#   "the stand carries no probe agent now" — both about the wrong machine.
+#   The same wrong path was exported as OPENFANG_VOLUME, so A-1.sh and A-7.sh
+#   did their own rm -rf there too.
+#
+#   So: before anything is exported, run or deleted, the two are matched. The
+#   port in BASE_URL is compared with the ports $CONTAINER actually publishes
+#   (docker inspect). Two containers cannot publish the same host port, so a
+#   match is a proof and not a guess. No match, no run — exit 2, nothing
+#   exported, nothing touched. The data directory is then taken from that
+#   proven container's /data mount; if it has none, the run refuses rather
+#   than falling back to a default volume that belongs to a different stand.
+#
+#   And the clean-up no longer derives a path at all. It deletes through the
+#   API, at $BASE_URL, which is the one channel that cannot address the wrong
+#   machine. Anything left on disk is listed by name and left alone: a named
+#   leftover is cheaper than an rm -rf on a hunch.
 #
 # VERDICT MODES
 #   exit4    0=RED(reproduced) 1=GREEN(not reproduced) 2=REFUSED 3=SKIPPED
@@ -80,10 +119,14 @@
 #   ERROR         crashed, timed out, or returned a code its mode cannot read
 #
 # EXIT CODE
-#   0  every repro that ran reached its expected verdict, and at least one ran
+#   0  every repro that was GRADED reached its expected verdict, and at least
+#      one repro ran. The closing line says how many were graded, because a
+#      run whose rows are all REVIEW graded nothing and must not read as an
+#      all-clear.
 #   1  at least one FAIL or INCONCLUSIVE
-#   2  at least one ERROR, a usage error, or the preflight could not establish
-#      that the probes can talk to the target (harness problem, not a verdict)
+#   2  at least one ERROR, a usage error, the preflight could not establish
+#      that the probes can talk to the target, or the target could not be
+#      resolved to one stand (harness problem, not a verdict)
 #   3  refused: pointed at production
 #   4  nothing ran at all — everything was skipped. Deliberately not 0: a run
 #      that executed no repro has proven nothing, and "no failures" out of an
@@ -101,6 +144,7 @@ CONTAINER="${OF_CONTAINER:-openfang-staging}"
 TIMEOUT_SECS=900
 RUN_COSTLY=0
 ONLY=""
+ONLY_GIVEN=0
 OUT_DIR=""
 LIST_ONLY=0
 KEEP_PROBES=0
@@ -110,7 +154,7 @@ usage_error() { echo "run.sh: $*" >&2; echo "run.sh: try --help" >&2; exit 2; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --costly)     RUN_COSTLY=1; shift ;;
-    --only)       [ $# -ge 2 ] || usage_error "--only needs a value"; ONLY="$2"; shift 2 ;;
+    --only)       [ $# -ge 2 ] || usage_error "--only needs a value"; ONLY="$2"; ONLY_GIVEN=1; shift 2 ;;
     --list)       LIST_ONLY=1; shift ;;
     --timeout)    [ $# -ge 2 ] || usage_error "--timeout needs a value"; TIMEOUT_SECS="$2"; shift 2 ;;
     --out)        [ $# -ge 2 ] || usage_error "--out needs a value"; OUT_DIR="$2"; shift 2 ;;
@@ -140,13 +184,24 @@ done
 # stand actually served. Not "the script ran"; "the script got its hands on
 # the system under test". `-` means no witness could be grounded in the
 # script's own output; those rows are listed as such in the report rather than
-# quietly enjoying the benefit of the doubt.
+# quietly enjoying the benefit of the doubt. There are none left: A-7 used to
+# be one, which made the claim at the top of this file false for it — a probe
+# that did nothing at all still came back REVIEW and the run still exited 0.
+#
+# WHERE THE PATTERNS COME FROM. Every one is a literal line its script prints.
+# Whether a RECORDED run also shows it is a separate question, and not one to
+# answer in a comment that can rot: the report computes it at the end of every
+# run by grepping baseline/, after*/ and evidence-run*/live-<ID>.log, and it
+# prints which witnesses a recorded run confirms and which rest on the script
+# source alone. Some baselines here are written-up recon documents rather than
+# captured stdout, which is how a pattern can be right and still unconfirmed;
+# the report names those, so this comment does not have to and cannot be wrong.
 REPROS=(
   "A-1|A-1.sh|manual|-|cheap|^agent_id: [0-9a-f]{8}|PUT /api/agents/{id}/update was a 200-returning no-op (fixes b86e65b, 6cb20be)"
   "A-2|A-2.sh|a2|GREEN|cheap|\"status\": \"added\"&&\"status\": \"removed\"|remove_custom_model did not recompute provider.model_count (fix 5891b2b)"
   "A-4|A-4.sh|manual|-|costly|^agent_id: +[0-9a-f]{8}|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
   "A-6|A-6.sh|manual|-|costly|DETERMINABLE: YES|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
-  "A-7|A-7.sh|manual|-|costly|-|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
+  "A-7|A-7.sh|manual|-|costly|^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}&&^test-a7-control +200 +answered|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
   "FANG-31|FANG-31.sh|result|RED|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
@@ -198,8 +253,20 @@ fi
 # A misspelt id used to select nothing, and selecting nothing used to look
 # exactly like an honest run in which every repro was skipped. It is a usage
 # error: say which id is wrong, list the real ones, and refuse to run.
+#
+# `--only ''` is the same usage error. It used to be indistinguishable from
+# --only never being passed, i.e. it quietly ran all twelve — the exact
+# outcome ("selecting nothing looks like an honest run") this block exists to
+# prevent, reached through the flag itself.
 SELECTED=()
-if [ -n "$ONLY" ]; then
+if [ "$ONLY_GIVEN" = 1 ]; then
+  # ',,' and '  ' select nothing just as '' does.
+  if [ -z "${ONLY//[, ]/}" ]; then
+    echo "run.sh: --only was given an empty selection ('$ONLY')." >&2
+    echo "run.sh: to run everything, pass no --only at all." >&2
+    echo "run.sh: known ids: ${ALL_IDS[*]}" >&2
+    exit 2
+  fi
   IFS=',' read -ra want <<<"$ONLY"
   bad=""
   for w in "${want[@]}"; do
@@ -258,41 +325,118 @@ fi
 # agents on, whatever stand happened to sit on :4201. The header named one
 # machine, the work happened on another.
 #
-# So resolve the whole target here, from the container itself (its /data mount
-# IS the data directory — no second guess about which volume goes with which
-# port), and export the lot. Everything downstream — the probes, fangrig,
-# lib.sh, ofctl — reads these names, so there is exactly one way to be wrong
-# and it is visible in the header.
-DATA_DIR=""
+# Resolving it all from the container was half the answer, and the dangerous
+# half on its own: it made the data directory agree with --container while
+# every id and verdict still came from --base-url, so the two names could
+# still point at different machines — and the clean-up deleted files at the
+# path derived from the loser. Match them first.
+#
+# THE MATCH. Ask docker which host ports $CONTAINER publishes and look for the
+# one BASE_URL is asking for. A host port is exclusive — two containers cannot
+# publish the same one — so "the container publishes 127.0.0.1:4211 and the
+# URL is http://127.0.0.1:4211" is a proof that this container serves this
+# URL, not a plausible story about it. The match is strict about the address
+# too: a container published on 127.0.0.1:P does not answer for
+# http://10.0.0.5:P, and only a wildcard bind (0.0.0.0 / ::) matches any host.
+url_host_port() { # URL -> "host port", with localhost normalised
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import urlsplit
+u = urlsplit(sys.argv[1])
+host = (u.hostname or "").lower()
+if host in ("localhost", "ip6-localhost", "::1"):
+    host = "127.0.0.1"
+port = u.port or (443 if u.scheme == "https" else 80)
+print("%s %s" % (host, port))
+PY
+}
+
+BIND_STATE=unchecked
+BIND_WHY="the pair was never checked: $STAGING_WHY"
+URL_HOST=""; URL_PORT=""
 if [ "$STAGING_UP" = 1 ]; then
+  read -r URL_HOST URL_PORT <<<"$(url_host_port "$BASE_URL")"
+  PUBLISHED="$(docker inspect \
+      -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' \
+      "$CONTAINER" 2>/dev/null)"
+  BIND_STATE=unproven
+  BIND_WHY="'$CONTAINER' publishes [${PUBLISHED:-nothing}], and $BASE_URL (host $URL_HOST, port $URL_PORT) is not among them"
+  for hp in $PUBLISHED; do
+    hip="${hp%:*}"; hport="${hp##*:}"
+    [ "$hport" = "$URL_PORT" ] || continue
+    case "$hip" in
+      "$URL_HOST"|0.0.0.0|::|"")
+        BIND_STATE=proven
+        BIND_WHY="'$CONTAINER' publishes $hip:$hport, which is exactly what $BASE_URL asks for"
+        break ;;
+    esac
+  done
+fi
+
+# Refuse before a single variable is exported: an unproven pair is how a run
+# against one stand deleted files on another.
+if [ "$STAGING_UP" = 1 ] && [ "$BIND_STATE" != proven ]; then
+  echo "REFUSING: --container and --base-url do not name the same stand." >&2
+  echo "  base url : $BASE_URL" >&2
+  echo "  container: $CONTAINER" >&2
+  echo "  $BIND_WHY" >&2
+  echo >&2
+  echo "  Everything downstream — the data directory, the config, the api key," >&2
+  echo "  the agents the probes create and the ones the clean-up deletes — is" >&2
+  echo "  addressed by one of these two names. While they disagree, the run" >&2
+  echo "  would read from one machine and write to the other. Nothing was run" >&2
+  echo "  and nothing was touched." >&2
+  exit 2
+fi
+
+# Only now, and only from the proven container: its /data mount IS the data
+# directory. There is deliberately no fallback — the old one defaulted to the
+# shared staging volume, which is a different stand's data whenever the
+# container is not staging.
+DATA_DIR=""
+DATA_DIR_SRC="not resolved"
+if [ "$BIND_STATE" = proven ]; then
   DATA_DIR="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null)"
+  if [ -n "$DATA_DIR" ]; then
+    DATA_DIR_SRC="$CONTAINER:/data"
+  else
+    echo "REFUSING: '$CONTAINER' serves $BASE_URL but has nothing mounted at /data," >&2
+    echo "  so this run cannot say where its data directory is. Every probe here" >&2
+    echo "  reads or writes it. Guessing a volume is how files get deleted on the" >&2
+    echo "  wrong stand; nothing was run and nothing was touched." >&2
+    exit 2
+  fi
 fi
-if [ -z "$DATA_DIR" ]; then
-  DATA_DIR="${OPENFANG_VOLUME:-/var/lib/docker/volumes/openfang-staging-data/_data}"
-  DATA_DIR_SRC="fallback (container has no /data mount)"
-else
-  DATA_DIR_SRC="$CONTAINER:/data"
-fi
-CONFIG="$DATA_DIR/config.toml"
+CONFIG=""
+[ -n "$DATA_DIR" ] && CONFIG="$DATA_DIR/config.toml"
 
 # The key: the environment wins, exactly as ofctl resolves it, so that
 # `OPENFANG_API_KEY=<rubbish> ./run.sh` is a question this runner can be
 # asked and must answer honestly.
 KEY_SRC=""
+API_KEY=""
 if [ -n "${OPENFANG_API_KEY:-}" ]; then
   API_KEY="$OPENFANG_API_KEY"; KEY_SRC='$OPENFANG_API_KEY (environment)'
-else
+elif [ -n "$CONFIG" ]; then
   API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
   KEY_SRC="$CONFIG"
+else
+  KEY_SRC="nowhere — the target was never resolved"
 fi
 
 export OPENFANG_URL="$BASE_URL"
 export OF_CONTAINER="$CONTAINER"
-export OPENFANG_CONFIG="$CONFIG"
-export OF_CONFIG="$CONFIG"
-export OPENFANG_VOLUME="$DATA_DIR"       # A-1.sh
-export OPENFANG_HOME_HOST="$DATA_DIR"    # A-4.sh / A-6.sh / A-7.sh
 export OPENFANG_API_KEY="$API_KEY"
+# The path exports go out ONLY when a proven container produced them. Left
+# unset otherwise: each probe defaults an unset OPENFANG_VOLUME to the shared
+# staging volume, so exporting an empty string here would aim their own
+# `rm -rf` at a stand nobody named. Nothing runs in that state anyway.
+if [ -n "$DATA_DIR" ]; then
+  export OPENFANG_CONFIG="$CONFIG"
+  export OF_CONFIG="$CONFIG"
+  export OPENFANG_VOLUME="$DATA_DIR"       # A-1.sh
+  export OPENFANG_HOME_HOST="$DATA_DIR"    # A-4.sh / A-6.sh / A-7.sh
+fi
 
 api_status() { # api_status METHOD PATH KEY -> http code
   local auth=()
@@ -324,13 +468,19 @@ if [ "$STAGING_UP" = 1 ]; then
       401|403)
         AUTH_ROUTE="$route"
         good="$(api_status GET "$route" "$API_KEY")"
+        # Only an answer counts as acceptance. "Not a 401" is not the same
+        # thing as "yes": a 404 says the route moved, a 500 says the stand
+        # broke before it got round to the credential, and both used to be
+        # read here as ACCEPTED and printed as such in the header.
         case "$good" in
+          2??)     AUTH_STATE=accepted
+                   AUTH_WHY="GET $route: bad key -> $bad, this key -> $good" ;;
           401|403) AUTH_STATE=rejected
                    AUTH_WHY="$BASE_URL answered HTTP $good to GET $route with the key from $KEY_SRC" ;;
           000|"")  AUTH_STATE=undecidable
                    AUTH_WHY="GET $route gave no answer at all with the real key" ;;
-          *)       AUTH_STATE=accepted
-                   AUTH_WHY="GET $route: bad key -> $bad, this key -> $good" ;;
+          *)       AUTH_STATE=undecidable
+                   AUTH_WHY="GET $route answered HTTP $good to this key (bad key -> $bad): neither an acceptance nor a rejection, so the credential is unproven" ;;
         esac
         break ;;
     esac
@@ -344,9 +494,14 @@ mkdir -p "$OUT_DIR" || { echo "cannot create $OUT_DIR" >&2; exit 2; }
 echo "======================================================================"
 echo "tests/fang/run.sh — $TS"
 echo "target      : $BASE_URL   container: $CONTAINER"
-echo "data dir    : $DATA_DIR   (from $DATA_DIR_SRC)"
-echo "config      : $CONFIG"
-echo "api key     : ${API_KEY:+${#API_KEY} chars} from $KEY_SRC"
+case "$BIND_STATE" in
+  proven)  echo "same stand? : PROVEN — $BIND_WHY" ;;
+  *)       echo "same stand? : NOT PROVEN — $BIND_WHY" ;;
+esac
+echo "data dir    : ${DATA_DIR:-(none)}   (from $DATA_DIR_SRC)"
+echo "config      : ${CONFIG:-(none)}"
+# Length only, never the key itself.
+echo "api key     : $([ -n "$API_KEY" ] && printf '%s chars' "${#API_KEY}" || printf '(none)') from $KEY_SRC"
 if [ "$STAGING_UP" = 1 ]; then
   echo "staging     : up (image $(docker inspect -f '{{.Config.Image}}' "$CONTAINER" 2>/dev/null))"
 else
@@ -389,7 +544,7 @@ for r in "${REPROS[@]}"; do
   expect="$(field "$r" 4)"; cost="$(field "$r" 5)"; witness="$(field "$r" 6)"
   covers="$(field "$r" 7)"
 
-  if [ -n "$ONLY" ] && ! in_list "$id" "${SELECTED[@]}"; then
+  if [ "$ONLY_GIVEN" = 1 ] && ! in_list "$id" "${SELECTED[@]}"; then
     continue
   fi
 
@@ -484,27 +639,40 @@ for r in "${REPROS[@]}"; do
   fi
 
   # ---- authenticity screen ------------------------------------------------
-  # Applied to every mode, inherited scripts included. It can only downgrade.
+  # Applied to every GRADE, in every mode, inherited scripts included. It can
+  # only downgrade.
+  #
+  # SKIPPED is exempt, and that is not a hole: a skip is a probe declining to
+  # run and saying why. Of course its log carries no witness — it did no work,
+  # which is precisely what it reported. Screening it would overwrite the one
+  # useful thing it said with "no evidence the probe did its work" and turn an
+  # all-skipped run's exit 4 ("nothing ran, this proves nothing") into exit 1
+  # ("something failed"). Neither is true, and SKIPPED was never a pass.
   case "$verdict" in
-    ERROR|REFUSED|INCONCLUSIVE) ;;   # already not a pass; nothing to demote
+    ERROR|REFUSED|INCONCLUSIVE|SKIPPED) ;;   # already not a pass; nothing to demote
     *)
       hit="$(grep -m1 -E "$DISQUALIFY_RE" "$log" 2>/dev/null)"
       if [ -n "$hit" ]; then
         note="the probe could not reach or could not enter the stand: $(printf '%s' "$hit" | cut -c1-110)"
         verdict=INCONCLUSIVE
       elif [ "$witness" != "-" ]; then
-        missing=""
-        # `&&`-joined patterns: every one of them has to be there.
+        # `&&`-joined patterns: every one of them has to be there, and every
+        # one that is not gets named. Keeping only the last miss told the
+        # operator to go looking for one thing when two were absent.
+        missing=""; n_missing=0
         rest="$witness"
         while [ -n "$rest" ]; do
           case "$rest" in
             *"&&"*) pat="${rest%%&&*}"; rest="${rest#*&&}" ;;
             *)      pat="$rest"; rest="" ;;
           esac
-          grep -qE -- "$pat" "$log" 2>/dev/null || missing="$pat"
+          if ! grep -qE -- "$pat" "$log" 2>/dev/null; then
+            missing="${missing:+$missing and }/$pat/"
+            n_missing=$((n_missing + 1))
+          fi
         done
-        if [ -n "$missing" ]; then
-          note="no evidence the probe did its work: nothing in the log matches /$missing/"
+        if [ "$n_missing" -gt 0 ]; then
+          note="no evidence the probe did its work: nothing in the log matches $missing"
           verdict=INCONCLUSIVE
         fi
       fi
@@ -566,12 +734,59 @@ if [ -n "$NOWIT" ]; then
 else
   echo "every repro in the registry carries a witness pattern."
 fi
+echo
+# Provenance, computed rather than claimed. A witness is a line its script
+# prints; whether a run recorded on disk ALSO shows it is checked here, every
+# run, against baseline/ and after*/ — so this cannot drift out of date the
+# way a sentence in a comment can. A pattern no recorded run confirms is not
+# wrong, but it has never been seen to fire, and the reader is told which.
+CONFIRMED=""; UNCONFIRMED=""
+for r in "${REPROS[@]}"; do
+  wid="$(field "$r" 1)"; wpat="$(field "$r" 6)"
+  [ "$wpat" = "-" ] && continue
+  seen=0
+  for f in "$HERE/baseline/$wid.txt" "$HERE/after/$wid.txt" "$HERE/after-v2/$wid.txt" \
+           "$HERE"/evidence-run*/live-"$wid".log; do
+    [ -f "$f" ] || continue
+    all=1; wrest="$wpat"
+    while [ -n "$wrest" ]; do
+      case "$wrest" in
+        *"&&"*) wp="${wrest%%&&*}"; wrest="${wrest#*&&}" ;;
+        *)      wp="$wrest"; wrest="" ;;
+      esac
+      grep -qE -- "$wp" "$f" 2>/dev/null || all=0
+    done
+    [ "$all" = 1 ] && { seen=1; break; }
+  done
+  if [ "$seen" = 1 ]; then CONFIRMED="$CONFIRMED $wid"; else UNCONFIRMED="$UNCONFIRMED $wid"; fi
+done
+echo "witnesses confirmed by a run recorded on disk :$CONFIRMED"
+if [ -n "$UNCONFIRMED" ]; then
+  echo "witnesses no recorded run confirms            :$UNCONFIRMED"
+  echo "  (the pattern is a line the script prints, but nothing captured on disk"
+  echo "   shows it: the file under baseline/ for that repro is a written-up"
+  echo "   document rather than the script's stdout. Not wrong — never yet seen"
+  echo "   to fire. Capture one as evidence-run*/live-<ID>.log and this line"
+  echo "   will shorten by itself.)"
+fi
 
 # ---------------------------------------------------------- probe clean-up --
 # A-1 ends with "probe agent left in place"; fangrig removes its own agents in
 # `down`, but only if the script got that far. A run that leaves test agents
 # behind changes the stand for the next run, so sweep, and — whether anything
 # was found or not — say what the stand looks like afterwards.
+#
+# THE SWEEP DOES NOT TOUCH THE FILESYSTEM. It deletes through the API, at
+# $BASE_URL — the same channel it read the ids from, and the only one that
+# cannot address a machine nobody named. It used to follow each DELETE with
+# `rm -rf "$DATA_DIR/agents/$name"`, a path built from --container, on a name
+# read from --base-url; with the two pointing at different stands that is an
+# rm -rf, as root, on a stand this run never sent a request to. The container
+# is proven to serve the URL now, so the path would be right — and the rm is
+# still gone, because a sweep that cannot construct a path cannot construct a
+# wrong one. Whatever the API leaves on disk is listed by name below and left
+# where it is. A named leftover costs the next run a stale directory; the
+# alternative cost someone else's data.
 echo
 echo "======================================================================"
 echo "CLEAN-UP — probe entities on $BASE_URL"
@@ -604,17 +819,17 @@ for a in agents:
 ' 2>/dev/null
   }
   probe_list="$(probe_names)"
+  swept_names=""
   if [ -n "$probe_list" ]; then
     while read -r pid pname; do
       [ -n "$pid" ] || continue
       code="$(curl -sS -o /dev/null -w '%{http_code}' -m 60 -X DELETE \
               "${AUTH_HDR[@]}" "$BASE_URL/api/agents/$pid" 2>/dev/null)"
       case "$code" in
-        2*) echo "  removed agent $pname ($pid)"; removed=$((removed + 1))
-            if [ -d "$DATA_DIR/agents/$pname" ]; then
-              rm -rf "$DATA_DIR/agents/$pname" && echo "  removed $DATA_DIR/agents/$pname"
-            fi ;;
-        *)  echo "  COULD NOT remove agent $pname ($pid): HTTP $code — still on the stand" ;;
+        2*) echo "  removed agent $pname ($pid) via DELETE $BASE_URL/api/agents/$pid"
+            removed=$((removed + 1)); swept_names="$swept_names $pname" ;;
+        *)  echo "  COULD NOT remove agent $pname ($pid): HTTP $code — still on the stand"
+            swept_names="$swept_names $pname" ;;
       esac
     done <<<"$probe_list"
   fi
@@ -631,9 +846,23 @@ for a in agents:
   fi
   leftover="$(printf '%s' "$leftover" | sed 's/ *$//')"
   if [ -n "$leftover" ]; then
-    echo "  STILL PRESENT after the sweep: $leftover"
+    echo "  STILL PRESENT after the sweep, per $BASE_URL/api/agents: $leftover"
   else
-    echo "  the stand carries no probe agent now."
+    echo "  $BASE_URL/api/agents lists no probe agent now."
+  fi
+  # And on disk, read-only: name what is still there instead of removing it.
+  if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR/agents" ]; then
+    on_disk=""
+    for pname in $(printf '%s %s' "$swept_names" "$leftover" | tr ' ' '\n' | sort -u); do
+      [ -d "$DATA_DIR/agents/$pname" ] && on_disk="$on_disk $pname"
+    done
+    if [ -n "$on_disk" ]; then
+      echo "  LEFT ON DISK, not deleted, under $DATA_DIR/agents:$on_disk"
+      echo "  This sweep does not remove directories. Delete them by hand if you"
+      echo "  want them gone — and check the path before you do."
+    else
+      echo "  nothing of the probes' left under $DATA_DIR/agents."
+    fi
   fi
 fi
 
@@ -752,12 +981,19 @@ if [ $((N_PASS + N_FAIL + N_REVIEW)) -eq 0 ]; then
   echo "        proves nothing. Reasons are listed above; fix them or say so."
   exit 4
 fi
-if [ "$AUTH_STATE" = undecidable ]; then
-  echo "run.sh: every repro that ran reached its expected verdict — but the"
-  echo "        credential could not be verified ($AUTH_WHY),"
-  echo "        so the passes above rest on each repro's own witness alone."
+# Say what was actually graded. "Every repro that ran reached its expected
+# verdict" reads as an all-clear over a run whose only rows were REVIEW — and
+# a REVIEW reached no verdict at all, expected or otherwise.
+if [ "$N_PASS" -gt 0 ]; then
+  echo "run.sh: all $N_PASS graded repro(s) reached the verdict this build should produce."
 else
-  echo "run.sh: every repro that ran reached its expected verdict."
+  echo "run.sh: NOTHING WAS GRADED — no repro in this selection produced a"
+  echo "        machine-readable verdict, so nothing here was checked against"
+  echo "        what this build is expected to do."
+fi
+if [ "$AUTH_STATE" = undecidable ]; then
+  echo "        The credential could not be verified ($AUTH_WHY),"
+  echo "        so anything above rests on each repro's own witness alone."
 fi
 echo "        ($N_SKIP skipped, $N_REVIEW awaiting a human — neither is a pass.)"
 exit 0

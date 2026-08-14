@@ -1,0 +1,124 @@
+# RED 1 — run.sh cleanup deletes files on a stand it never talked to
+# HEAD: 897679b  (pre-fix)
+# stand A = of-r3a on http://127.0.0.1:4211   <- --base-url points here, the run works here
+# stand B = of-r3b on http://127.0.0.1:4212   <- --container names this one, NOBODY talks to it
+# planted on B before the run:
+total 4
+-rw-r--r-- 1 root root 90 Aug 14 18:26 precious.txt
+8237ae4d14d00a7364630ccf128506aa  /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt
+# agents on A before:
+    8ebbd8ab-c31a-47a2-b361-27b92a2d7232 assistant
+    9bc89df2-3bbb-44b9-852c-0d2fb5bd29e6 test-a1-probe
+# agents on B before:
+    57618a6c-531d-44a6-94cf-323fc0e1ec03 assistant
+# command:
+#   OPENFANG_API_KEY=<A key> ./run.sh --only A-2 --base-url http://127.0.0.1:4211 --container of-r3b
+======================================================================
+======================================================================
+tests/fang/run.sh — 20260814-172622
+target      : http://127.0.0.1:4211   container: of-r3b
+data dir    : /var/lib/docker/volumes/of-r3b-data/_data   (from of-r3b:/data)
+config      : /var/lib/docker/volumes/of-r3b-data/_data/config.toml
+api key     : 23 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-172622
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (1s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           A-2      GREEN
+
+PASS=1  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+======================================================================
+  removed agent test-a1-probe (9bc89df2-3bbb-44b9-852c-0d2fb5bd29e6)
+  removed /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe
+  the stand carries no probe agent now.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+5891b2b   direct  A-2                base+after fix(runtime): recount provider model_count on custom model removal
+366d62f   direct  A-7                base+after fix(kernel): resolve fallback base_url per provider, not from default_model
+cdd70de   direct  A-4                base+after fix(runtime): wrap runtime prompt data in tags, not ## headings
+63f9185   direct  none               none       fix(runtime): cap workspace context by whole file blocks
+b86e65b   direct  A-1                base+after fix(api): PUT /agents/{id}/update returns 501 and names the working routes
+6cb20be   direct  A-1                base+after fix(api): the 501 body was wrong about skills, mcp_servers and tools
+61dd183   direct  none               none       fix(runtime): drop a dead assignment clippy was right about
+bf0fee0   direct  none               none       fix(telegram): stop leaking the bot token into logs on network errors
+cbb0660   direct  A-6                base+after fix(metering): meter usage per LLM call, not per agent turn
+308cd7a   direct  none               none       fix(kernel): report what hot-reload actually applied, not what it detected
+acc85d7   direct  FANG-43            base only  fix(channels): stop token/secret leaks in Telegram file content and 6 adapters
+8b502f9   direct  FANG-45            base only  fix(tools): make file_read disclose truncation and support offset/limit paging
+8a2f8d4   bundle  A-1,A-2,A-6,A-7    base+after fix: four defects the adversarial review found in the sprint-2 patches
+d83abbf   bundle  FANG-43,FANG-45    base only  fix: three defects the adversarial review found in the sprint-3 patches
+
+Counted by fix commit (12 direct + 2 adversarial round-ups = 14):
+  direct fixes with a baseline AND an after-the-fix run : 6
+  direct fixes with a baseline but no green recorded    : 2
+  direct fixes with no reproduction at all              : 4
+  round-up commits inheriting the rows above            : 2
+
+Counted by reproduction script (two commits can share one script, which
+is why these numbers are smaller than the ones above):
+  baseline + after (a red run and a green run on record): A-1 A-2 A-4 A-6 A-7
+  baseline only (red on record, no green yet)           : FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG-47
+  no baseline on disk at all                            :
+
+  Note on the 'baseline only' group: for FANG-43 and FANG-45 the missing
+  green is a gap in the evidence. For FANG-9/10/13/31/47 it is not — those
+  defects have no fix commit on 'ours', so red IS the current truth and
+  there is nothing green to record until sprint 5.
+
+Repros in this directory that are NOT tied to a fix commit — they
+reproduce defects that are still open on 'ours', which is why their
+expected verdict above is RED:
+  FANG-31  Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)
+  FANG-9   agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)
+  FANG-10  max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)
+  FANG-13  an empty-but-valid provider response is returned as a successful turn (NO FIX)
+  FANG-47  the max-iterations exit discards the whole turn's accounting (NO FIX)
+
+Baselines on disk:
+  A-1.txt                        2913 bytes
+  A-2.txt                        2179 bytes
+  A-4.txt                       13023 bytes
+  A-6.txt                       60015 bytes
+  A-7-run1.txt                   9405 bytes
+  A-7.txt                       12368 bytes
+  FANG-10.txt                    3033 bytes
+  FANG-13.txt                    2767 bytes
+  FANG-31.txt                   10872 bytes
+  FANG-43.txt                    2723 bytes
+  FANG-44-audit.txt             13452 bytes
+  FANG-45.txt                    8900 bytes
+  FANG-47.txt                    2489 bytes
+  FANG-9.txt                     2360 bytes
+
+run.sh: every repro that ran reached its expected verdict.
+        (0 skipped, 0 awaiting a human — neither is a pass.)
+# exit code: 0
+======================================================================
+# stand B AFTER the run:
+total 8
+drwxr-xr-x 2 root root 4096 Aug 14 18:26 .
+drwxr-xr-x 5 root root 4096 Aug 14 18:26 ..
+# precious.txt:
+ls: cannot access '/var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt': No such file or directory
+   GONE

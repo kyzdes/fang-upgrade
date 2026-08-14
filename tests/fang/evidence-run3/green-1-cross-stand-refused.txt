@@ -1,0 +1,38 @@
+# GREEN 1 — the two-stand scenario from red-1 / red-1b, after the fix.
+# HEAD 897679b + working tree. Stand A = of-r3a :4211, stand B = of-r3b :4212.
+# planted on stand B: 8237ae4d14d00a7364630ccf128506aa  /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt
+# probe agent on stand A: ['test-a1-probe', 'assistant']
+
+==== OPENFANG_API_KEY=<A key> ./run.sh --only A-2 --base-url http://127.0.0.1:4211 --container of-r3b ====
+REFUSING: --container and --base-url do not name the same stand.
+  base url : http://127.0.0.1:4211
+  container: of-r3b
+  'of-r3b' publishes [127.0.0.1:4212 ], and http://127.0.0.1:4211 (host 127.0.0.1, port 4211) is not among them
+
+  Everything downstream — the data directory, the config, the api key,
+  the agents the probes create and the ones the clean-up deletes — is
+  addressed by one of these two names. While they disagree, the run
+  would read from one machine and write to the other. Nothing was run
+  and nothing was touched.
+exit=2
+
+==== OPENFANG_API_KEY=<A key> ./run.sh --only A-1 --base-url http://127.0.0.1:4211 --container of-r3b ====
+REFUSING: --container and --base-url do not name the same stand.
+  base url : http://127.0.0.1:4211
+  container: of-r3b
+  'of-r3b' publishes [127.0.0.1:4212 ], and http://127.0.0.1:4211 (host 127.0.0.1, port 4211) is not among them
+
+  Everything downstream — the data directory, the config, the api key,
+  the agents the probes create and the ones the clean-up deletes — is
+  addressed by one of these two names. While they disagree, the run
+  would read from one machine and write to the other. Nothing was run
+  and nothing was touched.
+exit=2
+
+# stand B AFTER both attempts — byte for byte what was planted:
+total 4
+-rw-r--r-- 1 root root 90 Aug 14 18:42 precious.txt
+8237ae4d14d00a7364630ccf128506aa  /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt
+# stand A still carries its probe agent: nothing ran, so nothing was swept.
+    test-a1-probe
+    assistant

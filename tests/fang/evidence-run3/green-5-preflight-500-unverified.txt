@@ -1,0 +1,23 @@
+# GREEN 5 — a stand that answers 500 to the credential is UNVERIFIED, not ACCEPTED.
+# Same stub stand as red-5 (container of-r3s on :4213): bad key -> 401, any key -> 500.
+==== run ====
+======================================================================
+tests/fang/run.sh — 20260814-174338
+target      : http://127.0.0.1:4213   container: of-r3s
+same stand? : PROVEN — 'of-r3s' publishes 127.0.0.1:4213, which is exactly what http://127.0.0.1:4213 asks for
+data dir    : /var/lib/docker/volumes/40f91a9eb9fe9914df49f56ae43c98da26fee190b7b520df980cd494f56a5222/_data   (from of-r3s:/data)
+config      : /var/lib/docker/volumes/40f91a9eb9fe9914df49f56ae43c98da26fee190b7b520df980cd494f56a5222/_data/config.toml
+api key     : 30 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : UNVERIFIED — GET /api/usage/by-model answered HTTP 500 to this key (bad key -> 401): neither an acceptance nor a rejection, so the credential is unproven
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-174338
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... INCONCLUSIVE (2s)
+         the script's own control failed
+
+======================================================================
+==== closing lines ====
+
+run.sh: FAIL — 1 repro(s) did not reach the expected verdict.

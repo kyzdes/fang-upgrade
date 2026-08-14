@@ -1,0 +1,17 @@
+# GREEN 7 — every missing witness pattern is named, not just the last.
+#   #!/usr/bin/env bash
+#   # stand-in for A-2.sh: reports GREEN (exit 1) having shown no evidence at all.
+#   echo "A-2 stand-in: no output that could witness any work"
+#   exit 1
+# A-2's witness: "status": "added"&&"status": "removed" — the stand-in prints neither.
+==== ./run.sh --only A-2 --base-url http://127.0.0.1:4211 --container of-r3a ====
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... INCONCLUSIVE (0s)
+         no evidence the probe did its work: nothing in the log matches /"status": "added"/ and /"status": "removed"/
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-2      INCONCLUSIVE — no evidence the probe did its work: nothing in the log matches /"status": "added"/ and /"status": "removed"/
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0

@@ -48,10 +48,22 @@ require_bin() {
 }
 
 # --------------------------------------------------------------- api key --
+# Resolution order is ofctl's, and tests/fang/run.sh's: the environment first,
+# then the config file. It used to be the config file and nothing else, which
+# made run.sh's preflight a statement about a credential these repros never
+# used — `OPENFANG_API_KEY=<key> ./run.sh` proved that key against the target,
+# printed "credential: ACCEPTED", and then FANG-9/10/13/47 went off and used
+# whatever `api_key` happened to sit in $CONFIG. Measured: with a valid key in
+# the environment and a different stand's config in $CONFIG, the preflight got
+# HTTP 200 and this function's key got HTTP 401 from the same route.
 _api_key_cache=""
 api_key() {
   if [ -z "$_api_key_cache" ]; then
-    _api_key_cache="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+    if [ -n "${OPENFANG_API_KEY:-}" ]; then
+      _api_key_cache="$OPENFANG_API_KEY"
+    else
+      _api_key_cache="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+    fi
   fi
   printf '%s' "$_api_key_cache"
 }

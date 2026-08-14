@@ -1,0 +1,34 @@
+# RED 5 — the preflight calls the credential ACCEPTED on any answer that is
+#          not 401/403/000 — 500 included.
+# HEAD: 897679b (pre-fix). run.sh:326-334:
+#     case "$good" in 401|403) rejected ;; 000|"") undecidable ;; *) accepted ;; esac
+# Stand 'of-r3s' on :4213 answers GET /api/usage/by-model:
+#     bad key  -> 401   (so the route does discriminate, the gate engages)
+#     any key  -> 500   (so nothing at all was proved about the credential)
+==================== run ====================
+======================================================================
+tests/fang/run.sh — 20260814-172910
+target      : http://127.0.0.1:4213   container: of-r3s
+data dir    : /var/lib/docker/volumes/40f91a9eb9fe9914df49f56ae43c98da26fee190b7b520df980cd494f56a5222/_data   (from of-r3s:/data)
+config      : /var/lib/docker/volumes/40f91a9eb9fe9914df49f56ae43c98da26fee190b7b520df980cd494f56a5222/_data/config.toml
+api key     : 30 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 500
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-172910
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... INCONCLUSIVE (2s)
+         the script's own control failed
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-2      INCONCLUSIVE — the script's own control failed
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================

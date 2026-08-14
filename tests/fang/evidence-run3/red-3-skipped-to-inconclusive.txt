@@ -1,0 +1,36 @@
+# RED 3 — an HONEST skip (exit 3, 'preconditions not met') is rewritten as
+#          INCONCLUSIVE by the authenticity screen: the reason is replaced,
+#          and the run's exit code goes 4 -> 1.
+# HEAD: 897679b (pre-fix). FANG-9.sh replaced by a stand-in that skips honestly:
+#   #!/usr/bin/env bash
+#   # stand-in for FANG-9.sh: an HONEST skip — the fangrig stub is not available.
+#   echo "SKIPPED: fangrig stub not installed on this host; preconditions not met"
+#   exit 3
+# command: ./run.sh --only FANG-9 --base-url http://127.0.0.1:4211 --container of-r3a
+==================== run ====================
+
+FANG-9   running   (FANG-9.sh, mode=exit4, expect=RED) ... INCONCLUSIVE (0s)
+         no evidence the probe did its work: nothing in the log matches /^probe agent: fangrig-probe / [0-9a-f]{8}/
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   FANG-9   INCONCLUSIVE — no evidence the probe did its work: nothing in the log matches /^probe agent: fangrig-probe / [0-9a-f]{8}/
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+==================== tail + exit ====================
+  FANG-9.txt                     2360 bytes
+
+run.sh: FAIL — 1 repro(s) did not reach the expected verdict.
+exit=1  (an honest all-skipped run should be 4, and this one ran nothing)
