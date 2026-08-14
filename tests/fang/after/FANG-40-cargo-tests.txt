@@ -1,0 +1,20 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.74s
+warning: the following packages contain code that will be rejected by a future version of Rust: imap-proto v0.10.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running tests/adapter_shutdown_test.rs (/target/debug/deps/adapter_shutdown_test-99d6097d0568d537)
+
+running 2 tests
+test bridge_manager_stop_calls_adapter_stop ... ok
+FANG40_IDLE_CORES=0.000 FANG40_DISPATCH_CORES=0.000
+test dropping_the_manager_without_stop_does_not_spin ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.50s
+
+     Running tests/mattermost_shutdown_spin_test.rs (/target/debug/deps/mattermost_shutdown_spin_test-947e61b475ec69d4)
+
+running 1 test
+FANG40_IDLE_CORES=0.000 FANG40_MATTERMOST_CORES=0.000
+test dropping_a_mattermost_adapter_without_stop_does_not_spin ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.81s
+
