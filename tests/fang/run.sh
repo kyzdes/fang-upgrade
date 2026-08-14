@@ -46,13 +46,22 @@
 #   Two barriers stand in front of every GRADE — PASS, FAIL and REVIEW alike,
 #   in every mode:
 #
-#     1. PREFLIGHT. The credential the probes will use is resolved once, here,
-#        and proven against the target before anything runs (see AUTH GATE).
-#        Proven means the target ANSWERED it — a 2xx. If the target rejects
-#        it, nothing is graded: every selected repro is reported INCONCLUSIVE
-#        and the run fails. If the target answers neither yes nor no (a 404,
-#        a 500, no answer at all), the credential is UNVERIFIED and the report
-#        says so instead of calling it accepted.
+#     1. PREFLIGHT. One credential is resolved here — $OPENFANG_API_KEY if it
+#        is set, otherwise the top-level api_key in the matched container's
+#        config.toml — and asked of the target before anything runs (see AUTH
+#        GATE). Accepted means the target ANSWERED it, a 2xx. If the target
+#        rejects it, nothing is graded: every selected repro is reported
+#        INCONCLUSIVE and the run fails. If the target answers neither yes nor
+#        no (a 404, a 500, no answer at all), the credential is UNVERIFIED and
+#        the report says so instead of calling it accepted.
+#
+#        This is the key the probes send, and that is now a property of the
+#        probes rather than a hope: A-1/A-2/A-4 go through ofctl, which reads
+#        the environment first; the other nine did the environment-blind thing
+#        — `sed -n 's/^api_key…' "$CONFIG"` — so `OPENFANG_API_KEY=<key>
+#        ./run.sh` proved one credential and sent another. They resolve it the
+#        same way now; `grep -n 'OPENFANG_API_KEY' tests/fang/*.sh
+#        tests/fang/harness/lib.sh` is the whole of the claim.
 #     2. AUTHENTICITY SCREEN. After each repro, its log is checked for
 #        (a) authentication/transport failures — the signatures of a probe
 #        that could not reach or could not enter the stand, and
@@ -73,7 +82,7 @@
 #   "nothing ran" exit 4 into a failure exit 1. The operator would be told
 #   something that did not happen.
 #
-# ONE STAND, AND IT HAS TO BE PROVEN  (the rm -rf this runner had)
+# ONE STAND, AND WHY THE PAIRING STILL MATTERS  (the rm -rf this runner had)
 #
 #   A stand is a URL, a container, a data directory and a key. `--base-url`
 #   names the first, `--container` names the second, and NOTHING used to check
@@ -84,21 +93,50 @@
 #   and --container at another and the run deleted files, as root, on a stand
 #   it never so much as sent a request to, then reported "removed agent X" and
 #   "the stand carries no probe agent now" — both about the wrong machine.
-#   The same wrong path was exported as OPENFANG_VOLUME, so A-1.sh and A-7.sh
-#   did their own rm -rf there too.
 #
-#   So: before anything is exported, run or deleted, the two are matched. The
-#   port in BASE_URL is compared with the ports $CONTAINER actually publishes
-#   (docker inspect). Two containers cannot publish the same host port, so a
-#   match is a proof and not a guess. No match, no run — exit 2, nothing
-#   exported, nothing touched. The data directory is then taken from that
-#   proven container's /data mount; if it has none, the run refuses rather
-#   than falling back to a default volume that belongs to a different stand.
+#   The clean-up here no longer derives a path at all: it deletes through the
+#   API, at $BASE_URL, the one channel that cannot address the wrong machine,
+#   and whatever is left on disk is listed by name and left alone. But the
+#   pairing is still load-bearing, because the runner hands the data directory
+#   to the probes, and the probes write:
 #
-#   And the clean-up no longer derives a path at all. It deletes through the
-#   API, at $BASE_URL, which is the one channel that cannot address the wrong
-#   machine. Anything left on disk is listed by name and left alone: a named
-#   leftover is cheaper than an rm -rf on a hunch.
+#     OPENFANG_VOLUME     -> A-1.sh:69      rm -rf "$VOL/agents/test-a1-probe"
+#     OPENFANG_HOME_HOST  -> A-6.sh:159,
+#                            A-7.sh:150     rm -rf "$DATA/workspaces/test-a{6,7}-*"
+#     OPENFANG_CONFIG /
+#     OF_CONFIG           -> fangrig:193    rewrites [channels.telegram] in
+#                            fangrig:275    that config.toml, and rm -rf's
+#                                           "$(dirname CONFIG)/workspaces/fangrig-*"
+#
+#   Those variables are how a probe is TOLD which volume belongs to $BASE_URL;
+#   unset, A-1 and A-7 decline to touch disk at all and say so. So exporting
+#   them is an authorisation, and it is only honest to hand it out when the
+#   pair is actually established.
+#
+#   WHAT THE CHECK ESTABLISHES, AND WHAT IT CANNOT. It asks docker which host
+#   ports $CONTAINER publishes and looks for a TCP publication of BASE_URL's
+#   port on an address that covers BASE_URL's host. That establishes the pair
+#   only when BASE_URL names THIS machine — a published host port belongs to
+#   one container at a time on the host that publishes it, and that is the
+#   whole of the argument. It says nothing about a URL pointing somewhere else:
+#   a container published on 0.0.0.0 matches the port of any host you care to
+#   name, and a run whose requests go to another box would have got the local
+#   container's data directory. Measured, not reasoned: with $CONTAINER
+#   publishing 4218/UDP and a different container serving 4218/TCP, this file
+#   printed "PROVEN", exported the first one's volume, and A-1.sh deleted
+#   agents/test-a1-probe on it while every request went to the second.
+#
+#   So the pair counts as established only when all three hold — a TCP
+#   publication, the port, and a BASE_URL host that resolves to an address of
+#   this machine. Anything else: exit 2, nothing exported, nothing touched.
+#   The price is that a stand reached through a proxy, or one on --network
+#   host with no published port, cannot be run from here even when it is
+#   plainly the same box. That is a real cost, and it buys the one thing above
+#   that a wrong answer would spend: root-owned deletes on someone else's data.
+#
+#   The data directory is then taken from that container's /data mount; if it
+#   has none, the run refuses rather than falling back to a default volume
+#   that belongs to a different stand.
 #
 # VERDICT MODES
 #   exit4    0=RED(reproduced) 1=GREEN(not reproduced) 2=REFUSED 3=SKIPPED
@@ -119,18 +157,20 @@
 #   ERROR         crashed, timed out, or returned a code its mode cannot read
 #
 # EXIT CODE
-#   0  every repro that was GRADED reached its expected verdict, and at least
-#      one repro ran. The closing line says how many were graded, because a
-#      run whose rows are all REVIEW graded nothing and must not read as an
-#      all-clear.
+#   0  at least one repro was GRADED, and every graded repro reached the
+#      verdict this build should produce. The closing line says how many were
+#      graded.
 #   1  at least one FAIL or INCONCLUSIVE
 #   2  at least one ERROR, a usage error, the preflight could not establish
 #      that the probes can talk to the target, or the target could not be
 #      resolved to one stand (harness problem, not a verdict)
 #   3  refused: pointed at production
-#   4  nothing ran at all — everything was skipped. Deliberately not 0: a run
-#      that executed no repro has proven nothing, and "no failures" out of an
-#      empty set is the exact shape of a report that reads as all-clear.
+#   4  nothing was graded — every selected repro was skipped, or ran in a mode
+#      that produces no machine-readable verdict (REVIEW), or both. Deliberately
+#      not 0: "no failures" out of a set nothing was checked against is the
+#      exact shape of a report that reads as an all-clear. A run of only
+#      REVIEW rows is that set — the scripts measured, and a human has not
+#      read the measurements yet.
 #
 # Usage:
 #   ./run.sh [--costly] [--only id[,id...]] [--list] [--timeout SECS]
@@ -188,7 +228,14 @@ done
 # be one, which made the claim at the top of this file false for it — a probe
 # that did nothing at all still came back REVIEW and the run still exited 0.
 #
-# WHERE THE PATTERNS COME FROM. Every one is a literal line its script prints.
+# WHERE THE PATTERNS COME FROM. Every one is a literal line its script prints,
+# and two of them are lines it prints only when the stand ALSO answered well:
+# A-6's `DETERMINABLE: YES` is the judge's reading of a served turn, and A-7's
+# `test-a7-control 200 answered` needs the control agent to have replied. A
+# stand that takes the request and then answers badly therefore reads here as
+# "no evidence the probe did its work", when the truer sentence is "the probe
+# worked and the stand did not". That is a false alarm, never a false pass, and
+# it is what grounding a witness in the script's own output costs.
 # Whether a RECORDED run also shows it is a separate question, and not one to
 # answer in a comment that can rot: the report computes it at the end of every
 # run by grepping baseline/, after*/ and evidence-run*/live-<ID>.log, and it
@@ -328,74 +375,111 @@ fi
 # Resolving it all from the container was half the answer, and the dangerous
 # half on its own: it made the data directory agree with --container while
 # every id and verdict still came from --base-url, so the two names could
-# still point at different machines — and the clean-up deleted files at the
-# path derived from the loser. Match them first.
+# still point at different machines — and the probes deleted files at the path
+# derived from the loser. Match them first.
 #
-# THE MATCH. Ask docker which host ports $CONTAINER publishes and look for the
-# one BASE_URL is asking for. A host port is exclusive — two containers cannot
-# publish the same one — so "the container publishes 127.0.0.1:4211 and the
-# URL is http://127.0.0.1:4211" is a proof that this container serves this
-# URL, not a plausible story about it. The match is strict about the address
-# too: a container published on 127.0.0.1:P does not answer for
-# http://10.0.0.5:P, and only a wildcard bind (0.0.0.0 / ::) matches any host.
-url_host_port() { # URL -> "host port", with localhost normalised
-  python3 - "$1" <<'PY'
-import sys
+# THE MATCH, and its exact reach. A host port is exclusive: on the machine
+# that publishes it, one container holds it at a time. So "this container
+# publishes 127.0.0.1:4211/tcp, and the URL asks THIS machine for 4211" says
+# who answers the URL. Three things have to hold for that sentence to be true,
+# and all three used to be waved through:
+#
+#   * the publication is TCP. `-p 127.0.0.1:4218:4200/udp` used to satisfy a
+#     TCP URL — a real, measured cross-stand delete (see the header).
+#   * the address covers the URL's host: a container on 127.0.0.1:P does not
+#     answer for http://10.0.0.5:P; only a wildcard bind (0.0.0.0 / ::) covers
+#     every address OF THIS MACHINE.
+#   * the URL's host IS this machine. Docker's publication table is a fact
+#     about the local host and nothing else, so against a URL that resolves
+#     somewhere else it is not weak evidence, it is no evidence.
+local_addrs() { ip -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u; }
+
+url_facts() { # URL -> "host port is_local resolved_ips"
+  python3 - "$1" "$(local_addrs | tr '\n' ' ')" <<'PY'
+import ipaddress, socket, sys
 from urllib.parse import urlsplit
 u = urlsplit(sys.argv[1])
 host = (u.hostname or "").lower()
-if host in ("localhost", "ip6-localhost", "::1"):
-    host = "127.0.0.1"
 port = u.port or (443 if u.scheme == "https" else 80)
-print("%s %s" % (host, port))
+mine = set(sys.argv[2].split())
+ips = set()
+try:
+    for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP):
+        ips.add(info[4][0].split("%")[0])
+except Exception:
+    pass
+def local(ip):
+    try:
+        return ipaddress.ip_address(ip).is_loopback or ip in mine
+    except ValueError:
+        return False
+# every address this name can reach has to be one of ours: if one of them is
+# somewhere else, the request can land there, and then nothing local is known.
+is_local = 1 if ips and all(local(i) for i in ips) else 0
+print("%s %s %d %s" % (host, port, is_local, ",".join(sorted(ips)) or "-"))
 PY
 }
 
 BIND_STATE=unchecked
 BIND_WHY="the pair was never checked: $STAGING_WHY"
-URL_HOST=""; URL_PORT=""
+URL_HOST=""; URL_PORT=""; URL_LOCAL=0; URL_IPS="-"
 if [ "$STAGING_UP" = 1 ]; then
-  read -r URL_HOST URL_PORT <<<"$(url_host_port "$BASE_URL")"
+  read -r URL_HOST URL_PORT URL_LOCAL URL_IPS <<<"$(url_facts "$BASE_URL")"
   PUBLISHED="$(docker inspect \
-      -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{.HostIp}}:{{.HostPort}} {{end}}{{end}}' \
+      -f '{{range $p, $conf := .NetworkSettings.Ports}}{{range $conf}}{{$p}}|{{.HostIp}}|{{.HostPort}} {{end}}{{end}}' \
       "$CONTAINER" 2>/dev/null)"
-  BIND_STATE=unproven
-  BIND_WHY="'$CONTAINER' publishes [${PUBLISHED:-nothing}], and $BASE_URL (host $URL_HOST, port $URL_PORT) is not among them"
-  for hp in $PUBLISHED; do
-    hip="${hp%:*}"; hport="${hp##*:}"
+  # "4200/udp|127.0.0.1|4218" reads as "127.0.0.1:4218/udp" to a human.
+  PUB_HUMAN="$(printf '%s' "$PUBLISHED" | sed 's#[0-9]*/\([a-z]*\)|\([^|]*\)|\([0-9]*\)#\2:\3/\1#g' | sed 's/ *$//')"
+  BIND_STATE=nomatch
+  BIND_WHY="'$CONTAINER' publishes [${PUB_HUMAN:-nothing}], and none of that is a TCP publication of port $URL_PORT on an address $BASE_URL asks for"
+  for entry in $PUBLISHED; do
+    proto="${entry%%|*}"; rest="${entry#*|}"
+    hip="${rest%%|*}"; hport="${rest##*|}"
+    case "$proto" in */tcp) ;; *) continue ;; esac
     [ "$hport" = "$URL_PORT" ] || continue
+    covers=0
     case "$hip" in
-      "$URL_HOST"|0.0.0.0|::|"")
-        BIND_STATE=proven
-        BIND_WHY="'$CONTAINER' publishes $hip:$hport, which is exactly what $BASE_URL asks for"
-        break ;;
+      0.0.0.0|::|"") covers=1 ;;
+      *) case ",$URL_IPS," in *",$hip,"*) covers=1 ;; esac ;;
     esac
+    [ "$covers" = 1 ] || continue
+    if [ "$URL_LOCAL" = 1 ]; then
+      BIND_STATE=matched
+      BIND_WHY="'$CONTAINER' publishes $hip:$hport/tcp and $BASE_URL asks this machine for port $hport; a published host port belongs to one container at a time. Nothing else was compared."
+    else
+      BIND_STATE=notlocal
+      BIND_WHY="'$CONTAINER' publishes $hip:$hport/tcp, but $BASE_URL names host $URL_HOST (resolved: $URL_IPS), which is not an address of this machine — so what docker publishes here says nothing about which stand answers that URL"
+    fi
+    break
   done
 fi
 
-# Refuse before a single variable is exported: an unproven pair is how a run
-# against one stand deleted files on another.
-if [ "$STAGING_UP" = 1 ] && [ "$BIND_STATE" != proven ]; then
-  echo "REFUSING: --container and --base-url do not name the same stand." >&2
+# Refuse before a single variable is exported: an unestablished pair is how a
+# run against one stand deleted files on another.
+if [ "$STAGING_UP" = 1 ] && [ "$BIND_STATE" != matched ]; then
+  echo "REFUSING: this run cannot establish that --container and --base-url" >&2
+  echo "name the same stand." >&2
   echo "  base url : $BASE_URL" >&2
   echo "  container: $CONTAINER" >&2
   echo "  $BIND_WHY" >&2
   echo >&2
-  echo "  Everything downstream — the data directory, the config, the api key," >&2
-  echo "  the agents the probes create and the ones the clean-up deletes — is" >&2
-  echo "  addressed by one of these two names. While they disagree, the run" >&2
-  echo "  would read from one machine and write to the other. Nothing was run" >&2
-  echo "  and nothing was touched." >&2
+  echo "  The data directory below is not just read: it goes out as" >&2
+  echo "  OPENFANG_VOLUME / OPENFANG_HOME_HOST / OPENFANG_CONFIG, which is how" >&2
+  echo "  A-1, A-6, A-7 and fangrig are told they may rm -rf under it and" >&2
+  echo "  rewrite the config.toml in it — while every agent id they act on" >&2
+  echo "  comes from the URL. Handing that out on a pair nobody could match is" >&2
+  echo "  how this runner once deleted files on a stand it never addressed." >&2
+  echo "  Nothing was run and nothing was touched." >&2
   exit 2
 fi
 
-# Only now, and only from the proven container: its /data mount IS the data
+# Only now, and only from the matched container: its /data mount IS the data
 # directory. There is deliberately no fallback — the old one defaulted to the
 # shared staging volume, which is a different stand's data whenever the
 # container is not staging.
 DATA_DIR=""
 DATA_DIR_SRC="not resolved"
-if [ "$BIND_STATE" = proven ]; then
+if [ "$BIND_STATE" = matched ]; then
   DATA_DIR="$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER" 2>/dev/null)"
   if [ -n "$DATA_DIR" ]; then
     DATA_DIR_SRC="$CONTAINER:/data"
@@ -427,7 +511,7 @@ fi
 export OPENFANG_URL="$BASE_URL"
 export OF_CONTAINER="$CONTAINER"
 export OPENFANG_API_KEY="$API_KEY"
-# The path exports go out ONLY when a proven container produced them. Left
+# The path exports go out ONLY when a matched container produced them. Left
 # unset otherwise: each probe defaults an unset OPENFANG_VOLUME to the shared
 # staging volume, so exporting an empty string here would aim their own
 # `rm -rf` at a stand nobody named. Nothing runs in that state anyway.
@@ -474,7 +558,15 @@ for a in agents:
 #
 # So take the reading before anything runs. Anything already standing here is
 # not ours, whatever it is called, and the sweep leaves it alone and says so.
-PRE_PROBE_IDS=" $(probe_names | awk '{print $1}' | tr '\n' ' ') "
+#
+# That covers the sweep and nothing else. The probes run first and do their own
+# shape-matching: A-1.sh deletes any agent named test-a1-probe before creating
+# its own, `fangrig down` uninstalls every fangrig-*. This runner cannot stop
+# that from here, so it does the one thing left — the report names the
+# pre-existing agents that are gone by the end, instead of letting them vanish
+# quietly between two lines that both say "left alone".
+PRE_PROBE_LIST="$(probe_names)"
+PRE_PROBE_IDS=" $(printf '%s' "$PRE_PROBE_LIST" | awk '{print $1}' | tr '\n' ' ') "
 
 # ---------------------------------------------------------------- AUTH GATE --
 # Prove the credential before trusting anything measured with it.
@@ -524,8 +616,8 @@ echo "======================================================================"
 echo "tests/fang/run.sh — $TS"
 echo "target      : $BASE_URL   container: $CONTAINER"
 case "$BIND_STATE" in
-  proven)  echo "same stand? : PROVEN — $BIND_WHY" ;;
-  *)       echo "same stand? : NOT PROVEN — $BIND_WHY" ;;
+  matched) echo "same stand? : yes — $BIND_WHY" ;;
+  *)       echo "same stand? : not established — $BIND_WHY" ;;
 esac
 echo "data dir    : ${DATA_DIR:-(none)}   (from $DATA_DIR_SRC)"
 echo "config      : ${CONFIG:-(none)}"
@@ -551,7 +643,6 @@ echo
 
 N_PASS=0; N_FAIL=0; N_SKIP=0; N_REVIEW=0; N_ERROR=0
 SUMMARY=()
-RAN_ANY=0
 
 # ------------------------------------------------------- preflight refusal --
 # A rejected credential is not a reason to run the probes and read their
@@ -618,7 +709,6 @@ for r in "${REPROS[@]}"; do
   timeout --signal=TERM --kill-after=30 "$TIMEOUT_SECS" "$path" "$BASE_URL" >"$log" 2>&1 </dev/null
   rc=$?
   took=$(( $(date +%s) - start ))
-  RAN_ANY=1
 
   # ---- read the verdict --------------------------------------------------
   verdict=""; note=""
@@ -793,10 +883,10 @@ echo "witnesses confirmed by a run recorded on disk :$CONFIRMED"
 if [ -n "$UNCONFIRMED" ]; then
   echo "witnesses no recorded run confirms            :$UNCONFIRMED"
   echo "  (the pattern is a line the script prints, but nothing captured on disk"
-  echo "   shows it: the file under baseline/ for that repro is a written-up"
-  echo "   document rather than the script's stdout. Not wrong — never yet seen"
-  echo "   to fire. Capture one as evidence-run*/live-<ID>.log and this line"
-  echo "   will shorten by itself.)"
+  echo "   shows it — usually because the file under baseline/ for that repro is"
+  echo "   a written-up recon document rather than the script's stdout. Not"
+  echo "   wrong; never yet seen to fire. Capture one as evidence-run*/live-<ID>.log"
+  echo "   and this line will shorten by itself.)"
 fi
 
 # ---------------------------------------------------------- probe clean-up --
@@ -810,10 +900,10 @@ fi
 # cannot address a machine nobody named. It used to follow each DELETE with
 # `rm -rf "$DATA_DIR/agents/$name"`, a path built from --container, on a name
 # read from --base-url; with the two pointing at different stands that is an
-# rm -rf, as root, on a stand this run never sent a request to. The container
-# is proven to serve the URL now, so the path would be right — and the rm is
-# still gone, because a sweep that cannot construct a path cannot construct a
-# wrong one. Whatever the API leaves on disk is listed by name below and left
+# rm -rf, as root, on a stand this run never sent a request to. The pairing
+# check above would now stop that particular mismatch — and the rm is still
+# gone, because a sweep that cannot construct a path cannot construct a wrong
+# one, whatever the check does or does not catch. Whatever the API leaves on disk is listed by name below and left
 # where it is. A named leftover costs the next run a stale directory; the
 # alternative cost someone else's data.
 echo
@@ -886,10 +976,33 @@ else
   else
     echo "  $BASE_URL/api/agents lists no probe agent of this run's making now."
   fi
+  # What this sweep did NOT protect. It spares what stood here before it — but
+  # the probes run first and sweep by name shape on their own: A-1.sh deletes
+  # any agent called test-a1-probe before making its own, and `fangrig down`
+  # uninstalls every fangrig-* it finds. Both happen long before this block
+  # reads the stand, so the honest thing left is to name what went missing
+  # rather than let a foreign agent disappear in silence.
+  now_ids=" $(probe_names | awk '{print $1}' | tr '\n' ' ') "
+  gone=""
+  while read -r opid opname; do
+    [ -n "$opid" ] || continue
+    case "$now_ids" in *" $opid "*) continue ;; esac
+    gone="$gone $opname"
+  done <<<"$PRE_PROBE_LIST"
+  if [ -n "$gone" ]; then
+    echo "  GONE, and not by this sweep:$gone"
+    echo "  Those were on the stand before this run started. The sweep spares"
+    echo "  such agents; the probes themselves do not — they delete their own"
+    echo "  fixed names (test-a1-probe, fangrig-*) on sight. If one of these was"
+    echo "  someone else's, this run took it, and no check here can give it back."
+  fi
   # And on disk, read-only: name what is still there instead of removing it.
+  # Only this run's own probes: a directory belonging to the agent that was
+  # already standing here is not something this run "left", and saying it was
+  # is the same mistake as sweeping it.
   if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR/agents" ]; then
     on_disk=""
-    for pname in $(printf '%s %s' "$swept_names" "$leftover" | tr ' ' '\n' | sort -u); do
+    for pname in $(printf '%s %s' "$swept_names" "$still" | tr ' ' '\n' | sort -u); do
       [ -d "$DATA_DIR/agents/$pname" ] && on_disk="$on_disk $pname"
     done
     if [ -n "$on_disk" ]; then
@@ -1012,21 +1125,20 @@ if [ "$N_FAIL" -gt 0 ]; then
   echo "run.sh: FAIL — $N_FAIL repro(s) did not reach the expected verdict."
   exit 1
 fi
-if [ $((N_PASS + N_FAIL + N_REVIEW)) -eq 0 ]; then
-  echo "run.sh: NOTHING RAN — all $N_SKIP repro(s) were skipped, so this run"
-  echo "        proves nothing. Reasons are listed above; fix them or say so."
+# Nothing left to fail at this point: N_FAIL and N_ERROR are both 0, so the
+# graded repros are exactly the ones that passed. If there are none, this run
+# checked nothing against what the build should do — whether because every
+# repro was skipped or because every one of them came back REVIEW. Both are
+# exit 4: a REVIEW row is a measurement nobody has read yet, and a run made of
+# them must not answer 0 to `if ./run.sh; then`.
+if [ "$N_PASS" -eq 0 ]; then
+  echo "run.sh: NOTHING WAS GRADED — $N_SKIP skipped, $N_REVIEW awaiting a human,"
+  echo "        and not one repro in this selection produced a machine-readable"
+  echo "        verdict. Nothing here was checked against what this build is"
+  echo "        expected to do, so this run proves nothing. Reasons are above."
   exit 4
 fi
-# Say what was actually graded. "Every repro that ran reached its expected
-# verdict" reads as an all-clear over a run whose only rows were REVIEW — and
-# a REVIEW reached no verdict at all, expected or otherwise.
-if [ "$N_PASS" -gt 0 ]; then
-  echo "run.sh: all $N_PASS graded repro(s) reached the verdict this build should produce."
-else
-  echo "run.sh: NOTHING WAS GRADED — no repro in this selection produced a"
-  echo "        machine-readable verdict, so nothing here was checked against"
-  echo "        what this build is expected to do."
-fi
+echo "run.sh: all $N_PASS graded repro(s) reached the verdict this build should produce."
 if [ "$AUTH_STATE" = undecidable ]; then
   echo "        The credential could not be verified ($AUTH_WHY),"
   echo "        so anything above rests on each repro's own witness alone."

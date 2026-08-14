@@ -80,7 +80,12 @@ except Exception:
     sys.exit(1)
 PY
 
-API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+# The key resolves the way ofctl and harness/lib.sh resolve it: the environment
+# first, then the config file. Config-only made tests/fang/run.sh's preflight a
+# statement about a credential this script never sent — it proved $OPENFANG_API_KEY
+# against the target, printed "credential: ACCEPTED", and then every call below
+# went out with whatever api_key happened to sit in $CONFIG.
+API_KEY="${OPENFANG_API_KEY:-$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)}"
 AUTH=(); [ -n "$API_KEY" ] && AUTH=(-H "Authorization: Bearer $API_KEY")
 
 say() {

@@ -112,8 +112,13 @@ esac
 # Read the daemon key the way ofctl does: top-level api_key only, stop at the first
 # [table]. A bare `grep '^api_key'` also matches api_key_env and yields a 71-char
 # concatenation that 400s with an empty body.
-API_KEY="$(awk '/^\[/{exit} /^api_key[[:space:]]*=/{gsub(/^[^"]*"|"[^"]*$/,""); print; exit}' \
-  "$OPENFANG_CONFIG")"
+# ...and the environment first, exactly as ofctl and harness/lib.sh do. Reading
+# the file and nothing else made tests/fang/run.sh's preflight a statement about
+# a credential this script never sent: it proved $OPENFANG_API_KEY against the
+# target, printed "credential: ACCEPTED", and every call below then went out
+# with whatever api_key happened to sit in $OPENFANG_CONFIG.
+API_KEY="${OPENFANG_API_KEY:-$(awk '/^\[/{exit} /^api_key[[:space:]]*=/{gsub(/^[^"]*"|"[^"]*$/,""); print; exit}' \
+  "$OPENFANG_CONFIG")}"
 if [ -z "${API_KEY:-}" ]; then
   echo "FATAL: no top-level api_key in $OPENFANG_CONFIG" >&2; exit 2
 fi
