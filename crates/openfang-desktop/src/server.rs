@@ -142,11 +142,12 @@ async fn run_embedded_server(
         error!("Embedded server error: {e}");
     }
 
-    // Clean up channel bridges
+    // Clean up channel bridges — see the note in openfang-api's server.rs for
+    // why process exit uses the non-draining variant.
     {
         let mut guard = state.bridge_manager.lock().await;
         if let Some(ref mut b) = *guard {
-            b.stop().await;
+            b.stop_fast().await;
         }
     }
 }

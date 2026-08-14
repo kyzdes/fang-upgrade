@@ -918,9 +918,13 @@ pub async fn run_daemon(
         let _ = std::fs::remove_file(info_path);
     }
 
-    // Stop channel bridges
+    // Stop channel bridges. `stop_fast` on purpose: the process is exiting, so
+    // draining a Telegram long-poll to free its reader slot buys nothing (the
+    // socket is about to close regardless) and would eat up to 40 s of the
+    // SIGTERM grace period. The graceful `stop()` belongs to hot-reload, where
+    // a new poller is about to take the slot.
     if let Some(ref mut b) = *state.bridge_manager.lock().await {
-        b.stop().await;
+        b.stop_fast().await;
     }
 
     // Shutdown kernel

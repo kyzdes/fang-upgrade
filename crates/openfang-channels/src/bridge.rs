@@ -379,6 +379,27 @@ impl ChannelRateLimiter {
     }
 }
 
+/// How long [`BridgeManager::stop`] waits for a single adapter's `stop()` to
+/// return before giving up on it and moving to the next one.
+///
+/// Sized for the worst case that matters: a Telegram adapter parked in a 30 s
+/// `getUpdates` long-poll whose HTTP client timeout is `30 + 10` s. Draining
+/// that poll is the whole point — the Bot API's single-reader slot stays busy
+/// until the outstanding request comes back, and a poller started before then
+/// gets `409 Conflict` (FANG-31/FANG-40).
+///
+/// Deliberately longer than the adapter's own drain deadline
+/// (`telegram::POLLER_DRAIN_TIMEOUT`, 45 s) so that a slow drain is reported by
+/// the adapter, which knows what it was waiting for, rather than being cut off
+/// here with a generic message.
+pub const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Deadline used by [`BridgeManager::stop_fast`] — enough for an adapter to
+/// flip its own shutdown flag and abandon in-flight I/O, not enough to drain
+/// it. Used on process exit, where draining buys nothing (the sockets are
+/// about to close anyway) and a 30 s hang would burn the SIGTERM grace period.
+pub const ADAPTER_STOP_TIMEOUT_FAST: Duration = Duration::from_millis(250);
+
 /// Owns all running channel adapters and dispatches messages to agents.
 pub struct BridgeManager {
     handle: Arc<dyn ChannelBridgeHandle>,
@@ -386,6 +407,17 @@ pub struct BridgeManager {
     rate_limiter: ChannelRateLimiter,
     shutdown_tx: watch::Sender<bool>,
     shutdown_rx: watch::Receiver<bool>,
+    /// Adapters started through [`BridgeManager::start_adapter`], kept so that
+    /// [`BridgeManager::stop`] can call `ChannelAdapter::stop()` on each one.
+    ///
+    /// Before FANG-40 this field did not exist and `stop()` was never called on
+    /// any adapter: the only thing that ever ended an adapter's own I/O task was
+    /// the last `Arc` being dropped, which closes its `watch::Sender` and makes
+    /// every `shutdown.changed()` in that adapter resolve with `Err`. Adapters
+    /// that treat that as "keep going" then spin at 100% CPU. Owning the
+    /// adapters here is what makes stop-before-drop an invariant instead of a
+    /// hope.
+    adapters: Vec<Arc<dyn ChannelAdapter>>,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -398,6 +430,7 @@ impl BridgeManager {
             rate_limiter: ChannelRateLimiter::default(),
             shutdown_tx,
             shutdown_rx,
+            adapters: Vec::new(),
             tasks: Vec::new(),
         }
     }
@@ -489,8 +522,14 @@ impl BridgeManager {
                             }
                         }
                     }
-                    _ = shutdown.changed() => {
-                        if *shutdown.borrow() {
+                    changed = shutdown.changed() => {
+                        // `Err` means every Sender is gone. That can only
+                        // happen once the BridgeManager itself has been
+                        // dropped, so it means the same thing as `true` —
+                        // stop. Treating it as "no change" would re-enter
+                        // `select!` on a channel that resolves instantly and
+                        // forever, i.e. a 100% CPU spin (FANG-40).
+                        if changed.is_err() || *shutdown.borrow() {
                             info!("Shutting down channel adapter {}", adapter_clone.name());
                             break;
                         }
@@ -499,16 +538,58 @@ impl BridgeManager {
             }
         });
 
+        self.adapters.push(adapter);
         self.tasks.push(task);
         Ok(())
     }
 
     /// Stop all adapters and wait for dispatch tasks to finish.
+    ///
+    /// Graceful variant: each adapter gets up to [`ADAPTER_STOP_TIMEOUT`] to
+    /// release its external resources. For Telegram that means draining the
+    /// in-flight `getUpdates` long-poll, without which the freshly started
+    /// poller collides with the abandoned one and Telegram answers
+    /// `409 Conflict` for the remainder of the old poll's timeout (FANG-31).
+    ///
+    /// Use this on channel hot-reload. On process exit use [`stop_fast`].
+    ///
+    /// [`stop_fast`]: BridgeManager::stop_fast
     pub async fn stop(&mut self) {
+        self.stop_with_deadline(ADAPTER_STOP_TIMEOUT).await;
+    }
+
+    /// Stop all adapters without draining them — see [`ADAPTER_STOP_TIMEOUT_FAST`].
+    pub async fn stop_fast(&mut self) {
+        self.stop_with_deadline(ADAPTER_STOP_TIMEOUT_FAST).await;
+    }
+
+    /// Shared body of [`stop`](BridgeManager::stop) and
+    /// [`stop_fast`](BridgeManager::stop_fast).
+    ///
+    /// Order matters and is the invariant this whole change exists to
+    /// establish: **stop before drop**. Every adapter is asked to stop while
+    /// this `BridgeManager` still holds an `Arc` to it, so no adapter can ever
+    /// observe its `watch::Sender` being dropped before it has seen `true`.
+    async fn stop_with_deadline(&mut self, deadline: Duration) {
+        for adapter in &self.adapters {
+            let name = adapter.name().to_string();
+            match tokio::time::timeout(deadline, adapter.stop()).await {
+                Ok(Ok(())) => debug!("Channel adapter {name} stopped"),
+                Ok(Err(e)) => warn!("Channel adapter {name} stop() failed: {e}"),
+                Err(_) => warn!(
+                    "Channel adapter {name} did not stop within {deadline:?}; \
+                     leaving it to unwind on its own"
+                ),
+            }
+        }
         let _ = self.shutdown_tx.send(true);
         for task in self.tasks.drain(..) {
             let _ = task.await;
         }
+        // Only now may the adapter `Arc`s go: their owners have all seen the
+        // shutdown flag, so dropping the Senders cannot be mistaken for a
+        // spurious wakeup.
+        self.adapters.clear();
     }
 }
 

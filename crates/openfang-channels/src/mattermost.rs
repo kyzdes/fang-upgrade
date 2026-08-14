@@ -304,8 +304,11 @@ impl ChannelAdapter for MattermostAdapter {
                 let should_reconnect = 'inner: loop {
                     let msg = tokio::select! {
                         msg = ws_rx.next() => msg,
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
+                        changed = shutdown_rx.changed() => {
+                            // `Err` = every Sender dropped; treat it as
+                            // shutdown. `continue` on `Err` re-arms a future
+                            // that is instantly ready — 100% CPU (FANG-40).
+                            if changed.is_err() || *shutdown_rx.borrow() {
                                 info!("Mattermost adapter shutting down");
                                 let _ = ws_tx.close().await;
                                 return;

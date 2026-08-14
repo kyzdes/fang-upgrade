@@ -211,8 +211,11 @@ impl ChannelAdapter for SlackAdapter {
                         _ = interval.tick() => {
                             active_threads.retain(|_, last| last.elapsed() < thread_ttl);
                         }
-                        _ = cleanup_shutdown.changed() => {
-                            if *cleanup_shutdown.borrow() {
+                        changed = cleanup_shutdown.changed() => {
+                            // Same trap as the read loop, one level quieter:
+                            // the arm falls through to the enclosing `loop`, so
+                            // an `Err` here spins just as hard (FANG-40).
+                            if changed.is_err() || *cleanup_shutdown.borrow() {
                                 return;
                             }
                         }
@@ -264,8 +267,11 @@ impl ChannelAdapter for SlackAdapter {
                 let should_reconnect = 'inner: loop {
                     let msg = tokio::select! {
                         msg = ws_rx.next() => msg,
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
+                        changed = shutdown.changed() => {
+                            // `Err` = every Sender dropped; treat it as
+                            // shutdown. `continue` on `Err` re-arms a future
+                            // that is instantly ready — 100% CPU (FANG-40).
+                            if changed.is_err() || *shutdown.borrow() {
                                 let _ = ws_tx.close().await;
                                 return;
                             }
