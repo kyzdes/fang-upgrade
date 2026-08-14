@@ -1,0 +1,47 @@
+# Dokploy production deployment for the patched OpenFang fork.
+services:
+  openfang:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LTO: "false"
+        CODEGEN_UNITS: "16"
+    restart: unless-stopped
+    init: true
+    environment:
+      # Keep the daemon reachable inside the container while exposing the host
+      # port on loopback only. Traefik reaches it through dokploy-network.
+      OPENFANG_LISTEN: "0.0.0.0:4200"
+      # Fail the deployment instead of booting with a missing provider secret.
+      Y7_V2_API_KEY: "${Y7_V2_API_KEY:?Y7_V2_API_KEY is required}"
+    ports:
+      - "127.0.0.1:4200:4200"
+    volumes:
+      - openfang-data:/data
+    networks:
+      - dokploy-network
+    labels:
+      # The native Dokploy domain references this middleware as
+      # denis-openfang-basic-auth@docker. Only the password hash is injected.
+      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.users: "${OPENFANG_BASIC_AUTH:?OPENFANG_BASIC_AUTH is required}"
+      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.removeheader: "true"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+volumes:
+  openfang-data:
+
+networks:
+  dokploy-network:
+    external: true
