@@ -1,0 +1,28 @@
+{
+  "name": "max-iterations-500",
+  "doc": "FANG-10: a turn that runs out of iterations is reported to the caller as a bare HTTP 500 that carries none of the work the turn actually did. agent_loop.rs:1202-1221 saves the session ('Save session before failing so conversation history is preserved'), fires the AgentLoopEnd hook, and then returns Err(OpenFangError::MaxIterationsExceeded) - AgentLoopResult, and with it every assistant turn, every tool result and total_usage, is dropped on the floor. kernel.rs's Err arm turns that into a KernelError and the API into a 500 whose body is only the error string. Shape: the endpoint answers tool_call FOREVER (default_step is a tool_call, deliberately - toolcall-then-text.json's text default cannot produce this), so the loop burns all 50 iterations of the default MAX_ITERATIONS and exits by the max-iterations door, not the loop_guard circuit breaker (which is raised to max_iterations*3=150 at agent_loop.rs:558 and would say 'Circuit breaker' in its message instead). The tool is file_write with a fixed canary path, so the partial result is not merely notional: the file is really on disk in the agent workspace after the 500. CONTROL, in the same scenario, so a red run cannot be blamed on the rig: steps 0-1 are an ordinary tool_call-then-text turn on this same endpoint, which must answer 200 with a body. Run with --tools file_write, turn 1 = control, turn 2 = the defect.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "unbounded_tool_calls": true,
+      "steps": [
+        {
+          "type": "tool_call",
+          "name": "file_write",
+          "arguments": { "path": "output/fang10-control.txt", "content": "control turn wrote this" },
+          "usage": [23, 13]
+        },
+        { "type": "text", "content": "Control turn: wrote output/fang10-control.txt.", "usage": [29, 11] }
+      ],
+      "default_step": {
+        "type": "tool_call",
+        "name": "file_write",
+        "arguments": { "path": "output/fang10-partial.txt", "content": "FANG10-PARTIAL-RESULT-CANARY: written during a turn the caller was told failed with 500" },
+        "usage": [31, 17]
+      }
+    }
+  ]
+}

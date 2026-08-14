@@ -1,0 +1,24 @@
+{
+  "name": "empty-content-success",
+  "doc": "FANG-13: a STRUCTURALLY VALID provider response that carries no content at all is not an error anywhere in the stack - it comes back as HTTP 200 with a sentence the runtime made up itself. This is deliberately NOT the no-choices.json shape: an empty `choices` array is caught at openai.rs:753 and becomes LlmError::Parse, i.e. a failure. Here `choices[0].message.content` is the empty string with finish_reason=stop, which openai.rs:779 (`if !text.is_empty()`) drops on the floor, producing a CompletionResponse with an empty content vec and StopReason::EndTurn. agent_loop.rs:732-756 (the 'Empty response from LLM - guard activated' branch) then SUBSTITUTES a canned sentence for the missing answer and returns Ok. Two turns, one per branch of that guard: turn 1 (steps 0-1) runs a tool first, so the guard picks the `any_tools_executed` string '[Task completed - the agent executed tools but did not produce a text summary.]' - the runtime asserts completion on a turn where the provider said nothing. Turn 2 (steps 2-3) has no tool call, so the one-shot retry at agent_loop.rs:706-729 fires on iteration 0 and the guard's other string is returned on iteration 1. Both turns: HTTP 200, no error field, tokens billed. Run with --tools memory_store.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        {
+          "type": "tool_call",
+          "name": "memory_store",
+          "arguments": { "key": "fang13", "value": "turn-1 tool ran" },
+          "usage": [11, 7]
+        },
+        { "type": "text", "content": "", "finish_reason": "stop", "usage": [13, 0] },
+        { "type": "text", "content": "", "finish_reason": "stop", "usage": [17, 0] },
+        { "type": "text", "content": "", "finish_reason": "stop", "usage": [19, 0] }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}

@@ -240,7 +240,13 @@ stub_exec() {
   local host="$1" port="$2" path="$3" method="$4" auth="${5:-}"
   docker exec -i "$CONTAINER" python3 -c "
 import sys, urllib.request, urllib.error
-body = sys.stdin.buffer.read()
+# Read the request body from stdin only when the method can carry one.
+# 'docker exec -i' hands this python its caller's stdin, and a bodyless GET
+# that still calls stdin.read() blocks until that stdin reaches EOF — which
+# never happens when fangrig is run from a terminal, or from inside a shell
+# loop whose stdin is still open. That is a hang with no error and no
+# output: 'fangrig journal' simply never returns. Found by tests/fang/run.sh.
+body = sys.stdin.buffer.read() if '$method' not in ('GET', 'HEAD') else b''
 req = urllib.request.Request('http://$host:$port$path', data=(body or None), method='$method')
 req.add_header('Content-Type', 'application/json')
 $( [ -n "$auth" ] && printf "req.add_header('Authorization', 'Bearer %s')\n" "$auth" )

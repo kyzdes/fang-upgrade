@@ -1,0 +1,33 @@
+# Baseline for FANG-13 — captured on the UNPATCHED build (no fix commit exists).
+# captured : 2026-08-14T12:50:36Z
+# repo     : fix/fang-run @ 56e10e8 (branched from ours)
+# target   : openfang-staging, image openfang:sprint3
+# command  : ./FANG-13.sh
+# ---------------------------------------------------------------------
+=== FANG-13 — empty provider content returns HTTP 200 ===
+target: http://127.0.0.1:4201   container: openfang-staging
+image : openfang:sprint3
+
+probe agent: fangrig-probe / 7478d65d-6986-4369-8099-d31a5718856c
+
+--- turn 1: provider answers a tool_call, then an EMPTY text ---
+HTTP 200
+{"calls":[{"cost_usd":0.000032,"input_tokens":11,"model":"adv-primary","n":0,"output_tokens":7,"provider":"fangrig","tool_calls":1},{"cost_usd":0.000013,"input_tokens":13,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000044999999999999996,"input_tokens":24,"iterations":2,"model_used":"adv-primary","output_tokens":7,"provider_used":"fangrig","response":"[Task completed — the agent executed tools but did not produce a text summary.]"}
+
+--- turn 2: provider answers EMPTY text twice, no tools ---
+HTTP 200
+{"calls":[{"cost_usd":0.000017,"input_tokens":17,"model":"adv-primary","n":0,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000019,"input_tokens":19,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000036,"input_tokens":36,"iterations":2,"model_used":"adv-primary","output_tokens":0,"provider_used":"fangrig","response":"[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]"}
+
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260814-125038-f40a8b7b", "scenario": "empty-content-success", "counts": {"primary": 4}, "models": {"adv-primary": 4}, "streams": {}, "statuses": {"200": 4}, "log": ["primary call#1 model=adv-primary step=tool_call", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text"]}
+
+RED  (turn 1): HTTP 200 and the runtime asserts '[Task completed ...]'
+              on a turn whose final provider response had no content.
+RED  (turn 2): HTTP 200 with a runtime-authored sentence standing in
+              for an answer the provider never gave.
+
+FANG13_TURN1_STATUS=200   # want: not 2xx, or a body that flags the failure
+FANG13_TURN2_STATUS=200   # want: not 2xx, or a body that flags the failure
+RESULT: RED — an empty provider response is indistinguishable from a real answer
+
+# exit code: 0   (run.sh mode=exit4: 0=RED defect reproduced, 1=GREEN, 3=SKIPPED, 4=INCONCLUSIVE)

@@ -1,0 +1,43 @@
+# Baseline for FANG-9 — captured on the UNPATCHED build (no fix commit exists).
+# captured : 2026-08-14T12:50:46Z
+# repo     : fix/fang-run @ 56e10e8 (branched from ours)
+# target   : openfang-staging, image openfang:sprint3
+# command  : ./FANG-9.sh
+# ---------------------------------------------------------------------
+=== FANG-9 — a claimed write that never happened is answered with HTTP 200 ===
+target: http://127.0.0.1:4201   container: openfang-staging
+image : openfang:sprint3
+
+probe agent: fangrig-probe / 31e621b5-e559-4825-a850-17e3e28c083a   (tools available: file_write, memory_store)
+workspace  : openfang-staging:/data/workspaces/fangrig-probe
+
+--- turn 1 (defect): the model claims it wrote output/fang9-report.md ---
+HTTP 200   iterations=1   tool_calls=0
+response: Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.
+
+--- did the file the agent named actually appear? ---
+  total 8
+  drwxr-xr-x 2 root root 4096 Aug 14 12:50 .
+  drwxr-xr-x 8 root root 4096 Aug 14 12:50 ..
+  FANG9_CLAIMED_FILE=absent
+
+--- turn 2 (CONTROL): the same lie, worded as a channel send ---
+HTTP 200   iterations=2
+response: You are right, I did not call any tool.
+daemon log, 'Phantom action detected' occurrences in the last 5m: 1
+
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260814-125048-86a4be0b", "scenario": "phantom-write-claim", "counts": {"primary": 3}, "models": {"adv-primary": 3}, "streams": {}, "statuses": {"200": 3}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text"]}
+
+control OK: the guard is live on this build — it re-prompted the channel claim
+            (2 iterations for 1 user message, and a WARN in the daemon log).
+
+FANG9_TURN1_STATUS=200          # want: not a bare 200 for an unbacked claim
+FANG9_TURN1_TOOL_CALLS=0  # the agent called nothing at all
+FANG9_TURN1_ITERATIONS=1   # want: 2, i.e. the claim was challenged
+FANG9_CLAIMED_FILE=absent        # want: present, or the turn should not be a success
+
+RESULT: RED — the agent said it wrote output/fang9-report.md, wrote nothing, called
+        nothing, and the API reported the claim as a successful turn.
+
+# exit code: 0   (run.sh mode=exit4: 0=RED defect reproduced, 1=GREEN, 3=SKIPPED, 4=INCONCLUSIVE)

@@ -1,0 +1,28 @@
+{
+  "name": "max-iterations-usage-lost",
+  "doc": "FANG-47: when a turn ends on max_iterations, the whole meter for that turn is thrown away - not rounded, not partially attributed, gone. kernel.rs books usage only on the Ok arm (record_usage + record_tool_calls + record_turn_usage at kernel.rs:1969-1975 and :2456-2472); the Err arm calls supervisor.record_panic() and returns, so total_usage - which agent_loop has been accumulating on EVERY iteration at agent_loop.rs:630-638, right up to the last one - never reaches /api/usage, /api/usage/by-model or the scheduler's quota counters. The tokens were really spent at the provider; nothing in the product can tell you so afterwards. Shape: default_step is tool_call forever (an unbounded loop is the ONLY way to reach the max-iterations exit; a text default cannot), and every step carries the same deliberately unmistakable usage - 7919 in, 7907 out, two primes that appear nowhere else in this box's ledger - so 'the meter did not move' is a subtraction and not an impression. CONTROL, in the same scenario: steps 0-1 are an ordinary tool_call-then-text turn against the same endpoint with the same model name, and the by-model row for adv-primary MUST move by exactly +2 calls / +15838 input / +15814 output for it. Without that control, a zero delta would only prove that this model is not metered at all. Run with --tools memory_store, turn 1 = control, turn 2 = the defect.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "unbounded_tool_calls": true,
+      "steps": [
+        {
+          "type": "tool_call",
+          "name": "memory_store",
+          "arguments": { "key": "fang47-control", "value": "metered turn" },
+          "usage": [7919, 7907]
+        },
+        { "type": "text", "content": "Control turn done.", "usage": [7919, 7907] }
+      ],
+      "default_step": {
+        "type": "tool_call",
+        "name": "memory_store",
+        "arguments": { "key": "fang47-lost", "value": "billed by the provider, invisible to the ledger" },
+        "usage": [7919, 7907]
+      }
+    }
+  ]
+}

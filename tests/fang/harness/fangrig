@@ -787,12 +787,27 @@ for f in sorted(glob.glob(os.path.join(root, "*.json"))):
             bad.append((f, "role %s: port %r out of range" % (r, p)))
         steps = ep.get("steps", [])
         default = ep.get("default_step", {"type": "text"})
+        # An endpoint may declare `"unbounded_tool_calls": true` to opt out of
+        # the trailing-tool_call rule below. That is not a loophole for
+        # sloppiness: it is the ONLY shape that can reach the product's
+        # max-iterations exit (max-iterations-500.json, FANG-10 /
+        # max-iterations-usage-lost.json, FANG-47), and such a scenario
+        # terminates on the product's own MAX_ITERATIONS rather than on a
+        # text step. Everything else still gets the rule, so an accidental
+        # never-ending loop is still caught here.
+        unbounded = ep.get("unbounded_tool_calls", False) is True
+        if unbounded and default.get("type") != "tool_call":
+            bad.append((f, "role %s: unbounded_tool_calls set but default_step is not a tool_call" % r))
         for i, s in enumerate(steps):
             if s.get("type") == "tool_call":
                 if "name" not in s:
                     bad.append((f, "role %s: tool_call step missing name" % r))
-                if i + 1 >= len(steps) and default.get("type") != "text":
+                if i + 1 >= len(steps) and default.get("type") != "text" and not unbounded:
                     bad.append((f, "role %s: trailing tool_call needs a text default_step" % r))
+        if default.get("type") == "tool_call" and not unbounded:
+            bad.append((f, "role %s: tool_call default_step needs unbounded_tool_calls: true" % r))
+        if default.get("type") == "tool_call" and "name" not in default:
+            bad.append((f, "role %s: tool_call default_step missing name" % r))
 for f, msg in bad:
     print("%s: %s" % (f, msg))
 sys.exit(1 if bad else 0)
