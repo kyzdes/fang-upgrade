@@ -565,7 +565,41 @@ for a in agents:
 # that from here, so it does the one thing left — the report names the
 # pre-existing agents that are gone by the end, instead of letting them vanish
 # quietly between two lines that both say "left alone".
-PRE_PROBE_LIST="$(probe_names)"
+# AND IT HAS TO FAIL CLOSED.
+#
+# `probe_names` swallows every error into an empty list: a timeout, a 500, a
+# body that is not JSON all look exactly like "the stand is clean". An empty
+# reading here would mark every agent found later as this run's own and delete
+# other people's work — the same failure the reading was added to prevent, just
+# reached through a network blip instead of a name pattern.
+#
+# So take the reading with the status attached, and if it cannot be taken, do
+# not sweep at all. Not sweeping costs the next run a stale agent. Sweeping on
+# an empty reading costs someone else theirs.
+PRE_PROBE_OK=0
+PRE_PROBE_LIST=""
+_pp_raw="$(curl -sS -m 30 -w '\n%{http_code}' "${AUTH_HDR[@]}" "$BASE_URL/api/agents" 2>/dev/null)"
+_pp_code="$(printf '%s' "$_pp_raw" | tail -n1)"
+_pp_body="$(printf '%s' "$_pp_raw" | sed '$d')"
+case "$_pp_code" in
+  2*)
+    PRE_PROBE_LIST="$(printf '%s' "$_pp_body" | python3 -c '
+import json, re, sys
+d = json.load(sys.stdin)                      # no try/except: a parse error must
+agents = d if isinstance(d, list) else d.get("agents", [])   # fail, not read as
+pat = re.compile(r"^(test-a[0-9]+[a-z0-9-]*|fangrig-[a-z0-9-]+)$")   # "empty"
+for a in agents:
+    if isinstance(a, dict) and pat.match(str(a.get("name", ""))):
+        print("%s %s" % (a.get("id"), a.get("name")))
+' 2>/dev/null)" && PRE_PROBE_OK=1
+    ;;
+esac
+if [ "$PRE_PROBE_OK" != 1 ]; then
+  PRE_PROBE_WHY="GET \$BASE_URL/api/agents answered ${_pp_code:-no response} before the run"
+else
+  PRE_PROBE_WHY=""
+fi
+unset _pp_raw _pp_code _pp_body
 PRE_PROBE_IDS=" $(printf '%s' "$PRE_PROBE_LIST" | awk '{print $1}' | tr '\n' ' ') "
 
 # ---------------------------------------------------------------- AUTH GATE --
@@ -918,6 +952,14 @@ elif [ "$STAGING_UP" != 1 ]; then
 elif [ "$AUTH_STATE" = rejected ]; then
   echo "the credential was rejected, so nothing ran and nothing could be deleted"
   echo "either. Whatever was on the stand before is still on it."
+elif [ "$PRE_PROBE_OK" != 1 ]; then
+  # No before-reading means no way to tell this run's agents from anyone else's.
+  # Deleting on that basis is exactly the mistake the before-reading exists to
+  # prevent, so the sweep stands down and says why.
+  echo "  NOT SWEEPING: $PRE_PROBE_WHY,"
+  echo "  so there is no way to tell which probe agents this run created and"
+  echo "  which were already here. Whatever the probes made is still on the"
+  echo "  stand; remove it by hand if it is in the way."
 else
   # Only names this directory's probes are known to create. Nothing else is
   # touched, and the pattern is anchored so an agent merely CONTAINING the
