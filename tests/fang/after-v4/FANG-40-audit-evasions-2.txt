@@ -1,0 +1,68 @@
+=== FANG-40 · shutdown-arm audit vs the two shapes it was passing green ===
+what  : crates/openfang-channels/tests/shutdown_arm_audit.rs, compiled with
+        `rustc --test` (it is std-only), run over three copies of
+        crates/openfang-channels/src:
+
+          pristine  the crate as committed
+          varC      bluesky.rs:370 `loop {` -> `'poll: loop {` and the arm's
+                    `break;` deleted. A labelled loop is still a loop, so this
+                    is the FANG-40 spin; the loop detector did not recognise
+                    the label, called the select! one-shot, and exempted the
+                    arm from having to exit.
+          varD      mqtt.rs:292 `if changed.is_err() || *shutdown_rx.borrow()
+                    { .. break; }` split into `if changed.is_err() { warn!(); }`
+                    plus `if *shutdown_rx.borrow() { .. break; }`. On Err this
+                    logs, finds borrow() still false, falls through and spins.
+                    The old audit's own docstring listed this shape ("binding
+                    it, testing is_err(), and not exiting on it") as rejected.
+
+        audit_old.rs is the audit at HEAD 298e574; audit_new.rs is this commit.
+
+=== audit_old.rs vs pristine ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.05s
+
+=== audit_old.rs vs varC ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.06s
+
+=== audit_old.rs vs varD ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.05s
+
+=== audit_new.rs vs pristine ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.06s
+
+=== audit_new.rs vs varC ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... FAILED
+  ---- no_shutdown_arm_treats_a_closed_channel_as_keep_going stdout ----
+  thread 'no_shutdown_arm_treats_a_closed_channel_as_keep_going' (133) panicked at /w/audit_new.rs:498:5:
+  1 shutdown arm(s) can spin on a closed watch channel (FANG-40):
+    bluesky.rs:372 — discards changed() and does not leave the enclosing loop unconditionally: a closed channel re-arms a ready future
+      no_shutdown_arm_treats_a_closed_channel_as_keep_going
+  test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.05s
+
+=== audit_new.rs vs varD ===
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... FAILED
+  ---- no_shutdown_arm_treats_a_closed_channel_as_keep_going stdout ----
+  thread 'no_shutdown_arm_treats_a_closed_channel_as_keep_going' (159) panicked at /w/audit_new.rs:498:5:
+  1 shutdown arm(s) can spin on a closed watch channel (FANG-40):
+    mqtt.rs:286 — `changed.is_err()` is tested but its branch does not break or return
+      no_shutdown_arm_treats_a_closed_channel_as_keep_going
+  test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.04s
+
+=== audit_new.rs, whole file, against the pristine crate ===
+  running 8 tests
+  test arm_body_stops_at_the_arms_closing_brace ... ok
+  test exit_detection_ignores_strings_comments_and_nested_blocks ... ok
+  test audit_accepts_the_correct_shapes ... ok
+  test err_guard_accepts_only_the_shape_it_documents ... ok
+  test loop_detection_separates_re_entered_selects_from_one_shot_ones ... ok
+  test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+  test audit_rejects_every_known_spin_shape ... ok
+  audited 46 shutdown arms, 35 of them inside a loop
+  test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+  test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+date  : 2026-08-14T22:25:23Z

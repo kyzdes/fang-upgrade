@@ -19,8 +19,8 @@
 # reload returns in milliseconds, there is nothing in flight when the SIGTERM
 # lands, and the daemon exits cleanly because it was never in the trap.  Run
 # against openfang:sprint3, which predates the whole fix, it printed
-# "RESULT: GREEN" (tests/fang/baseline/FANG-40-sigterm-tautology.txt).  A guard
-# that passes on the unfixed image guards nothing.
+# "RESULT: GREEN" (tests/fang/baseline/FANG-40-sigterm-tautology-sprint3.txt).
+# A guard that passes on the unfixed image guards nothing.
 #
 # So the run now establishes the trap before testing the escape:
 #
@@ -58,7 +58,8 @@
 #
 # Usage:  OF_IMAGE=openfang:fang40 ./FANG-40-sigterm.sh
 # Env:    OF_IMAGE (required), OF_CONTAINER, OF_VOLUME, OF_PORT, OF_STUB_PORT,
-#         OF_POLL_SECS (stub long-poll length, default 30)
+#         OF_POLL_SECS (stub long-poll length, default 30),
+#         OF_KEEP=1 (leave the scratch volume and work dir behind for autopsy)
 
 set -uo pipefail
 
@@ -74,7 +75,6 @@ GRACE=10
 # ~28 s a draining one takes, so the threshold does not need to be tight.
 DRAIN_MIN="$(awk -v p="$POLL_SECS" 'BEGIN{printf "%.2f", p/3}')"
 FAKE_TOKEN="111111:AAAA-fake-token-for-sigterm-probe"
-WORK="$(mktemp -d /tmp/fang40s.XXXXXX)"
 
 # ---------------------------------------------------------------- prod guard --
 case "$CONTAINER" in
@@ -112,12 +112,26 @@ for bin in docker nsenter python3 curl awk; do
   command -v "$bin" >/dev/null || { echo "missing dependency: $bin" >&2; exit 3; }
 done
 
+# After the guards, so that a refused run leaves nothing at all behind — and so
+# that the cleanup trap below, which deletes $VOLUME, is only ever installed
+# once $VOLUME has been proven to be a scratch name.
+WORK="$(mktemp -d /tmp/fang40s.XXXXXX)"
 BASE_URL="http://127.0.0.1:$PORT"
 STUB_PID=""
 
+# The container, the volume and the work directory are all created by this
+# script, so all three go on the way out. Each run used to leave its volume and
+# its /tmp/fang40s.* behind, and this box gates on 12 GB free. OF_KEEP=1 keeps
+# the volume and the work directory when a run has to be taken apart afterwards.
 cleanup() {
   [ -n "$STUB_PID" ] && kill "$STUB_PID" 2>/dev/null
   docker rm -f "$CONTAINER" >/dev/null 2>&1
+  if [ "${OF_KEEP:-0}" = 1 ]; then
+    echo "kept: volume $VOLUME, work dir $WORK"
+  else
+    docker volume rm "$VOLUME" >/dev/null 2>&1
+    case "$WORK" in /tmp/fang40s.*) rm -rf "$WORK";; esac
+  fi
 }
 trap cleanup EXIT INT TERM
 
