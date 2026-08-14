@@ -81,6 +81,22 @@ case "$CONTAINER" in
   openfang-openfang-1|openfang-staging)
     echo "REFUSING: $CONTAINER is not a throwaway container." >&2; exit 2;;
 esac
+# The cleanup trap runs `docker rm -f "$CONTAINER"` on every exit, including a
+# run that dies before it ever creates one. Two literals are not a guard: any
+# other name — a colleague's stand mid-run — is destroyed by a probe that was
+# never going to work. Same rule as the volume: a scratch-shaped name, and it
+# must not already exist.
+case "$CONTAINER" in
+  *-sigterm|openfang-sigterm-*|of-*-sigterm) ;;
+  *) echo "REFUSING: $CONTAINER is not a scratch container name for this probe." >&2
+     echo "  expected something matching '*-sigterm', 'openfang-sigterm-*' or 'of-*-sigterm'." >&2
+     exit 2;;
+esac
+if docker container inspect "$CONTAINER" >/dev/null 2>&1; then
+  echo "REFUSING: container $CONTAINER already exists — another run may be using it." >&2
+  echo "  remove it yourself or pick another OF_CONTAINER." >&2
+  exit 2
+fi
 case "$PORT" in
   4200|4201|4202) echo "REFUSING: port $PORT is prod/staging/refstand." >&2; exit 2;;
 esac
