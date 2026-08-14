@@ -12,6 +12,7 @@ live here.
 |---|---|
 | know what is different from upstream, and what is still broken | **[FORK-NOTES.md](FORK-NOTES.md)** |
 | put this on a server, step by step, with checks | **[INSTALL-AGENT.md](INSTALL-AGENT.md)** |
+| restyle the dashboard without breaking it | **[DESIGN-BRIEF.md](DESIGN-BRIEF.md)** |
 
 `INSTALL-AGENT.md` is written as a task for an AI agent with root on a fresh machine, but it
 reads fine as an ordinary runbook — every step ends in a command whose output tells you whether
