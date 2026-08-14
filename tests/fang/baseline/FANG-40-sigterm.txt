@@ -1,0 +1,24 @@
+=== FANG-40 follow-up · SIGTERM during a channel hot-reload ===
+date              : 2026-08-14T15:15:46Z
+image             : openfang:fang40 (sha256:f10f0a389215)
+container         : openfang-sigterm on http://127.0.0.1:4207, volume openfang-sigterm-data
+stub long-poll    : 30s     docker stop grace: 10s
+
+--- control: SIGTERM with a 30s long-poll outstanding, no reload ---
+docker stop: 0.49s  exit=0
+
+--- experiment: SIGTERM 3 s into a reload that is draining the long-poll ---
+docker stop: 10.24s  exit=137
+
+--- daemon log (tail) ---
+2026-08-14T15:15:54.571816421Z 2026-08-14T15:15:54.571094Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T15:15:54.575108984Z 2026-08-14T15:15:54.574916Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T15:15:59.627770165Z 2026-08-14T15:15:59.627557Z  INFO openfang_api::server: Received SIGTERM, shutting down...
+
+OF40S_RELOAD_SECS=13.28
+OF40S_STOP_SECS=10.24
+OF40S_STOP_RC=137              # 0 = clean exit, 137 = SIGKILL after the grace ran out
+OF40S_PLAIN_STOP_SECS=0.49
+OF40S_PLAIN_STOP_RC=0
+
+RESULT: RED — SIGTERM during reload ends in SIGKILL (exit 137)

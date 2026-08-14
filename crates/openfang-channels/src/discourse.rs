@@ -208,8 +208,14 @@ impl ChannelAdapter for DiscourseAdapter {
 
             loop {
                 tokio::select! {
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
+                    changed = shutdown_rx.changed() => {
+                        // `Err` means every `watch::Sender` is gone, which can only
+                        // happen once the BridgeManager that owned them is dropped: it
+                        // means the same thing as `true`. Falling through instead
+                        // skips the sleep arm and re-enters the poll immediately, so
+                        // this one does not merely spin the CPU — it hammers the
+                        // Discourse instance with back-to-back requests (FANG-40).
+                        if changed.is_err() || *shutdown_rx.borrow() {
                             info!("Discourse adapter shutting down");
                             break;
                         }

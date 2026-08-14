@@ -210,8 +210,13 @@ impl ChannelAdapter for NtfyAdapter {
 
                 loop {
                     tokio::select! {
-                        _ = shutdown_rx.changed() => {
-                            if *shutdown_rx.borrow() {
+                        changed = shutdown_rx.changed() => {
+                            // `Err` means every `watch::Sender` is gone, which can only
+                            // happen once the BridgeManager that owned them is dropped: it
+                            // means the same thing as `true`. Falling through instead
+                            // re-arms a future that is already ready and stays ready — a
+                            // 100% CPU spin for the life of the process (FANG-40).
+                            if changed.is_err() || *shutdown_rx.borrow() {
                                 info!("ntfy adapter shutting down");
                                 return;
                             }

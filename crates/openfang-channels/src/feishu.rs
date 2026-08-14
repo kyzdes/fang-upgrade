@@ -727,8 +727,13 @@ impl FeishuAdapter {
                 warn!("{label} WebSocket reconnecting in {backoff:?}");
                 tokio::select! {
                     _ = tokio::time::sleep(backoff) => {}
-                    _ = shutdown_rx.changed() => {
-                        if *shutdown_rx.borrow() {
+                    changed = shutdown_rx.changed() => {
+                        // `Err` means every `watch::Sender` is gone, which can only
+                        // happen once the BridgeManager that owned them is dropped: it
+                        // means the same thing as `true`. Falling through instead
+                        // re-arms a future that is already ready and stays ready — a
+                        // 100% CPU spin for the life of the process (FANG-40).
+                        if changed.is_err() || *shutdown_rx.borrow() {
                             break;
                         }
                     }
@@ -831,8 +836,13 @@ impl FeishuAdapter {
                     let ping_frame = build_ping_frame(service_id);
                     write.send(Message::Binary(ping_frame.encode_to_vec())).await?;
                 }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
+                changed = shutdown_rx.changed() => {
+                    // `Err` means every `watch::Sender` is gone, which can only
+                    // happen once the BridgeManager that owned them is dropped: it
+                    // means the same thing as `true`. Falling through instead
+                    // re-arms a future that is already ready and stays ready — a
+                    // 100% CPU spin for the life of the process (FANG-40).
+                    if changed.is_err() || *shutdown_rx.borrow() {
                         info!("{label} WebSocket shutting down");
                         let _ = write.close().await;
                         break;

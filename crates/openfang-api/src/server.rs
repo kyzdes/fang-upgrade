@@ -8,6 +8,7 @@ use crate::webchat;
 use crate::ws;
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -15,7 +16,26 @@ use std::time::Instant;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
+
+/// How long the daemon lets in-flight HTTP requests finish after a shutdown
+/// signal before it closes them and proceeds with its own exit path.
+///
+/// This is a budget, not a preference. Everything the daemon does on the way
+/// out happens *after* `axum::serve(..).with_graceful_shutdown(..).await`
+/// returns, and that await has no bound of its own: it waits for every
+/// outstanding request. Two of this server's endpoints can outlast any
+/// supervisor's patience — `POST /api/channels/reload` blocks while the channel
+/// bridge drains an in-flight Telegram `getUpdates` (up to ~30 s), and the agent
+/// WebSocket lives as long as its client. Waiting for those means the exit path
+/// never runs and the process is killed instead of stopping.
+///
+/// 3 s leaves room inside the 10 s that `docker stop` and systemd both give by
+/// default for the work that follows: `BridgeManager::stop_fast`
+/// (`ADAPTER_STOP_TIMEOUT_FAST`, 250 ms per adapter) and `kernel.shutdown()`.
+/// Override with `OPENFANG_SHUTDOWN_DRAIN_SECS` when a deployment gives the
+/// process a different grace period.
+const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -906,12 +926,54 @@ pub async fn run_daemon(
     // SECURITY: `into_make_service_with_connect_info` injects the peer
     // SocketAddr so the auth middleware can check for loopback connections.
     let api_shutdown = state.shutdown_notify.clone();
-    axum::serve(
+    let drain_timeout = shutdown_drain_timeout();
+    let (drain_started_tx, drain_started_rx) = tokio::sync::oneshot::channel::<()>();
+    let serve = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal(api_shutdown))
-    .await?;
+    .with_graceful_shutdown(async move {
+        shutdown_signal(api_shutdown).await;
+        // Tells the arm below that the signal has landed, so the drain window
+        // starts counting from the signal and not from process start.
+        let _ = drain_started_tx.send(());
+    })
+    // `Serve`/`WithGracefulShutdown` are `IntoFuture`, not `Future`; `.await`
+    // hides that, but polling it twice (once in the `select!`, once under the
+    // timeout) needs the real future.
+    .into_future();
+    tokio::pin!(serve);
+
+    let serve_result = tokio::select! {
+        result = &mut serve => result,
+        _ = drain_started_rx => {
+            // `with_graceful_shutdown` waits for every in-flight request, with
+            // no upper bound. Some of this server's requests are long:
+            // `POST /api/channels/reload` blocks for the remainder of an
+            // in-flight Telegram `getUpdates` (up to ~30 s, see
+            // `BridgeManager::stop`), and a WebSocket at
+            // /api/agents/{id}/ws stays open as long as its client does.
+            // Everything below — daemon.json removal, stopping the bridges,
+            // `kernel.shutdown()` — runs only after that await returns, so an
+            // unbounded wait means none of it runs at all: the supervisor's
+            // grace period expires and the process is SIGKILLed — measured
+            // before this bound existed: `docker stop -t 10` fired during a
+            // reload took 10.24 s and the container exited 137
+            // (tests/fang/baseline/FANG-40-sigterm.txt). Bound the wait so the
+            // exit path always gets to run.
+            match tokio::time::timeout(drain_timeout, &mut serve).await {
+                Ok(result) => result,
+                Err(_) => {
+                    warn!(
+                        "Requests still in flight after {}s of graceful shutdown; \
+                         closing them and continuing to exit",
+                        drain_timeout.as_secs_f32()
+                    );
+                    Ok(())
+                }
+            }
+        }
+    };
 
     // Clean up daemon info file
     if let Some(info_path) = daemon_info_path {
@@ -920,15 +982,38 @@ pub async fn run_daemon(
 
     // Stop channel bridges. `stop_fast` on purpose: the process is exiting, so
     // draining a Telegram long-poll to free its reader slot buys nothing (the
-    // socket is about to close regardless) and would eat up to 40 s of the
-    // SIGTERM grace period. The graceful `stop()` belongs to hot-reload, where
-    // a new poller is about to take the slot.
-    if let Some(ref mut b) = *state.bridge_manager.lock().await {
-        b.stop_fast().await;
+    // socket is about to close regardless). The graceful `stop()` belongs to
+    // hot-reload, where a new poller is about to take the slot.
+    //
+    // Both halves of that are measured by tests/fang/FANG-40-sigterm.sh against
+    // a stub whose getUpdates holds for 30 s (output in
+    // tests/fang/after-v2/FANG-40-sigterm.txt). `OF40S_PLAIN_STOP_SECS` is a
+    // whole SIGTERM-to-exit with such a poll outstanding and stays under a
+    // second; `OF40S_RELOAD_SECS`, the same drain taken by hot-reload's
+    // `stop()`, is the remainder of the poll.
+    //
+    // `try_lock` rather than `lock`: a hot-reload holding this mutex is exactly
+    // the case that gets us here on a deadline, and blocking on it would undo
+    // the bounded drain above. Losing the race costs nothing — the reload owns
+    // the bridge and the process is about to exit.
+    match state.bridge_manager.try_lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut b) = *guard {
+                b.stop_fast().await;
+            }
+        }
+        Err(_) => {
+            warn!("Channel hot-reload in progress at shutdown; leaving its bridge to the exit");
+        }
     }
 
     // Shutdown kernel
     kernel.shutdown();
+
+    // Reported last, not with `?` at the await: a serve error must not skip the
+    // cleanup above, which is the whole reason that await is no longer the last
+    // statement in this function.
+    serve_result?;
 
     info!("OpenFang daemon stopped");
     Ok(())
@@ -950,6 +1035,28 @@ pub fn read_daemon_info(home_dir: &Path) -> Option<DaemonInfo> {
     let info_path = home_dir.join("daemon.json");
     let contents = std::fs::read_to_string(info_path).ok()?;
     serde_json::from_str(&contents).ok()
+}
+
+/// Resolve the graceful-shutdown drain budget — see
+/// [`SHUTDOWN_DRAIN_TIMEOUT_DEFAULT`].
+///
+/// `OPENFANG_SHUTDOWN_DRAIN_SECS` overrides it; `0` disables draining entirely
+/// (in-flight requests are cut immediately). An unparseable value is ignored
+/// rather than fatal: this runs on the shutdown path, where refusing to start
+/// is not an option and the default is always safe.
+fn shutdown_drain_timeout() -> std::time::Duration {
+    match std::env::var("OPENFANG_SHUTDOWN_DRAIN_SECS") {
+        Ok(raw) => match raw.trim().parse::<f64>() {
+            Ok(secs) if secs.is_finite() && secs >= 0.0 => {
+                std::time::Duration::from_secs_f64(secs)
+            }
+            _ => {
+                warn!("Ignoring unparseable OPENFANG_SHUTDOWN_DRAIN_SECS={raw:?}");
+                SHUTDOWN_DRAIN_TIMEOUT_DEFAULT
+            }
+        },
+        Err(_) => SHUTDOWN_DRAIN_TIMEOUT_DEFAULT,
+    }
 }
 
 /// Wait for an OS termination signal OR an API shutdown request.

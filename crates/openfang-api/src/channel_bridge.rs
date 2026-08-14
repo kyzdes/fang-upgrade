@@ -1890,13 +1890,19 @@ pub async fn start_channel_bridge_with_config(
 pub async fn reload_channels_from_disk(
     state: &crate::routes::AppState,
 ) -> Result<Vec<String>, String> {
-    // Stop existing bridge
-    {
-        let mut guard = state.bridge_manager.lock().await;
-        if let Some(ref mut bridge) = *guard {
-            bridge.stop().await;
-        }
-        *guard = None;
+    // Stop the existing bridge — but take it out of the mutex first.
+    //
+    // `BridgeManager::stop()` is the draining variant: with a Telegram channel
+    // running it blocks for the remainder of the in-flight `getUpdates`, up to
+    // ~30 s. Holding `bridge_manager` across that await made every other holder
+    // of the same mutex wait the same 30 s: registering an agent's channels
+    // (routes.rs, spawn) and cloning an agent (routes.rs, clone) both lock it,
+    // and so does the daemon's own shutdown path. `take()` gives us ownership
+    // and releases the lock at the end of the statement; the drain then happens
+    // with nothing locked.
+    let old_bridge = state.bridge_manager.lock().await.take();
+    if let Some(mut bridge) = old_bridge {
+        bridge.stop().await;
     }
 
     // Re-read secrets.env so new API tokens are available in std::env
