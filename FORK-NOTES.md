@@ -158,8 +158,8 @@ docker run --rm -v openfang_openfang-data:/d -v "$PWD":/b alpine \
 Same as upstream — the fork changes no build or runtime requirements.
 
 ```bash
-git clone https://github.com/kyzdes/openfang-patched.git
-cd openfang-patched
+git clone https://github.com/kyzdes/fang-upgrade.git
+cd fang-upgrade
 docker compose up -d --build
 curl -s http://127.0.0.1:4200/api/health
 ```

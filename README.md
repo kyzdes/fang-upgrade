@@ -21,8 +21,8 @@ it worked.
 ## Quick install
 
 ```bash
-git clone https://github.com/kyzdes/openfang-patched.git
-cd openfang-patched
+git clone https://github.com/kyzdes/fang-upgrade.git
+cd fang-upgrade
 docker compose up -d --build
 curl -s http://127.0.0.1:4200/api/health
 ```

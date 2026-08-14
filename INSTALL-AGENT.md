@@ -1,9 +1,9 @@
 # Развёртывание форка OpenFang на чистом сервере
 
 > Публичная копия. Читается напрямую, без логина:
-> `curl -sL https://raw.githubusercontent.com/kyzdes/openfang-patched/main/INSTALL-AGENT.md`
+> `curl -sL https://raw.githubusercontent.com/kyzdes/fang-upgrade/main/INSTALL-AGENT.md`
 >
-> Форк: <https://github.com/kyzdes/openfang-patched> · апстрим: <https://github.com/RightNow-AI/openfang>
+> Форк: <https://github.com/kyzdes/fang-upgrade> · апстрим: <https://github.com/RightNow-AI/openfang>
 
 Задание для агента, у которого есть root на свежей машине. Ставит наш патченый форк,
 проверяет его и подключает скилл `openfang`.
@@ -41,7 +41,7 @@ docker version --format '{{.Server.Version}}'
 
 ```bash
 mkdir -p /opt && cd /opt
-git clone https://github.com/kyzdes/openfang-patched.git openfang
+git clone https://github.com/kyzdes/fang-upgrade.git openfang
 cd /opt/openfang
 ```
 
@@ -225,22 +225,30 @@ curl -s -m 600 -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: applica
 
 ---
 
-## 7. Скилл `openfang`
+## 7. Скилл `fang-upgrade`
 
-Скилл — это набор инструкций и утилит (`ofctl`, `ofdoctor`, `ofhand`, `ofcron`, `ofbackup`),
-который избавляет от ручной возни с curl и Bearer-заголовками.
+Руководство по этому форку плюс утилиты (`ofctl`, `ofdoctor`, `ofhand`, `ofcron`, `ofbackup`,
+`ofcheck-rs`), которые избавляют от ручной возни с curl и Bearer-заголовками. Репозиторий
+публичный, доступа ни к чему просить не нужно.
 
 ```bash
 mkdir -p ~/.claude/skills
-git clone https://github.com/kyzdes/openfang-skill-private.git ~/.claude/skills/openfang
-chmod +x ~/.claude/skills/openfang/scripts/*
-export PATH="$HOME/.claude/skills/openfang/scripts:$PATH"
-echo 'export PATH="$HOME/.claude/skills/openfang/scripts:$PATH"' >> ~/.bashrc
+git clone https://github.com/kyzdes/fang-upgrade-skill.git ~/.claude/skills/fang-upgrade
+chmod +x ~/.claude/skills/fang-upgrade/scripts/*
+export PATH="$HOME/.claude/skills/fang-upgrade/scripts:$PATH"
+echo 'export PATH="$HOME/.claude/skills/fang-upgrade/scripts:$PATH"' >> ~/.bashrc
 ```
 
-**Репозиторий скилла приватный.** Нужен доступ к аккаунту владельца — `gh auth login` или
-деплой-ключ. Если доступа нет, этот шаг пропускается целиком: всё остальное в документе
-делается голым `curl`, скилл лишь избавляет от ручных Bearer-заголовков.
+**Это скилл именно для форка.** Он описывает поведение, которого в стоковом OpenFang нет:
+ответ на сообщение с полями `model_used`/`calls[]`, `501` вместо тихого `200` на
+`PUT /api/agents/{id}/update`, пагинацию `file_read`, три новых ряда метрик. В нём есть
+раздел «Fork vs stock» с разницей построчно.
+
+Если ставишь **неизменённый** OpenFang — бери вместо него
+[openfang-skill](https://github.com/kyzdes/openfang-skill).
+
+Скилл не обязателен: всё в этом документе делается голым `curl`. Он экономит время, а не
+открывает возможности.
 
 **Проверка:**
 ```bash
