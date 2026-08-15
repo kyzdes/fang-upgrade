@@ -1,0 +1,49 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.22s
+warning: the following packages contain code that will be rejected by a future version of Rust: imap-proto v0.10.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running tests/adapter_shutdown_test.rs (/target/debug/deps/adapter_shutdown_test-99d6097d0568d537)
+
+running 2 tests
+
+thread 'bridge_manager_stop_calls_adapter_stop' (311) panicked at crates/openfang-channels/tests/adapter_shutdown_test.rs:160:5:
+assertion `left == right` failed: BridgeManager::stop() must call ChannelAdapter::stop() exactly once
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test bridge_manager_stop_calls_adapter_stop ... FAILED
+FANG40_IDLE_CORES=0.000 FANG40_DISPATCH_CORES=1.079
+
+thread 'dropping_the_manager_without_stop_does_not_spin' (312) panicked at crates/openfang-channels/tests/adapter_shutdown_test.rs:189:5:
+BridgeManager dispatch loop spins after the manager is dropped: 1.08 cores
+test dropping_the_manager_without_stop_does_not_spin ... FAILED
+
+failures:
+
+failures:
+    bridge_manager_stop_calls_adapter_stop
+    dropping_the_manager_without_stop_does_not_spin
+
+test result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.51s
+
+error: test failed, to rerun pass `-p openfang-channels --test adapter_shutdown_test`
+     Running tests/mattermost_shutdown_spin_test.rs (/target/debug/deps/mattermost_shutdown_spin_test-947e61b475ec69d4)
+
+running 1 test
+FANG40_IDLE_CORES=0.000 FANG40_MATTERMOST_CORES=1.070
+
+thread 'dropping_a_mattermost_adapter_without_stop_does_not_spin' (318) panicked at crates/openfang-channels/tests/mattermost_shutdown_spin_test.rs:126:5:
+Mattermost read loop spins after the adapter is dropped: 1.07 cores
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test dropping_a_mattermost_adapter_without_stop_does_not_spin ... FAILED
+
+failures:
+
+failures:
+    dropping_a_mattermost_adapter_without_stop_does_not_spin
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.84s
+
+error: test failed, to rerun pass `-p openfang-channels --test mattermost_shutdown_spin_test`
+error: 2 targets failed:
+    `-p openfang-channels --test adapter_shutdown_test`
+    `-p openfang-channels --test mattermost_shutdown_spin_test`

@@ -1,0 +1,19 @@
+=== FANG-40 · adapter for a deleted channel keeps polling ===
+date              : 2026-08-14T13:50:54Z
+target            : http://127.0.0.1:4201  (container openfang-staging)
+daemon version    : 0.6.9
+image             : sha256:cbbebc3f9e38
+--- reload with the channel present ---
+{"started":["telegram"],"status":"ok"}
+getUpdates while the channel exists: 3
+--- [channels.telegram] deleted from config, reloading ---
+{"started":[],"status":"ok"}
+
+--- daemon log ---
+2026-08-14T13:50:56.999628298Z 2026-08-14T13:50:56.999425Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T13:51:05.045741719Z 2026-08-14T13:51:05.045278Z  INFO openfang_channels::bridge: Shutting down channel adapter telegram
+2026-08-14T13:51:05.045793608Z 2026-08-14T13:51:05.045526Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=0 channels=[]
+
+OF40_POLLS_AFTER_DELETE=7      # stub requests 20s after the delete (want 0)
+RESULT: RED — the deleted channel's poller is still running
+restored /var/lib/docker/volumes/openfang-staging-data/_data/config.toml

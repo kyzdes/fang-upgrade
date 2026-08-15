@@ -27,6 +27,33 @@ const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const LONG_POLL_TIMEOUT: u64 = 30;
 /// Bound startup control-plane calls so a flaky Local Bot API cannot block daemon boot forever.
 const STARTUP_API_TIMEOUT: Duration = Duration::from_secs(10);
+/// Upper bound on how long [`TelegramAdapter::stop`] waits for the polling task
+/// to come back from its in-flight `getUpdates` before giving up on the drain.
+///
+/// The request itself is capped at `LONG_POLL_TIMEOUT + 10`; this leaves a
+/// little room on top so a normal drain is never cut short. Reaching this
+/// deadline means the reader slot may still be held on Telegram's side, which
+/// is exactly the state that produces `409 Conflict` — hence the warning.
+const POLLER_DRAIN_TIMEOUT: Duration = Duration::from_secs(LONG_POLL_TIMEOUT + 15);
+
+/// Sleep for `d`, waking early once shutdown becomes observable.
+///
+/// Returns `true` when the caller should leave its loop.
+///
+/// `changed()` resolving with `Err` means every `Sender` is gone. Nobody can
+/// ever set the flag after that, so `Err` has to be read as "stop": the
+/// alternative — treating it as a spurious wakeup and looping — re-arms a
+/// future that is permanently ready and burns a core (FANG-40).
+async fn sleep_or_shutdown(d: Duration, shutdown: &mut watch::Receiver<bool>) -> bool {
+    if *shutdown.borrow() {
+        return true;
+    }
+    let senders_gone = tokio::select! {
+        _ = tokio::time::sleep(d) => false,
+        changed = shutdown.changed() => changed.is_err(),
+    };
+    senders_gone || *shutdown.borrow()
+}
 
 /// Default Telegram Bot API base URL.
 const DEFAULT_API_URL: &str = "https://api.telegram.org";
@@ -99,6 +126,16 @@ pub struct TelegramAdapter {
     rejected_reactions: Arc<Mutex<HashSet<(i64, String)>>>,
     shutdown_tx: Arc<watch::Sender<bool>>,
     shutdown_rx: watch::Receiver<bool>,
+    /// Handle of the polling task spawned by `start()`, so that `stop()` can
+    /// wait for it (FANG-40).
+    ///
+    /// Signalling shutdown is not enough to make the channel restartable:
+    /// Telegram allows exactly one outstanding `getUpdates` per bot, and the
+    /// slot stays busy until that request returns. `stop()` therefore has to
+    /// return only once the poller has actually finished, or the poller started
+    /// straight afterwards spends the rest of the old long-poll's timeout
+    /// collecting `409 Conflict`.
+    poll_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 impl TelegramAdapter {
@@ -142,6 +179,7 @@ impl TelegramAdapter {
             rejected_reactions: Arc::new(Mutex::new(HashSet::new())),
             shutdown_tx: Arc::new(shutdown_tx),
             shutdown_rx,
+            poll_task: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -701,7 +739,7 @@ impl ChannelAdapter for TelegramAdapter {
         let thread_routes = self.thread_routes.clone();
         let mut shutdown = self.shutdown_rx.clone();
 
-        tokio::spawn(async move {
+        let poll_handle = tokio::spawn(async move {
             let mut offset: Option<i64> = None;
             let mut backoff = INITIAL_BACKOFF;
 
@@ -721,21 +759,24 @@ impl ChannelAdapter for TelegramAdapter {
                     params["offset"] = serde_json::json!(off);
                 }
 
-                // Make the request with a timeout slightly longer than the long-poll timeout
+                // Make the request with a timeout slightly longer than the long-poll timeout.
+                //
+                // FANG-40/FANG-31: this deliberately does NOT race the request
+                // against `shutdown`. Telegram serves exactly one `getUpdates`
+                // per bot and only frees that slot when the outstanding request
+                // returns; dropping the future here closes our socket but does
+                // not shorten the server-side poll by one second. All it buys is
+                // a poller that restarts immediately and then eats
+                // `409 Conflict` until the abandoned poll times out. Instead we
+                // let the request finish and exit at the top of the loop, and
+                // `stop()` waits for that — see `POLLER_DRAIN_TIMEOUT`.
                 let request_timeout = Duration::from_secs(LONG_POLL_TIMEOUT + 10);
-                let result = tokio::select! {
-                    res = async {
-                        client
-                            .get(&url)
-                            .json(&params)
-                            .timeout(request_timeout)
-                            .send()
-                            .await
-                    } => res,
-                    _ = shutdown.changed() => {
-                        break;
-                    }
-                };
+                let result = client
+                    .get(&url)
+                    .json(&params)
+                    .timeout(request_timeout)
+                    .send()
+                    .await;
 
                 let resp = match result {
                     Ok(resp) => resp,
@@ -744,7 +785,9 @@ impl ChannelAdapter for TelegramAdapter {
                             "Telegram getUpdates network error: {}, retrying in {backoff:?}",
                             redact_reqwest_error(e)
                         );
-                        tokio::time::sleep(backoff).await;
+                        if sleep_or_shutdown(backoff, &mut shutdown).await {
+                            break;
+                        }
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
                     }
@@ -757,7 +800,9 @@ impl ChannelAdapter for TelegramAdapter {
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     let retry_after = body["parameters"]["retry_after"].as_u64().unwrap_or(5);
                     warn!("Telegram rate limited, retry after {retry_after}s");
-                    tokio::time::sleep(Duration::from_secs(retry_after)).await;
+                    if sleep_or_shutdown(Duration::from_secs(retry_after), &mut shutdown).await {
+                        break;
+                    }
                     continue;
                 }
 
@@ -766,7 +811,9 @@ impl ChannelAdapter for TelegramAdapter {
                 // side for up to 30s. Retry with backoff instead of stopping permanently.
                 if status.as_u16() == 409 {
                     warn!("Telegram 409 Conflict — stale polling session, retrying in {backoff:?}");
-                    tokio::time::sleep(backoff).await;
+                    if sleep_or_shutdown(backoff, &mut shutdown).await {
+                        break;
+                    }
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                     continue;
                 }
@@ -774,7 +821,9 @@ impl ChannelAdapter for TelegramAdapter {
                 if !status.is_success() {
                     let body_text = resp.text().await.unwrap_or_default();
                     warn!("Telegram getUpdates failed ({status}): {body_text}, retrying in {backoff:?}");
-                    tokio::time::sleep(backoff).await;
+                    if sleep_or_shutdown(backoff, &mut shutdown).await {
+                        break;
+                    }
                     backoff = (backoff * 2).min(MAX_BACKOFF);
                     continue;
                 }
@@ -784,7 +833,9 @@ impl ChannelAdapter for TelegramAdapter {
                     Ok(v) => v,
                     Err(e) => {
                         warn!("Telegram getUpdates parse error: {e}");
-                        tokio::time::sleep(backoff).await;
+                        if sleep_or_shutdown(backoff, &mut shutdown).await {
+                            break;
+                        }
                         backoff = (backoff * 2).min(MAX_BACKOFF);
                         continue;
                     }
@@ -795,14 +846,18 @@ impl ChannelAdapter for TelegramAdapter {
 
                 if body["ok"].as_bool() != Some(true) {
                     warn!("Telegram getUpdates returned ok=false");
-                    tokio::time::sleep(poll_interval).await;
+                    if sleep_or_shutdown(poll_interval, &mut shutdown).await {
+                        break;
+                    }
                     continue;
                 }
 
                 let updates = match body["result"].as_array() {
                     Some(arr) => arr,
                     None => {
-                        tokio::time::sleep(poll_interval).await;
+                        if sleep_or_shutdown(poll_interval, &mut shutdown).await {
+                            break;
+                        }
                         continue;
                     }
                 };
@@ -842,11 +897,19 @@ impl ChannelAdapter for TelegramAdapter {
                 }
 
                 // Small delay between polls even on success to avoid tight loops
-                tokio::time::sleep(poll_interval).await;
+                if sleep_or_shutdown(poll_interval, &mut shutdown).await {
+                    break;
+                }
             }
 
             info!("Telegram polling loop stopped");
         });
+
+        // Hand the poller to `stop()` so the drain has something to wait on.
+        // A handle left over from an earlier `start()` on the same adapter is
+        // replaced (and thereby detached) — the bridge never does this, but the
+        // trait does not forbid it.
+        *self.poll_task.lock().await = Some(poll_handle);
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
         Ok(Box::pin(stream))
@@ -895,8 +958,27 @@ impl ChannelAdapter for TelegramAdapter {
         Ok(())
     }
 
+    /// Signal the poller and wait for it to actually finish.
+    ///
+    /// The wait is the point. Telegram serves one `getUpdates` per bot token
+    /// and only releases that slot when the outstanding request comes back, so
+    /// returning as soon as the flag is set would let the caller start a
+    /// replacement poller into a slot that is still busy — which is exactly the
+    /// `409 Conflict` storm in FANG-31.
     async fn stop(&self) -> Result<(), Box<dyn std::error::Error>> {
         let _ = self.shutdown_tx.send(true);
+        let handle = self.poll_task.lock().await.take();
+        if let Some(handle) = handle {
+            match tokio::time::timeout(POLLER_DRAIN_TIMEOUT, handle).await {
+                Ok(Ok(())) => debug!("Telegram poller drained"),
+                Ok(Err(e)) => warn!("Telegram poller ended abnormally: {e}"),
+                Err(_) => warn!(
+                    "Telegram poller did not finish within {POLLER_DRAIN_TIMEOUT:?}; \
+                     the Bot API reader slot may still be held and the next poller \
+                     may see 409 Conflict"
+                ),
+            }
+        }
         Ok(())
     }
 }

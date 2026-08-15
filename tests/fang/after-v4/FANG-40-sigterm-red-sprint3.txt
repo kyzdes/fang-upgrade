@@ -1,0 +1,59 @@
+=== FANG-40-sigterm.sh (this commit) vs openfang:sprint3 — RED ===
+why   : sprint3 predates the whole FANG-40 change. Its reload stops nothing, so
+        there is no drain to land a SIGTERM inside; the script says so instead
+        of calling the resulting clean exit a pass. Exit status 1.
+run   : OF_IMAGE=openfang:sprint3 OF_CONTAINER=of-f40s-red \
+        OF_VOLUME=of-f40s-red-sigterm-data OF_PORT=4217 OF_STUB_PORT=8099
+after : container removed, volume of-f40s-red-sigterm-data removed, work dir
+        removed — verified with `docker volume ls` and `ls /tmp/fang40s.*`.
+
+=== FANG-40 follow-up · SIGTERM during a channel hot-reload ===
+date              : 2026-08-14T22:28:24Z
+image             : openfang:sprint3 (sha256:cbbebc3f9e38)
+container         : of-f40s-red on http://127.0.0.1:4217, volume of-f40s-red-sigterm-data
+stub long-poll    : 30s     docker stop grace: 10s
+drain threshold   : 10.00s
+
+--- control: SIGTERM with a 30s long-poll outstanding, no reload ---
+docker stop: 0.46s  exit=0
+
+--- reload with a long-poll outstanding: how long does the drain take? ---
+POST /api/channels/reload: 0.02s  HTTP 200
+
+--- experiment: SIGTERM 3 s into a reload that is draining the long-poll ---
+reload still in flight when SIGTERM was sent: no
+docker stop: 0.25s  exit=0
+
+--- daemon log (tail) ---
+2026-08-14T22:28:32.354116412Z 2026-08-14T22:28:32.353649Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T22:28:32.358985886Z 2026-08-14T22:28:32.358492Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T22:28:34.390066994Z 2026-08-14T22:28:34.389909Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T22:28:34.390725920Z 2026-08-14T22:28:34.390448Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T22:28:34.394358046Z 2026-08-14T22:28:34.394189Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T22:28:36.430830018Z 2026-08-14T22:28:36.430695Z  INFO openfang_api::channel_bridge: Reloaded secrets.env for channel hot-reload
+2026-08-14T22:28:36.431556167Z 2026-08-14T22:28:36.431280Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T22:28:36.433279687Z 2026-08-14T22:28:36.433109Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T22:28:39.493648795Z 2026-08-14T22:28:39.493502Z  INFO openfang_api::server: Received SIGTERM, shutting down...
+2026-08-14T22:28:39.496924347Z 2026-08-14T22:28:39.496857Z  INFO openfang_api::server: OpenFang daemon stopped
+2026-08-14T22:28:39.496950997Z   OpenFang daemon stopped.
+
+OF40S_DRAIN_SECS=0.02
+OF40S_DRAIN_CODE=200
+OF40S_DRAIN_MIN=10.00
+OF40S_RELOAD_INFLIGHT=no
+OF40S_STOP_SECS=0.25
+OF40S_STOP_RC=0              # 0 = clean exit, 137 = SIGKILL after the grace ran out
+OF40S_EXIT_PATH=yes
+OF40S_PLAIN_STOP_SECS=0.46
+OF40S_PLAIN_STOP_RC=0
+
+--- checks ---
+  PASS  reload answers 200 with a long-poll outstanding (got 200)
+  FAIL  reload really drains: 0.02s >= 10.00s
+  FAIL  SIGTERM landed while that reload was in flight (no)
+  PASS  container exited 0, not SIGKILL (got 0)
+  PASS  stop finished inside the 10s grace (0.25s)
+  PASS  shutdown path ran: 'daemon stopped' after 'Received SIGTERM' (yes)
+  PASS  control stop is clean too (rc=0)
+
+RESULT: RED — see the failed checks above

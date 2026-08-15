@@ -1,0 +1,27 @@
+=== FANG-40 · adapter for a deleted channel keeps polling ===
+date              : 2026-08-14T16:03:46Z
+target            : http://127.0.0.1:4208  (container openfang-fang40b)
+daemon version    : 0.6.9
+image             : sha256:0a4df565357d
+--- reload with the channel present ---
+{"started":["telegram"],"status":"ok"}
+getUpdates while the channel exists: 3
+--- [channels.telegram] deleted from config, reloading ---
+{"started":[],"status":"ok"}
+
+--- daemon log ---
+2026-08-14T16:02:31.604499280Z 2026-08-14T16:02:31.604441Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T16:03:01.646412609Z 2026-08-14T16:03:01.646023Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T16:03:01.648968862Z 2026-08-14T16:03:01.648900Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T16:03:46.780883704Z 2026-08-14T16:03:46.780574Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T16:03:46.780944295Z 2026-08-14T16:03:46.780906Z  INFO openfang_api::channel_bridge: Unregistered channel adapter telegram — no longer in config
+2026-08-14T16:03:46.780994753Z 2026-08-14T16:03:46.780934Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=0 channels=[]
+2026-08-14T16:03:48.946222744Z 2026-08-14T16:03:48.946013Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T16:03:56.992982394Z 2026-08-14T16:03:56.992773Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T16:03:56.993024028Z 2026-08-14T16:03:56.992820Z  INFO openfang_channels::bridge: Shutting down channel adapter telegram
+2026-08-14T16:03:56.993064590Z 2026-08-14T16:03:56.992989Z  INFO openfang_api::channel_bridge: Unregistered channel adapter telegram — no longer in config
+2026-08-14T16:03:56.993069517Z 2026-08-14T16:03:56.993002Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=0 channels=[]
+
+OF40_POLLS_AFTER_DELETE=0      # stub requests 20s after the delete (want 0)
+RESULT: GREEN — the adapter was stopped and unregistered
+restored /var/lib/docker/volumes/openfang-fang40b-data/_data/config.toml

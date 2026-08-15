@@ -1,0 +1,29 @@
+=== FANG-31 · Telegram 409 on channel hot-reload ===
+date              : 2026-08-14T13:28:45Z
+target            : http://127.0.0.1:4201  (container openfang-staging)
+daemon version    : 0.6.9
+image             : sha256:f10f0a389215
+poller attached, long-poll in flight (timeout=30s)
+--- POST /api/channels/reload while the long-poll is in flight ---
+{"started":["telegram"],"status":"ok"}
+
+--- stub view (one line per getUpdates) ---
+1.924 getUpdates START peer=127.0.0.1:43774 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+1.924 getUpdates ACCEPTED
+31.969 getUpdates START peer=127.0.0.1:56870 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+31.969 getUpdates ACCEPTED
+63.012 getUpdates START peer=127.0.0.1:56870 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+63.012 getUpdates ACCEPTED
+
+--- daemon log ---
+2026-08-14T13:28:47.600075866Z 2026-08-14T13:28:47.599985Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-14T13:28:47.603982756Z 2026-08-14T13:28:47.602027Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-14T13:29:17.644108154Z 2026-08-14T13:29:17.643923Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-14T13:29:17.644231512Z 2026-08-14T13:29:17.644024Z  INFO openfang_channels::bridge: Shutting down channel adapter telegram
+2026-08-14T13:29:17.645961922Z 2026-08-14T13:29:17.645685Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-14T13:29:17.649930696Z 2026-08-14T13:29:17.646980Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+
+OF31_409_COUNT=0      # 409 WARNs caused by one reload (want 0)
+OF31_DEAF_SECS=63.0      # channel deaf after reload, seconds (want ~0)
+RESULT: GREEN — no conflict on reload
+restored /var/lib/docker/volumes/openfang-staging-data/_data/config.toml

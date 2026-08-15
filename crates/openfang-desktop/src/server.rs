@@ -142,11 +142,24 @@ async fn run_embedded_server(
         error!("Embedded server error: {e}");
     }
 
-    // Clean up channel bridges
+    // Clean up channel bridges. `stop_fast`, not `stop`, for the same reason as
+    // the daemon's exit path in openfang-api's server.rs: the process is going
+    // away, so draining a Telegram long-poll to free its reader slot buys
+    // nothing.
+    //
+    // The rest of that note does not transfer, and this is the wrong path to
+    // read it against. There is no bounded drain here — the `server.await`
+    // above waits for every in-flight request with no deadline — and the mutex
+    // is taken with `lock()`, not `try_lock()`, so a channel hot-reload in
+    // flight still holds this exit for the length of its drain. That is
+    // FANG-40's shape, unfixed, in the desktop app. It is left alone
+    // deliberately: this crate does not build in the environment the fix was
+    // developed and verified in (no gtk/gobject-2.0 there), and an edit that
+    // cannot be compiled or run is not a fix.
     {
         let mut guard = state.bridge_manager.lock().await;
         if let Some(ref mut b) = *guard {
-            b.stop().await;
+            b.stop_fast().await;
         }
     }
 }

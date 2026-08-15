@@ -338,8 +338,13 @@ impl ChannelAdapter for DiscordAdapter {
                 let should_reconnect = 'inner: loop {
                     let msg = tokio::select! {
                         msg = ws_rx.next() => msg,
-                        _ = shutdown.changed() => {
-                            if *shutdown.borrow() {
+                        changed = shutdown.changed() => {
+                            // `Err` = every Sender dropped. Nobody will ever
+                            // signal again, so it means the same as `true`.
+                            // Falling through to `continue` on `Err` re-arms a
+                            // future that is permanently ready: a 100% CPU spin
+                            // for as long as the process lives (FANG-40).
+                            if changed.is_err() || *shutdown.borrow() {
                                 info!("Discord shutdown requested");
                                 if let Some(h) = heartbeat_handle.take() {
                                     h.abort();
@@ -415,8 +420,12 @@ impl ChannelAdapter for DiscordAdapter {
                                 loop {
                                     tokio::select! {
                                         _ = ticker.tick() => {}
-                                        _ = hb_shutdown.changed() => {
-                                            if *hb_shutdown.borrow() {
+                                        changed = hb_shutdown.changed() => {
+                                            // See the read loop above: `Err`
+                                            // means the Senders are gone, which
+                                            // has to end the task rather than
+                                            // spin it (FANG-40).
+                                            if changed.is_err() || *hb_shutdown.borrow() {
                                                 return;
                                             }
                                             continue;

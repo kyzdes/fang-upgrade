@@ -3,44 +3,78 @@
 # so every channel hot-reload abandons an in-flight getUpdates long-poll and the
 # freshly started poller collides with it on the Telegram side.
 #
-# What this script measures (the metric that must go to 0 after the fix):
+# What this script measures — one number, and it must be 0 after the fix:
 #   OF31_409_COUNT   — number of "Telegram 409 Conflict" WARNs caused by ONE
 #                      `POST /api/channels/reload` while a long-poll is in flight
-#   OF31_DEAF_SECS   — seconds between the reload and the first getUpdates that
-#                      the (emulated) Telegram server actually accepted
+#
+# Two earlier attempts to also say something about the channel's state *after*
+# the reload have been removed rather than repaired:
+#
+#   OF31_DEAF_SECS   was the difference between two unrelated stub timestamps,
+#                    and when the fix works there are no 409s at all, so its
+#                    second term defaulted to 0 and the "duration" printed was
+#                    the absolute age of the stub.
+#   OF31_REATTACHED  ("did the stub accept another getUpdates afterwards") was
+#                    yes on openfang:sprint3 as well: the abandoned long-poll
+#                    times out after 30 s and the new poller attaches anyway.
+#                    It never distinguished the fixed daemon from the broken
+#                    one, so it was not evidence of anything.
+#
+# What this script therefore does NOT check: that the channel is alive in any
+# sense beyond the absence of 409s. A change that stopped the Telegram adapter
+# on reload and never started it again would print GREEN here. The stub view it
+# prints shows every getUpdates, so an operator can see for themselves; the run
+# that actually fails on a poller that does not come back after a reload is
+# FANG-40-sigterm.sh ("poller did not restart after the reload").
 #
 # How it works: a stub Telegram Bot API is started inside the target daemon's
 # network namespace and enforces Telegram's single-reader rule (409 while another
 # getUpdates is in flight). No real Telegram token and no api.telegram.org traffic
 # is involved — nothing can steal the queue of a live bot.
 #
-# Usage:  ./FANG-31.sh [base_url]           # default: $OPENFANG_URL or staging
-# Env:    OPENFANG_URL, OF_CONTAINER, OF_CONFIG, OF_STUB_PORT
+# Usage:  ./FANG-31.sh [base_url]           # default: the container's own port
+# Env:    OF_CONTAINER (default openfang-staging) — everything else is derived
+#         from it; OPENFANG_URL, OF_CONFIG, OF_STUB_PORT override explicitly.
 #
-# Idempotent: restores the original config.toml and kills the stub on every exit
-# path, and can be run repeatedly.
+# Idempotent: restores the original config.toml, kills the stub and removes its
+# work directory on every exit path, and can be run repeatedly.
 
 set -uo pipefail
 
-BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 CONTAINER="${OF_CONTAINER:-openfang-staging}"
-CONFIG="${OF_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}"
 STUB_PORT="${OF_STUB_PORT:-8098}"
 FAKE_TOKEN="111111:AAAA-fake-token-for-count-probe"
-WORK="$(mktemp -d /tmp/fang31.XXXXXX)"
 
 # ---------------------------------------------------------------- prod guard --
-case "$BASE_URL" in
-  *:4200*) echo "REFUSING: $BASE_URL looks like production. FANG-31 restarts the" \
-                "Telegram channel and must only run against the staging copy." >&2; exit 2;;
-esac
 if [ "$CONTAINER" = "openfang-openfang-1" ]; then
   echo "REFUSING: $CONTAINER is production." >&2; exit 2
 fi
 for bin in docker nsenter python3 curl; do
   command -v "$bin" >/dev/null || { echo "missing dependency: $bin" >&2; exit 3; }
 done
+docker inspect "$CONTAINER" >/dev/null 2>&1 || { echo "no such container: $CONTAINER" >&2; exit 3; }
+
+# The config file this script rewrites and the daemon it reloads are both read
+# off the container. They used to be independent: the config path was hardcoded
+# to openfang-staging-data, so `OF_CONTAINER=mine ./FANG-31.sh` rewrote the
+# shared stand's config.toml and secrets.env while probing something else.
+DATA_DIR="$(docker inspect \
+  -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER")"
+HOST_PORT="$(docker inspect \
+  -f '{{with index .NetworkSettings.Ports "4200/tcp"}}{{(index . 0).HostPort}}{{end}}' "$CONTAINER")"
+CONFIG="${OF_CONFIG:-${DATA_DIR:+$DATA_DIR/config.toml}}"
+BASE_URL="${1:-${OPENFANG_URL:-${HOST_PORT:+http://127.0.0.1:$HOST_PORT}}}"
+[ -n "$CONFIG" ] || { echo "no /data mount on $CONTAINER — set OF_CONFIG" >&2; exit 3; }
+[ -n "$BASE_URL" ] || { echo "no published 4200/tcp on $CONTAINER — set OPENFANG_URL" >&2; exit 3; }
+
+case "$BASE_URL" in
+  *:4200*) echo "REFUSING: $BASE_URL looks like production. FANG-31 restarts the" \
+                "Telegram channel and must only run against a staging copy." >&2; exit 2;;
+esac
 [ -f "$CONFIG" ] || { echo "no config at $CONFIG" >&2; exit 3; }
+
+# Created after the guards, so a refused run leaves nothing behind at all.
+WORK="$(mktemp -d /tmp/fang31.XXXXXX)"
 
 API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" | head -1)"
 NETPID="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER")" || exit 3
@@ -63,6 +97,10 @@ cleanup() {
     api POST /api/channels/reload '{}' >/dev/null 2>&1
     echo "restored $CONFIG"
   fi
+  # The stub log and the config backup are printed above by the time we get
+  # here; leaving /tmp/fang31.* behind on a box with a 12 GB disk threshold is
+  # how a probe becomes the problem it was written to find.
+  case "$WORK" in /tmp/fang31.*) rm -rf "$WORK";; esac
 }
 trap cleanup EXIT INT TERM
 
@@ -151,18 +189,12 @@ echo "poller attached, long-poll in flight (timeout=30s)"
 
 # ------------------------------------------------------------- the experiment --
 BEFORE="$(docker logs "$CONTAINER" 2>&1 | grep -c '409 Conflict')"
-T_RELOAD="$(date +%s)"
 echo "--- POST /api/channels/reload while the long-poll is in flight ---"
 api POST /api/channels/reload '{}'; echo
 sleep 45
 
 AFTER="$(docker logs "$CONTAINER" 2>&1 | grep -c '409 Conflict')"
 OF31_409_COUNT=$((AFTER - BEFORE))
-ACC="$(grep -n "getUpdates ACCEPTED" "$WORK/stub.log" | tail -1 | cut -d: -f1)"
-T_OK="$(awk -v n="$ACC" 'NR==n{print $1}' "$WORK/stub.log")"
-T_RL="$(grep -n "getUpdates 409" "$WORK/stub.log" | head -1 | cut -d: -f1)"
-T_FIRST409="$(awk -v n="$T_RL" 'NR==n{print $1}' "$WORK/stub.log")"
-OF31_DEAF_SECS="$(python3 -c "print('%.1f' % (${T_OK:-0} - ${T_FIRST409:-0}))" 2>/dev/null)"
 
 echo
 echo "--- stub view (one line per getUpdates) ---"
@@ -173,6 +205,11 @@ docker logs --timestamps --since 3m "$CONTAINER" 2>&1 | sed 's/\x1b\[[0-9;]*m//g
   | grep -E "Shutting down channel adapter|polling loop stopped|bot @|409 Conflict|hot-reload complete"
 echo
 echo "OF31_409_COUNT=$OF31_409_COUNT      # 409 WARNs caused by one reload (want 0)"
-echo "OF31_DEAF_SECS=$OF31_DEAF_SECS      # channel deaf after reload, seconds (want ~0)"
-[ "$OF31_409_COUNT" -gt 0 ] && echo "RESULT: RED — reload collides with the abandoned long-poll" \
-                            || echo "RESULT: GREEN — no conflict on reload"
+echo
+if [ "$OF31_409_COUNT" -gt 0 ]; then
+  echo "RESULT: RED — reload collides with the abandoned long-poll"
+  exit 1
+else
+  echo "RESULT: GREEN — one reload, no 409 conflict. This says nothing about"
+  echo "        whether the channel is still polling; see the stub view above."
+fi

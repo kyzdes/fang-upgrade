@@ -1,0 +1,56 @@
+=== FANG-40 follow-up · the eleven remaining spin arms ===
+date  : 2026-08-14T16:05:12Z
+tree  : fix/fang-40-adapter-stop with crates/openfang-channels/src reverted to 251d55c1
+cmd   : cargo test -p openfang-channels --no-fail-fast --test discourse_shutdown_storm_test --test shutdown_arm_audit -- --nocapture
+
+     Running tests/discourse_shutdown_storm_test.rs (target/debug/deps/discourse_shutdown_storm_test-6f68168539782bb0)
+
+running 1 test
+FANG40_DISCOURSE_POLLS_AFTER_DROP=4224 FANG40_DISCOURSE_CORES=0.999
+
+thread 'dropping_a_discourse_adapter_without_stop_does_not_storm_the_forum' (509) panicked at crates/openfang-channels/tests/discourse_shutdown_storm_test.rs:145:5:
+Discourse adapter kept polling after being dropped: 4224 requests in 2 s
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test dropping_a_discourse_adapter_without_stop_does_not_storm_the_forum ... FAILED
+
+failures:
+
+failures:
+    dropping_a_discourse_adapter_without_stop_does_not_storm_the_forum
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.21s
+
+error: test failed, to rerun pass `-p openfang-channels --test discourse_shutdown_storm_test`
+     Running tests/shutdown_arm_audit.rs (target/debug/deps/shutdown_arm_audit-51072ae05ffb0281)
+
+running 3 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+
+thread 'no_shutdown_arm_treats_a_closed_channel_as_keep_going' (516) panicked at crates/openfang-channels/tests/shutdown_arm_audit.rs:176:5:
+11 shutdown arm(s) can spin on a closed watch channel (FANG-40):
+  dingtalk_stream.rs:231 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  discourse.rs:211 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  feishu.rs:730 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  feishu.rs:834 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  gitter.rs:222 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  gotify.rs:225 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  irc.rs:391 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  linkedin.rs:251 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  mqtt.rs:286 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  mumble.rs:332 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+  ntfy.rs:213 — discards changed() and then branches on borrow(): a closed channel falls through and spins
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... FAILED
+
+failures:
+
+failures:
+    no_shutdown_arm_treats_a_closed_channel_as_keep_going
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p openfang-channels --test shutdown_arm_audit`
+error: 2 targets failed:
+    `-p openfang-channels --test discourse_shutdown_storm_test`
+    `-p openfang-channels --test shutdown_arm_audit`

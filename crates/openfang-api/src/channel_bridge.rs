@@ -1101,6 +1101,43 @@ pub async fn start_channel_bridge(kernel: Arc<OpenFangKernel>) -> Option<BridgeM
 /// Start channels from an explicit `ChannelsConfig` (used by hot-reload).
 ///
 /// Returns `(Option<BridgeManager>, Vec<started_channel_names>)`.
+/// Remove `kernel.channel_adapters` entries whose channel is not in `keep`.
+///
+/// `kernel.channel_adapters` exists so agents can push messages out through the
+/// `channel_send` tool. It was only ever inserted into: a channel deleted from
+/// `config.toml` kept its adapter registered for the life of the process, which
+/// both leaked the adapter (and its poller) and left `channel_send` happily
+/// dispatching to a channel the operator had switched off. Re-adding the same
+/// channel was self-healing only by accident — `DashMap::insert` replaces the
+/// value, which is what dropped the old adapter.
+///
+/// Each stale adapter is stopped **before** its `Arc` goes out of scope: the
+/// `remove` hands us the value, `stop()` runs on it, and only then is it
+/// dropped. Adapters whose shutdown arms read a dropped `Sender` as "keep
+/// going" would otherwise start spinning at exactly this line (FANG-40).
+async fn evict_stale_adapters(
+    kernel: &Arc<OpenFangKernel>,
+    keep: &std::collections::HashSet<String>,
+) {
+    // Collect first: holding a DashMap iterator across `remove` deadlocks.
+    let stale: Vec<String> = kernel
+        .channel_adapters
+        .iter()
+        .map(|entry| entry.key().clone())
+        .filter(|name| !keep.contains(name))
+        .collect();
+
+    for name in stale {
+        let Some((_, adapter)) = kernel.channel_adapters.remove(&name) else {
+            continue;
+        };
+        if let Err(e) = adapter.stop().await {
+            warn!("Stale channel adapter {name}: stop() failed: {e}");
+        }
+        info!("Unregistered channel adapter {name} — no longer in config");
+    }
+}
+
 pub async fn start_channel_bridge_with_config(
     kernel: Arc<OpenFangKernel>,
     config: &openfang_types::config::ChannelsConfig,
@@ -1151,6 +1188,8 @@ pub async fn start_channel_bridge_with_config(
         || config.linkedin.is_some();
 
     if !has_any {
+        // Every channel was removed from the config — nothing to keep.
+        evict_stale_adapters(&kernel, &std::collections::HashSet::new()).await;
         return (None, Vec::new());
     }
 
@@ -1748,6 +1787,15 @@ pub async fn start_channel_bridge_with_config(
         adapters.push((adapter, mq_config.default_agent.clone()));
     }
 
+    // Drop kernel-side registrations for channels this config no longer has.
+    // Must happen before the early return below, or removing the last channel
+    // from the config would leave its adapter registered forever.
+    let keep: std::collections::HashSet<String> = adapters
+        .iter()
+        .map(|(adapter, _)| adapter.name().to_string())
+        .collect();
+    evict_stale_adapters(&kernel, &keep).await;
+
     if adapters.is_empty() {
         return (None, Vec::new());
     }
@@ -1842,13 +1890,19 @@ pub async fn start_channel_bridge_with_config(
 pub async fn reload_channels_from_disk(
     state: &crate::routes::AppState,
 ) -> Result<Vec<String>, String> {
-    // Stop existing bridge
-    {
-        let mut guard = state.bridge_manager.lock().await;
-        if let Some(ref mut bridge) = *guard {
-            bridge.stop().await;
-        }
-        *guard = None;
+    // Stop the existing bridge — but take it out of the mutex first.
+    //
+    // `BridgeManager::stop()` is the draining variant: with a Telegram channel
+    // running it blocks for the remainder of the in-flight `getUpdates`, up to
+    // ~30 s. Holding `bridge_manager` across that await made every other holder
+    // of the same mutex wait the same 30 s: registering an agent's channels
+    // (routes.rs, spawn) and cloning an agent (routes.rs, clone) both lock it,
+    // and so does the daemon's own shutdown path. `take()` gives us ownership
+    // and releases the lock at the end of the statement; the drain then happens
+    // with nothing locked.
+    let old_bridge = state.bridge_manager.lock().await.take();
+    if let Some(mut bridge) = old_bridge {
+        bridge.stop().await;
     }
 
     // Re-read secrets.env so new API tokens are available in std::env

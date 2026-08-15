@@ -1,0 +1,36 @@
+=== cargo test, release profile, inside the build image ===
+date  : 2026-08-14T18:01:38Z
+cmd   : cargo test --release -p openfang-channels --test shutdown_arm_audit -- --nocapture
+        cargo test --release -p openfang-api --lib -- --nocapture drain
+
+#15 [test 9/9] RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked     --mount=type=cache,target=/usr/local/cargo/git,sharing=locked     --mount=type=cache,target=/build/target,sharing=locked     cargo test --release -p openfang-channels --test shutdown_arm_audit -- --nocapture     && cargo test --release -p openfang-api --lib -- --nocapture drain
+   [136 Compiling/Downloading lines elided]
+    Finished `release` profile [optimized] target(s) in 2m 58s
+warning: the following packages contain code that will be rejected by a future version of Rust: imap-proto v0.10.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running tests/shutdown_arm_audit.rs (target/release/deps/shutdown_arm_audit-377ed3522b8486b4)
+
+running 7 tests
+test arm_body_stops_at_the_arms_closing_brace ... ok
+test exit_detection_ignores_strings_comments_and_nested_blocks ... ok
+test loop_detection_separates_re_entered_selects_from_one_shot_ones ... ok
+test audit_rejects_every_known_spin_shape ... ok
+test audit_accepts_the_correct_shapes ... ok
+test parse_arm_recognises_both_forms_and_ignores_plain_awaits ... ok
+audited 46 shutdown arms, 35 of them inside a loop
+test no_shutdown_arm_treats_a_closed_channel_as_keep_going ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+   [137 Compiling/Downloading lines elided]
+    Finished `release` profile [optimized] target(s) in 6m 33s
+warning: the following packages contain code that will be rejected by a future version of Rust: imap-proto v0.10.2
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+     Running unittests src/lib.rs (target/release/deps/openfang_api-7c654b84a73da9c5)
+
+running 1 test
+test server::tests::no_value_of_the_drain_override_can_stop_the_daemon_starting ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 95 filtered out; finished in 0.00s
+
+#15 DONE 573.6s
