@@ -1,0 +1,24 @@
+### The authenticity screen itself, red then green
+
+Two stub probes stand in for the two failure shapes, because the product
+cannot be asked to fail on demand. They are stubs of the PROBE, not of the
+product; what is under test here is run.sh's grading, which is the thing
+being repaired.
+  STUB-401     mode=a2, exits 1 (=GREEN) with 'Invalid API key' in its log
+  STUB-NOWORK  mode=manual, runs clean but never prints its witness line
+
+--- BEFORE (run.sh at fe7abf76): a 401 log becomes PASS, exit 0 ---
+
+STUB-401 running   (STUB-401.sh, mode=a2, expect=GREEN) ... PASS (0s)
+STUB-NOWORK running   (STUB-NOWORK.sh, mode=manual, expect=-) ... REVIEW (0s)
+         no machine-readable verdict; read /tmp/fang-run/20260814-152918/STUB-NOWORK.log against the red criterion in the script header (exit 0)
+
+EXIT=0
+
+--- AFTER: both are INCONCLUSIVE, exit 1 ---
+STUB-401 running   (STUB-401.sh, mode=a2, expect=GREEN) ... INCONCLUSIVE (0s)
+         the probe could not reach or could not enter the stand: { "error": "Invalid API key" }
+STUB-NOWORK running   (STUB-NOWORK.sh, mode=manual, expect=-) ... INCONCLUSIVE (0s)
+         no evidence the probe did its work: nothing in the log matches /^agent_id: [0-9a-f]{8}/
+
+EXIT=1

@@ -1,0 +1,15 @@
+# GREEN 11 — a run that graded nothing no longer says every repro reached
+#            its expected verdict. A REVIEW reaches no verdict at all.
+==== before the fix (red-2 tail, quoted) ====
+    run.sh: every repro that ran reached its expected verdict.
+            (0 skipped, 1 awaiting a human — neither is a pass.)
+==== after: the same shape of run ====
+
+run.sh: NOTHING WAS GRADED — no repro in this selection produced a
+        machine-readable verdict, so nothing here was checked against
+        what this build is expected to do.
+        (0 skipped, 1 awaiting a human — neither is a pass.)
+exit=0
+# Still exit 0 — A-1 ran, produced its evidence and passed its witness; the
+# grading is a human's, and the closing line now says so instead of implying
+# a verdict was checked.

@@ -1,0 +1,23 @@
+### RED-2: FRESH v0.6.9-pristine stand (fix 5891b2b absent), wrong key -> false PASS, exit 0
+$ OF_CONTAINER=openfang-refstand-fangrun OPENFANG_API_KEY=of-deadbeef... ./run.sh --only A-2 --base-url http://127.0.0.1:4212
+======================================================================
+tests/fang/run.sh — 20260814-151232
+target      : http://127.0.0.1:4212   container: openfang-refstand-fangrun
+staging     : up (image openfang-openfang:v0.6.9-pristine)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-151232
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (0s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           A-2      GREEN
+
+PASS=1  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+EXIT=0

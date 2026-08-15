@@ -1,0 +1,19 @@
+# RED 4 — preflight proves ONE key; the fangrig repros (FANG-9/10/13/47) use ANOTHER.
+#          harness/lib.sh:52-57 api_key() reads api_key ONLY from $CONFIG and never
+#          looks at $OPENFANG_API_KEY, which run.sh:295 exports and proves.
+# HEAD: 897679b (pre-fix)
+
+# Exactly the environment run.sh:289-295 hands the probes when the operator
+# supplies the credential in the environment (KEY_SRC = $OPENFANG_API_KEY):
+#   OPENFANG_URL     = http://127.0.0.1:4211      (stand A)
+#   OPENFANG_CONFIG  = <stand B's config.toml>    (--container of-r3b)
+#   OPENFANG_API_KEY = <stand A's key>            (the one preflight proved)
+
+# api_key() returns          : <B KEY - never proven, wrong stand># $OPENFANG_API_KEY is       : <A KEY - the proven one>
+
+# and what stand A says to the key lib.sh actually uses:
+#   GET /api/usage/by-model with api_key() -> HTTP 401
+#   GET /api/usage/by-model with $OPENFANG_API_KEY -> HTTP 200
+
+# The header claims: 'the credential the probes will use is resolved once,
+# here, and proven against the target'. For FANG-9/10/13/47 that is false.

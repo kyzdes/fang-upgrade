@@ -1,0 +1,18 @@
+# RED 8 — the witness patterns of the five costly repros, checked against the
+#          runs actually recorded on disk. FANG-45's matches nothing.
+# HEAD: 897679b (pre-fix)
+
+REPRO     WITNESS IN THE REGISTRY            MATCHES PER RECORDED RUN
+A-4       ^agent_id: +[0-9a-f]{8}             baseline/A-4.txt=1 after/A-4.txt=1
+A-6       DETERMINABLE: YES                   baseline/A-6.txt=1 after/A-6.txt=12
+A-7       (none — registry says '-')        baseline/A-7.txt=- after/A-7.txt=- after-v2/A-7.txt=-
+FANG-43   ^--- session file:                  baseline/FANG-43.txt=1
+FANG-45   ^session file:                      baseline/FANG-45.txt=0
+
+# FANG-45: 0 matches in the only run recorded for it. The string it prints is
+#   FANG-45.sh:152  echo "session file: $SESSIONS_DIR/$NEW_FILE"
+# but baseline/FANG-45.txt is a written-up recon document, not that script's
+# captured stdout, so nothing on disk ever showed the pattern:
+  (no line in baseline/FANG-45.txt contains 'session file')
+
+# A-7 carries no witness at all — see red-2.

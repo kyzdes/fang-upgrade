@@ -1,0 +1,57 @@
+# RED 2 — A-7 has no witness, so a probe that did NOTHING still yields exit 0
+#          and the header's 'Two barriers now stand in front of every grade,
+#          in every mode ... including REVIEW' is false for A-7.
+# HEAD: 897679b (pre-fix). A-7.sh replaced by a stand-in that touches nothing:
+#   #!/usr/bin/env bash
+#   # stand-in for A-7.sh: a probe that does absolutely nothing to the stand.
+#   echo "A-7 stand-in: I contacted nothing, created nothing, measured nothing."
+#   exit 0
+# command: ./run.sh --costly --only A-7 --base-url http://127.0.0.1:4211 --container of-r3a
+==================== run ====================
+======================================================================
+tests/fang/run.sh — 20260814-172742
+target      : http://127.0.0.1:4211   container: of-r3a
+data dir    : /var/lib/docker/volumes/of-r3a-data/_data   (from of-r3a:/data)
+config      : /var/lib/docker/volumes/of-r3a-data/_data/config.toml
+api key     : 23 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : OPEN (--costly): repros that bill real providers WILL run
+logs        : /tmp/fang-run/20260814-172742
+======================================================================
+
+A-7      running   (A-7.sh, mode=manual, expect=-) ... REVIEW (0s)
+         no machine-readable verdict; read /tmp/fang-run/20260814-172742/A-7.log against the red criterion in the script header (exit 0)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+REVIEW         A-7      REVIEW — no machine-readable verdict; read /tmp/fang-run/20260814-172742/A-7.log against the red criterion in the script header (exit 0)
+
+PASS=0  FAIL=0  REVIEW=1  SKIPPED=0  ERROR=0
+
+REVIEW is not PASS. Those scripts measure; the verdict is a human's.
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+======================================================================
+  nothing to remove — no probe entity was left on the stand.
+  the stand carries no probe agent now.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+==================== full exit code ====================
+exit=0
+==================== final lines of the same run ====================
+  FANG-9.txt                     2360 bytes
+
+run.sh: every repro that ran reached its expected verdict.
+        (0 skipped, 1 awaiting a human — neither is a pass.)

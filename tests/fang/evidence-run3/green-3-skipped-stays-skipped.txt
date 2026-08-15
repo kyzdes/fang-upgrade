@@ -1,0 +1,25 @@
+# GREEN 3 — an honest skip keeps its own reason, its own outcome, and the
+#           run's own 'nothing ran' exit code.
+#   #!/usr/bin/env bash
+#   # stand-in for FANG-9.sh: an HONEST skip — the fangrig stub is not available.
+#   echo "SKIPPED: fangrig stub not installed on this host; preconditions not met"
+#   exit 3
+==== ./run.sh --only FANG-9 --base-url http://127.0.0.1:4211 --container of-r3a ====
+FANG-9   running   (FANG-9.sh, mode=exit4, expect=RED) ... SKIPPED (0s)
+         SKIPPED: fangrig stub not installed on this host; preconditions not met
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+SKIPPED        FANG-9   SKIPPED — SKIPPED: fangrig stub not installed on this host; preconditions not met
+
+PASS=0  FAIL=0  REVIEW=0  SKIPPED=1  ERROR=0
+SKIPPED is not PASS either. Each skip above carries its reason.
+
+======================================================================
+==== tail ====
+
+run.sh: NOTHING RAN — all 1 repro(s) were skipped, so this run
+        proves nothing. Reasons are listed above; fix them or say so.
+exit=4  (1 before the fix — see red-3; 4 = nothing ran)

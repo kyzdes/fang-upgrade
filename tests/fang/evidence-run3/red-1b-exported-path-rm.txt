@@ -1,0 +1,73 @@
+# RED 1b — the same wrong path is EXPORTED to the probes, so A-1.sh rm -rf's stand B too
+# (run.sh:293 export OPENFANG_VOLUME=$DATA_DIR ; A-1.sh:31 rm -rf "$VOL/agents/test-a1-probe")
+# HEAD: 897679b  (pre-fix)
+total 4
+-rw-r--r-- 1 root root 24 Aug 14 18:26 precious.txt
+# command: OPENFANG_API_KEY=<A key> ./run.sh --only A-1 --base-url http://127.0.0.1:4211 --container of-r3b
+======================================================================
+======================================================================
+tests/fang/run.sh — 20260814-172643
+target      : http://127.0.0.1:4211   container: of-r3b
+data dir    : /var/lib/docker/volumes/of-r3b-data/_data   (from of-r3b:/data)
+config      : /var/lib/docker/volumes/of-r3b-data/_data/config.toml
+api key     : 23 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-172643
+======================================================================
+
+A-1      running   (A-1.sh, mode=manual, expect=-) ... REVIEW (1s)
+         no machine-readable verdict; read /tmp/fang-run/20260814-172643/A-1.log against the red criterion in the script header (exit 0)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+REVIEW         A-1      REVIEW — no machine-readable verdict; read /tmp/fang-run/20260814-172643/A-1.log against the red criterion in the script header (exit 0)
+
+PASS=0  FAIL=0  REVIEW=1  SKIPPED=0  ERROR=0
+
+REVIEW is not PASS. Those scripts measure; the verdict is a human's.
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+======================================================================
+  removed agent test-a1-probe (e5079658-42e1-4016-83ee-5d9552710410)
+  the stand carries no probe agent now.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+5891b2b   direct  A-2                base+after fix(runtime): recount provider model_count on custom model removal
+366d62f   direct  A-7                base+after fix(kernel): resolve fallback base_url per provider, not from default_model
+cdd70de   direct  A-4                base+after fix(runtime): wrap runtime prompt data in tags, not ## headings
+63f9185   direct  none               none       fix(runtime): cap workspace context by whole file blocks
+b86e65b   direct  A-1                base+after fix(api): PUT /agents/{id}/update returns 501 and names the working routes
+6cb20be   direct  A-1                base+after fix(api): the 501 body was wrong about skills, mcp_servers and tools
+61dd183   direct  none               none       fix(runtime): drop a dead assignment clippy was right about
+bf0fee0   direct  none               none       fix(telegram): stop leaking the bot token into logs on network errors
+cbb0660   direct  A-6                base+after fix(metering): meter usage per LLM call, not per agent turn
+308cd7a   direct  none               none       fix(kernel): report what hot-reload actually applied, not what it detected
+acc85d7   direct  FANG-43            base only  fix(channels): stop token/secret leaks in Telegram file content and 6 adapters
+8b502f9   direct  FANG-45            base only  fix(tools): make file_read disclose truncation and support offset/limit paging
+8a2f8d4   bundle  A-1,A-2,A-6,A-7    base+after fix: four defects the adversarial review found in the sprint-2 patches
+d83abbf   bundle  FANG-43,FANG-45    base only  fix: three defects the adversarial review found in the sprint-3 patches
+
+Counted by fix commit (12 direct + 2 adversarial round-ups = 14):
+  direct fixes with a baseline AND an after-the-fix run : 6
+  direct fixes with a baseline but no green recorded    : 2
+======================================================================
+# stand B AFTER:
+/var/lib/docker/volumes/of-r3b-data/_data/agents/:
+total 8
+drwxr-xr-x 2 root root 4096 Aug 14 18:26 .
+drwxr-xr-x 5 root root 4096 Aug 14 18:26 ..

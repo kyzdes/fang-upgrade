@@ -1,0 +1,35 @@
+# CONTROL — a garbage key still gives no PASS (must not regress).
+==== OPENFANG_API_KEY=rubbish-not-a-key ./run.sh --only A-2 --base-url http://127.0.0.1:4211 --container of-r3a ====
+======================================================================
+tests/fang/run.sh — 20260814-174406
+target      : http://127.0.0.1:4211   container: of-r3a
+same stand? : PROVEN — 'of-r3a' publishes 127.0.0.1:4211, which is exactly what http://127.0.0.1:4211 asks for
+data dir    : /var/lib/docker/volumes/of-r3a-data/_data   (from of-r3a:/data)
+config      : /var/lib/docker/volumes/of-r3a-data/_data/config.toml
+api key     : 17 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : REJECTED — http://127.0.0.1:4211 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-174406
+======================================================================
+
+PREFLIGHT FAILED — the stand rejects the key the probes would use.
+  http://127.0.0.1:4211 answered HTTP 401 to GET /api/usage/by-model with the key from $OPENFANG_API_KEY (environment)
+
+Nothing below was run. Every probe here measures a difference it makes
+itself; with no credential it makes no difference, measures zero, and
+zero reads as 'no defect'. That is the false green this gate exists to
+stop, so these are INCONCLUSIVE and not one of them is a pass.
+
+A-2      INCONCLUSIVE  credential rejected by the target — not run
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-2      not run: the target rejected the api_key from $OPENFANG_API_KEY (environment)
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+exit=2

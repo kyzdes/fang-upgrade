@@ -1,0 +1,30 @@
+# GREEN 8 — the witness provenance is computed and printed, every run.
+# Before: A-7 had no witness at all, and the claim that the costly repros'
+# witness patterns came from recorded runs was false for FANG-45 — and for
+# FANG-31 too, which the review had not caught (see red-8).
+==== AUTHENTICITY section of a real run ====
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+every repro in the registry carries a witness pattern.
+
+witnesses confirmed by a run recorded on disk : A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-9 FANG-10 FANG-13 FANG-47
+witnesses no recorded run confirms            : FANG-45
+  (the pattern is a line the script prints, but nothing captured on disk
+   shows it: the file under baseline/ for that repro is a written-up
+   document rather than the script's stdout. Not wrong — never yet seen
+   to fire. Capture one as evidence-run*/live-<ID>.log and this line
+   will shorten by itself.)
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+==== how FANG-31 moved into the confirmed column ====
+It fired in a live run of the suite against a throwaway stand; that log is
+kept here as live-FANG-31.log and the provenance check reads it:
+6:poller attached, long-poll in flight (timeout=30s)
+
+FANG-45 is still unconfirmed and the report says so by name. Its pattern is
+FANG-45.sh:152  echo "session file: $SESSIONS_DIR/$NEW_FILE" — the repro is
+costly (a real billed LLM turn) and was not run here, so nothing on disk
+shows it yet. Stating that is the fix; claiming it came from a recorded run
+was the defect.

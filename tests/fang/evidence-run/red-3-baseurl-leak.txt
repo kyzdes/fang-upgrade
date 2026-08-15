@@ -1,0 +1,51 @@
+### RED-3: --base-url does not reach fangrig (FANG-9/10/13/47)
+outer env OPENFANG_URL=http://127.0.0.1:4203  (stand A)
+$ OF_CONTAINER=openfang-fangrun-b OF_CONFIG=<stand B> ./run.sh --only FANG-13 --base-url http://127.0.0.1:4213
+======================================================================
+tests/fang/run.sh — 20260814-151420
+target      : http://127.0.0.1:4213   container: openfang-fangrun-b
+staging     : up (image openfang:sprint3)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-151420
+======================================================================
+
+FANG-13  running   (FANG-13.sh, mode=exit4, expect=RED) ... SKIPPED (5s)
+         SKIPPED: could not spawn probe agent
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+SKIPPED        FANG-13  SKIPPED — SKIPPED: could not spawn probe agent
+
+PASS=0  FAIL=0  REVIEW=0  SKIPPED=1  ERROR=0
+SKIPPED is not PASS either. Each skip above carries its reason.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+5891b2b   direct  A-2                base+after fix(runtime): recount provider model_count on custom model removal
+EXIT=4
+
+--- FANG-13.log ---
+=== FANG-13 — empty provider content returns HTTP 200 ===
+target: http://127.0.0.1:4213   container: openfang-fangrun-b
+image : openfang:sprint3
+
+SKIPPED: could not spawn probe agent
+
+--- what URL fangrig actually resolved (lib.sh:16 reads env only) ---
+$ OPENFANG_URL=http://127.0.0.1:4203 bash -c 'source harness/lib.sh; echo $BASE_URL'
+fangrig BASE_URL=http://127.0.0.1:4203
+
+--- FANG-9/10/13/47 never export OPENFANG_URL; the five A-*.sh do ---
+FANG-47.sh:0
+FANG-10.sh:0
+FANG-9.sh:0
+A-2.sh:1
+A-6.sh:1
+FANG-13.sh:0
+A-1.sh:1
+A-7.sh:1
+A-4.sh:1

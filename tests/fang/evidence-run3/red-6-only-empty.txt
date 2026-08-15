@@ -1,0 +1,37 @@
+# RED 6 — --only '' silently means 'run everything' instead of being the
+#          usage error the --only sanity block was written to give.
+# HEAD: 897679b (pre-fix). run.sh:202 gates on [ -n "$ONLY" ],
+#          so an empty value is indistinguishable from --only never passed.
+# Pointed at a container that does not exist, so nothing can run and the
+# selection itself is what the output shows.
+==================== ./run.sh --only '' --container of-r3-does-not-exist ====================
+======================================================================
+tests/fang/run.sh — 20260814-172924
+target      : http://127.0.0.1:4211   container: of-r3-does-not-exist
+data dir    : /var/lib/docker/volumes/openfang-staging-data/_data   (from fallback (container has no /data mount))
+config      : /var/lib/docker/volumes/openfang-staging-data/_data/config.toml
+api key     : 51 chars from /var/lib/docker/volumes/openfang-staging-data/_data/config.toml
+staging     : DOWN — container 'of-r3-does-not-exist' does not exist
+              every repro below needs it; they will be SKIPPED, not passed.
+credential  : not checked — not run (staging down)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-172924
+======================================================================
+
+A-1      SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+A-2      SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+A-4      SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+A-6      SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+A-7      SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-31  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-43  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-45  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-9   SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-10  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-13  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+FANG-47  SKIPPED   staging is down: container 'of-r3-does-not-exist' does not exist
+
+======================================================================
+RESULTS
+exit=4
+# 12 repros selected. A misspelt id is refused with exit 2; an empty one runs the lot.

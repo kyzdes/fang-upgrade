@@ -1,0 +1,33 @@
+{
+  "name": "phantom-write-claim",
+  "doc": "FANG-9: the agent reports a completed WRITE it never performed, and the runtime forwards the claim as its own HTTP 200 answer. The runtime does have a guard for exactly this class - phantom_action_detected() at agent_loop.rs:97-115, wired in at :764-776 - but its vocabulary is channel-delivery only: verbs {sent, posted, emailed, delivered, forwarded} AND a channel word {telegram, whatsapp, slack, discord, email, channel, ...}. Nothing about writing, creating or saving a file, and nothing about memory. Turn 1 (step 0) is the defect: a plain 'I wrote the file' claim, no tool_calls at all, passes straight through - one LLM call, tool_calls=0, HTTP 200, and output/fang9-report.md does not exist in the agent workspace. Turn 2 (steps 1-2) is the CONTROL that keeps turn 1 from being a tautology: the same shape of lie, worded as a channel send, DOES trip the guard on this very build - the runtime injects its '[System: You claimed to perform an action but did not call any tools...]' reprompt and burns a second LLM call, so turn 2 costs two calls where turn 1 cost one. A green run of this scenario would need the guard to cover writes; an environment problem would take the control down with it. Run with --tools file_write,memory_store, so the tool the agent claims to have used was available the whole time.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        {
+          "type": "text",
+          "content": "Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.",
+          "finish_reason": "stop",
+          "usage": [31, 17]
+        },
+        {
+          "type": "text",
+          "content": "Done. I posted the full summary to the telegram channel and it was delivered.",
+          "finish_reason": "stop",
+          "usage": [33, 19]
+        },
+        {
+          "type": "text",
+          "content": "You are right, I did not call any tool.",
+          "finish_reason": "stop",
+          "usage": [37, 11]
+        }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}

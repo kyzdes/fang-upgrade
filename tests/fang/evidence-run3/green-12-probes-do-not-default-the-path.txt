@@ -1,0 +1,33 @@
+# GREEN 12 — the two probes that delete directories no longer default that
+#            path to the staging volume when they are pointed elsewhere.
+#
+# Pre-fix A-1.sh:31  VOL=${OPENFANG_VOLUME:-/var/lib/docker/volumes/openfang-staging-data/_data}
+#         A-1.sh:50  rm -rf "$VOL/agents/$NAME"
+#         A-7.sh:68  STAGING_DATA=${OPENFANG_HOME_HOST:-...openfang-staging-data...}
+#         A-7.sh:130 rm -rf -- "$ws"
+# Run by hand against any other stand, with the variable unset, both deleted
+# directories on STAGING — a stand the invocation never named. run.sh now
+# exports those variables only after proving the pair, and the probes no
+# longer supply a default that contradicts their own BASE_URL.
+
+==== A-7.sh http://127.0.0.1:4211, OPENFANG_HOME_HOST and OPENFANG_CONFIG unset ====
+REFUSING: http://127.0.0.1:4211 is not the default stand and neither OPENFANG_HOME_HOST
+  nor OPENFANG_CONFIG says which data directory belongs to it. This probe
+  reads a config and deletes workspaces; it will not guess a path. Run it
+  through tests/fang/run.sh, which proves the pair first, or set them.
+exit=2
+
+==== A-1.sh http://127.0.0.1:4211, OPENFANG_VOLUME unset ====
+# (no api key given either, so the API calls 401 — the point here is the
+#  'disk:' line, which used to name the staging volume and rm -rf it.)
+url:           http://127.0.0.1:4211
+disk: NOT INSPECTED — OPENFANG_VOLUME is unset and http://127.0.0.1:4211 is not the default stand, so this probe does not know which volume belongs to it and will not guess.
+disk: NOT INSPECTED — OPENFANG_VOLUME is unset and http://127.0.0.1:4211 is not the default stand, so this probe does not know which volume belongs to it and will not guess.
+disk verdict: UNCHANGED
+disk: NOT INSPECTED — OPENFANG_VOLUME is unset and http://127.0.0.1:4211 is not the default stand, so this probe does not know which volume belongs to it and will not guess. (after PATCH)
+
+# with the variable set — exactly how run.sh calls it — the disk half works
+# as before, against the volume it was told belongs to this stand:
+disk /var/lib/docker/volumes/of-r3a-data/_data/agents/test-a1-probe/agent.toml:
+disk /var/lib/docker/volumes/of-r3a-data/_data/agents/test-a1-probe/agent.toml:
+disk verdict: UNCHANGED

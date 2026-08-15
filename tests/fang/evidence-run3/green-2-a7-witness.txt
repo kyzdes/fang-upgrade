@@ -1,0 +1,24 @@
+# GREEN 2 — A-7 now carries a witness, so the same do-nothing stand-in is
+#           INCONCLUSIVE and the run FAILS instead of exiting 0.
+# The claim 'Two barriers stand in front of every GRADE' is now true for A-7.
+#   #!/usr/bin/env bash
+#   # stand-in for A-7.sh: a probe that does absolutely nothing to the stand.
+#   echo "A-7 stand-in: I contacted nothing, created nothing, measured nothing."
+#   exit 0
+==== ./run.sh --costly --only A-7 --base-url http://127.0.0.1:4211 --container of-r3a ====
+A-7      running   (A-7.sh, mode=manual, expect=-) ... INCONCLUSIVE (0s)
+         no evidence the probe did its work: nothing in the log matches /^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}/ and /^test-a7-control +200 +answered/
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-7      INCONCLUSIVE — no evidence the probe did its work: nothing in the log matches /^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}/ and /^test-a7-control +200 +answered/
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+==== tail ====
+
+run.sh: FAIL — 1 repro(s) did not reach the expected verdict.
+exit=1  (0 before the fix — see red-2)

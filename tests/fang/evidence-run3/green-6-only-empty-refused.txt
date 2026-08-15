@@ -1,0 +1,20 @@
+# GREEN 6 — --only '' is a usage error now, like any other selection that
+#           names no reproduction.
+==== ./run.sh --only '' --base-url http://127.0.0.1:4211 --container of-r3a ====
+run.sh: --only was given an empty selection ('').
+run.sh: to run everything, pass no --only at all.
+run.sh: known ids: A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG-47
+exit=2
+==== ./run.sh --only ', ,' --base-url http://127.0.0.1:4211 --container of-r3a ====
+run.sh: --only was given an empty selection (', ,').
+run.sh: to run everything, pass no --only at all.
+run.sh: known ids: A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG-47
+exit=2
+==== ./run.sh --only 'A-2' --base-url http://127.0.0.1:4211 --container of-r3a ====
+======================================================================
+tests/fang/run.sh — 20260814-174346
+target      : http://127.0.0.1:4211   container: of-r3a
+same stand? : PROVEN — 'of-r3a' publishes 127.0.0.1:4211, which is exactly what http://127.0.0.1:4211 asks for
+exit=0
+# The last block is a real run of one repro, not a usage error: a NAMED id
+# still selects. Before the fix, --only '' silently selected all twelve.

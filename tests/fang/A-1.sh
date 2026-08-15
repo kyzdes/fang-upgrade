@@ -26,9 +26,28 @@ export PATH=/root/.claude/skills/openfang/scripts:$PATH
 BASE=${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}
 export OPENFANG_URL=$BASE
 export OPENFANG_CONFIG=${OPENFANG_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}
-VOL=${OPENFANG_VOLUME:-/var/lib/docker/volumes/openfang-staging-data/_data}
 NAME=test-a1-probe
-DISK="$VOL/agents/$NAME/agent.toml"
+# The on-disk half of this probe edits a volume, and a volume only belongs to
+# the stand at $BASE if something has established that. OPENFANG_VOLUME is that
+# something: run.sh exports it only after proving the container publishes
+# $BASE's port. The old default here pointed at the staging volume no matter
+# where $BASE pointed — so `A-1.sh http://127.0.0.1:4207` deleted
+# agents/test-a1-probe on the STAGING volume, a stand it never addressed.
+# Unset, and $BASE not the default stand => no disk access at all, and say so.
+VOL=${OPENFANG_VOLUME:-}
+if [ -z "$VOL" ]; then
+  case "$BASE" in
+    http://127.0.0.1:4201|http://localhost:4201)
+      VOL=/var/lib/docker/volumes/openfang-staging-data/_data ;;
+  esac
+fi
+DISK=""
+[ -n "$VOL" ] && DISK="$VOL/agents/$NAME/agent.toml"
+disk_label() {
+  if [ -n "$DISK" ]; then printf 'disk %s:' "$DISK"
+  else printf 'disk: NOT INSPECTED — OPENFANG_VOLUME is unset and %s is not the default stand, so this probe does not know which volume belongs to it and will not guess.' "$BASE"
+  fi
+}
 
 jqf() { python3 -c 'import sys,json;d=json.load(sys.stdin);print(json.dumps({k:d.get(k) for k in ("id","name","description","system_prompt","model","tags")},ensure_ascii=False,sort_keys=True))'; }
 field() { python3 -c 'import sys,json;print(json.load(sys.stdin).get("'"$1"'"))'; }
@@ -47,7 +66,7 @@ for a in (d if isinstance(d,list) else d.get("agents",[])):
     if a.get("name")=="'"$NAME"'": print(a["id"])' 2>/dev/null); do
     echo "-- deleting stale probe $old -> HTTP $(ofctl -s DELETE "/api/agents/$old" 2>&1)"
 done
-rm -rf "$VOL/agents/$NAME"
+[ -n "$VOL" ] && rm -rf "$VOL/agents/$NAME"   # only a volume this probe was told belongs to $BASE
 
 mk_manifest() { # $1 description  $2 max_tokens  $3 system_prompt
 cat <<EOF
@@ -89,7 +108,7 @@ echo
 
 echo "--- observable BEFORE ---"
 ofctl -r GET "/api/agents/$AID" | jqf
-echo "disk $DISK:"
+disk_label; echo
 if [ -f "$DISK" ]; then
     grep -E '^description|^ *max_tokens|^ *system_prompt' "$DISK"
     BEFORE_MD5=$(md5sum "$DISK" | cut -d' ' -f1); echo "md5: $BEFORE_MD5"
@@ -112,7 +131,7 @@ AFTER_JSON=$(ofctl -r GET "/api/agents/$AID")
 printf '%s' "$AFTER_JSON" | jqf
 API_DESC=$(printf '%s' "$AFTER_JSON" | field description)
 API_SP=$(printf '%s' "$AFTER_JSON" | field system_prompt)
-echo "disk $DISK:"
+disk_label; echo
 if [ -f "$DISK" ]; then
     grep -E '^description|^ *max_tokens|^ *system_prompt' "$DISK"
     AFTER_MD5=$(md5sum "$DISK" | cut -d' ' -f1); echo "md5: $AFTER_MD5"
@@ -143,7 +162,7 @@ PATCH_DESC=$(ofctl -r GET "/api/agents/$AID" | field description)
 echo "description after PATCH: $PATCH_DESC"
 [ "$PATCH_DESC" = "A1-PATCH-works" ] && PATCH_APPLIED=yes || PATCH_APPLIED=no
 echo "PATCH APPLIED: $PATCH_APPLIED"
-echo "disk $DISK after PATCH:"
+disk_label; echo " (after PATCH)"
 if [ -f "$DISK" ]; then grep -E '^description|^ *max_tokens|^ *system_prompt' "$DISK"; PATCH_DISK=present; else echo "  <absent>"; PATCH_DISK=absent; fi
 echo "  (note: agent.toml is written only by PATCH's persist_manifest_to_disk;"
 echo "   POST /api/agents and PUT /update never touched it -- max_tokens is still 4096,"

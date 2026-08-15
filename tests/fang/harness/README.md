@@ -59,7 +59,7 @@ fangrig               entry point — see `fangrig --help` for the command list
 lib.sh                 shared bash: prod guard, api(), container/netns helpers
 llm_stub.py            fake OpenAI-compatible provider (multi-endpoint)
 tg_stub.py              fake Telegram Bot API (getUpdates queue + file download)
-scenarios/*.json       twelve scripted scenarios, one per defect shape
+scenarios/*.json       sixteen scripted scenarios, one per defect shape
 selftest.sh             thin wrapper for `fangrig selftest`
 ```
 
@@ -104,6 +104,10 @@ FANG-31 and FANG-43 respectively.
 | `stream-toolcall.json` | Streamed tool-call delta accumulation: first chunk must carry both `id` and `function.name` or the driver silently drops the call. |
 | `stream-no-stream-options.json` | Provider 400s on `stream_options`; driver must retry without it. The rejected request doesn't consume a step. |
 | `tg-file.json` | FANG-43 shape end to end: `getFile`, then the bot token landing verbatim inside the LLM prompt text (never an actual byte download for `document`/`voice` — that's the defect). Needs `--tg`; see gotcha #8 for the ordering that makes routing actually work. |
+| `empty-content-success.json` | FANG-13: `choices[0].message.content` is `""` with `finish_reason=stop` — structurally valid, semantically empty. NOT `no-choices.json`, which is an empty `choices` ARRAY and becomes `LlmError::Parse`, i.e. an error. This one is a **success**: `openai.rs:779` drops the empty string and `agent_loop.rs:732-756` substitutes a sentence of its own. Two turns, one per branch of that guard. Run with `--tools memory_store`; driver `../FANG-13.sh`. |
+| `phantom-write-claim.json` | FANG-9: an unbacked "I wrote the file" claim passes through with HTTP 200 and zero tool calls, because `phantom_action_detected()` (`agent_loop.rs:97-115`) only knows channel-delivery words. Carries its own control: the same lie worded as a Telegram send DOES trip the guard. Run with `--tools file_write,memory_store`; driver `../FANG-9.sh`. |
+| `max-iterations-500.json` | FANG-10: `default_step` is a `tool_call` **forever**, so the loop burns all 50 iterations and leaves by the max-iterations door with `Err(MaxIterationsExceeded)` — HTTP 500 carrying none of the work. The tool is `file_write`, so the partial result is a real file on the volume. Carries a control turn. Run with `--tools file_write`; driver `../FANG-10.sh`. |
+| `max-iterations-usage-lost.json` | FANG-47: the same unbounded shape, but every step reports 7919/7907 tokens, so the 50 calls the provider really billed can be subtracted from `/api/usage/by-model` — which does not move at all. Control turn moves it by exactly +2 calls / +15838 / +15814. Run with `--tools memory_store`; driver `../FANG-47.sh`. |
 
 ## Scenario schema, short version
 
@@ -125,6 +129,15 @@ FANG-31 and FANG-43 respectively.
                 "queue_policy": "permissive", "updates": [] }
 }
 ```
+
+An endpoint may also set `"unbounded_tool_calls": true`. That is the opt-out
+from selftest check 7 below, and it exists for exactly one reason: a
+`default_step` of type `tool_call` is the ONLY shape that can drive the
+product to its own `max_iterations` exit (`max-iterations-500.json`,
+`max-iterations-usage-lost.json`). Such a scenario does not run forever — it
+terminates on `MAX_ITERATIONS` (50), which is the thing under test. Without
+the flag, a `tool_call` default is still rejected, so an accidental
+never-ending loop is still caught before `up`.
 
 Each **step** has a `type` (`text` | `tool_call` | `status` | `empty_choices` |
 `malformed` | `hang` | `close`), an optional `repeat` (default 1 —
@@ -204,7 +217,11 @@ is available standalone. Seven checks, any failure exits 6:
    future edit can't quietly add an outbound call.
 7. Every file in `scenarios/*.json` parses, has unique role names, ports in
    8971-8979, and any trailing `tool_call` step is backed by a
-   `default_step` of type `text`.
+   `default_step` of type `text` — unless the endpoint declares
+   `"unbounded_tool_calls": true`, which is the deliberate never-terminating
+   shape the two max-iterations scenarios need. The flag is checked both
+   ways: a `tool_call` default without it is an error, and the flag without a
+   `tool_call` default is an error too.
 
 **Selftest probes never touch a scenario's own step cursor or rollup
 counts** — they're served off a synthetic step and logged to

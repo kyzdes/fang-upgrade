@@ -1,0 +1,21 @@
+# RED 7 — a witness with two patterns, both missing, is reported as if only
+#          the LAST one were missing. The operator is told to look for one
+#          thing when two are absent.
+# A-2's witness in the registry: "status": "added"&&"status": "removed"
+# HEAD: 897679b (pre-fix). A-2.sh replaced by a stand-in that prints neither:
+#   #!/usr/bin/env bash
+#   # stand-in for A-2.sh: reports GREEN (exit 1) having shown no evidence at all.
+#   echo "A-2 stand-in: no output that could witness any work"
+#   exit 1
+==================== run ====================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... INCONCLUSIVE (0s)
+         no evidence the probe did its work: nothing in the log matches /"status": "removed"/
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+INCONCLUSIVE   A-2      INCONCLUSIVE — no evidence the probe did its work: nothing in the log matches /"status": "removed"/
+
+PASS=0  FAIL=1  REVIEW=0  SKIPPED=0  ERROR=0

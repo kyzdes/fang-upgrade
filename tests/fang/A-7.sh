@@ -65,7 +65,19 @@ set -uo pipefail
 
 BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/openfang/scripts}"
-STAGING_DATA="${OPENFANG_HOME_HOST:-/var/lib/docker/volumes/openfang-staging-data/_data}"
+# This probe deletes workspace directories under $STAGING_DATA. A path is only
+# this stand's if something established that: OPENFANG_HOME_HOST, which
+# tests/fang/run.sh exports only after proving the container publishes
+# $BASE_URL's port. The old default named the staging volume whatever BASE_URL
+# said, so pointing this script at another stand rm -rf'd staging's workspaces.
+# Unset, and BASE_URL not the default stand => no disk access, and say so.
+STAGING_DATA="${OPENFANG_HOME_HOST:-}"
+if [ -z "$STAGING_DATA" ]; then
+  case "$BASE_URL" in
+    http://127.0.0.1:4201|http://localhost:4201)
+      STAGING_DATA=/var/lib/docker/volumes/openfang-staging-data/_data ;;
+  esac
+fi
 CONTAINER="${OPENFANG_CONTAINER:-openfang-staging}"
 DEAD_URL="${A7_DEAD_URL:-http://127.0.0.1:9/v1}"
 MSG="${A7_MSG:-Reply with exactly: PONG}"
@@ -73,6 +85,13 @@ TIMEOUT="${A7_TIMEOUT:-600}"
 
 export PATH="$SKILL_SCRIPTS:$PATH"
 export OPENFANG_URL="$BASE_URL"
+if [ -z "$STAGING_DATA" ] && [ -z "${OPENFANG_CONFIG:-}" ]; then
+  echo "REFUSING: $BASE_URL is not the default stand and neither OPENFANG_HOME_HOST" >&2
+  echo "  nor OPENFANG_CONFIG says which data directory belongs to it. This probe" >&2
+  echo "  reads a config and deletes workspaces; it will not guess a path. Run it" >&2
+  echo "  through tests/fang/run.sh, which proves the pair first, or set them." >&2
+  exit 2
+fi
 export OPENFANG_CONFIG="${OPENFANG_CONFIG:-$STAGING_DATA/config.toml}"
 
 case "$BASE_URL" in
@@ -83,8 +102,13 @@ esac
 # Read the daemon key the same way ofctl does: top-level api_key only, stop at the
 # first [table]. `grep '^api_key'` also matches api_key_env and yields a 71-char
 # concatenation that 400s with an empty body.
-API_KEY="$(awk '/^\[/{exit} /^api_key[[:space:]]*=/{gsub(/^[^"]*"|"[^"]*$/,""); print; exit}' \
-  "$OPENFANG_CONFIG")"
+# ...and the environment first, exactly as ofctl and harness/lib.sh do. Reading
+# the file and nothing else made tests/fang/run.sh's preflight a statement about
+# a credential this script never sent: it proved $OPENFANG_API_KEY against the
+# target, printed "credential: ACCEPTED", and every call below then went out
+# with whatever api_key happened to sit in $OPENFANG_CONFIG.
+API_KEY="${OPENFANG_API_KEY:-$(awk '/^\[/{exit} /^api_key[[:space:]]*=/{gsub(/^[^"]*"|"[^"]*$/,""); print; exit}' \
+  "$OPENFANG_CONFIG")}"
 if [ -z "${API_KEY:-}" ]; then
   echo "FATAL: no top-level api_key in $OPENFANG_CONFIG" >&2; exit 2
 fi
@@ -125,6 +149,7 @@ print(' '.join(a['id'] for a in d if a.get('name')=='$n'))")"
     # the workspaces root.
     case "$n" in
       test-a7-*)
+        [ -n "$STAGING_DATA" ] || continue   # no proven path, no rm
         ws="$STAGING_DATA/workspaces/$n"
         if [ -d "$ws" ] && [ "$(dirname "$ws")" = "$STAGING_DATA/workspaces" ]; then
           rm -rf -- "$ws" && echo "  removed workspace $ws"

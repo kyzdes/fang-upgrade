@@ -1,0 +1,68 @@
+### GREEN-6: a full cheap run leaves nothing of its own on the stand
+before: probe-shaped agents on :4203 = []
+$ ./run.sh --base-url http://127.0.0.1:4203 --container openfang-fangrun
+======================================================================
+tests/fang/run.sh — 20260814-152649
+target      : http://127.0.0.1:4203   container: openfang-fangrun
+data dir    : /var/lib/docker/volumes/openfang-fangrun-data/_data   (from openfang-fangrun:/data)
+config      : /var/lib/docker/volumes/openfang-fangrun-data/_data/config.toml
+api key     : 51 chars from /var/lib/docker/volumes/openfang-fangrun-data/_data/config.toml
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-152649
+======================================================================
+
+A-1      running   (A-1.sh, mode=manual, expect=-) ... REVIEW (0s)
+         no machine-readable verdict; read /tmp/fang-run/20260814-152649/A-1.log against the red criterion in the script header (exit 0)
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (2s)
+A-4      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+A-6      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+A-7      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-31  running   (FANG-31.sh, mode=result, expect=RED) ... PASS (47s)
+         exit code was 0 and is not used in this mode
+FANG-43  SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-45  SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-9   running   (FANG-9.sh, mode=exit4, expect=RED) ... PASS (7s)
+FANG-10  running   (FANG-10.sh, mode=exit4, expect=RED) ... PASS (8s)
+FANG-13  running   (FANG-13.sh, mode=exit4, expect=RED) ... PASS (6s)
+FANG-47  running   (FANG-47.sh, mode=exit4, expect=RED) ... PASS (9s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+REVIEW         A-1      REVIEW — no machine-readable verdict; read /tmp/fang-run/20260814-152649/A-1.log against the red criterion in the script header (exit 0)
+PASS           A-2      GREEN
+SKIPPED        A-4      makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        A-6      makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        A-7      makes real, billed LLM calls against live providers; pass --costly to run it
+PASS           FANG-31  RED — exit code was 0 and is not used in this mode
+SKIPPED        FANG-43  makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        FANG-45  makes real, billed LLM calls against live providers; pass --costly to run it
+PASS           FANG-9   RED
+PASS           FANG-10  RED
+PASS           FANG-13  RED
+PASS           FANG-47  RED
+
+PASS=6  FAIL=0  REVIEW=1  SKIPPED=5  ERROR=0
+
+REVIEW is not PASS. Those scripts measure; the verdict is a human's.
+SKIPPED is not PASS either. Each skip above carries its reason.
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4203
+======================================================================
+  removed agent test-a1-probe (eb0f6439-58aa-4bc2-a3f5-1990df872af9)
+EXIT=0
+after : probe-shaped agents on :4203 = []
+after : agents dir on the volume: (none)
+after : custom models named test-a2: []
+after : fangrig containers: (none if empty)

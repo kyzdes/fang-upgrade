@@ -1,0 +1,35 @@
+### GREEN-3: correct key on a build that HAS fix 5891b2b -> A-2 still PASS, exit 0
+$ ./run.sh --only A-2 --base-url http://127.0.0.1:4203 --container openfang-fangrun   (key read from the stand's own config)
+======================================================================
+tests/fang/run.sh — 20260814-152521
+target      : http://127.0.0.1:4203   container: openfang-fangrun
+data dir    : /var/lib/docker/volumes/openfang-fangrun-data/_data   (from openfang-fangrun:/data)
+config      : /var/lib/docker/volumes/openfang-fangrun-data/_data/config.toml
+api key     : 51 chars from /var/lib/docker/volumes/openfang-fangrun-data/_data/config.toml
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-152521
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (1s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           A-2      GREEN
+
+PASS=1  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+repros with NO witness pattern — their verdicts rest on the credential
+check and the disqualifier scan alone: A-7
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4203
+======================================================================
+EXIT=0

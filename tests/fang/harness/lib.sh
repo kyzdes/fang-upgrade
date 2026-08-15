@@ -48,10 +48,22 @@ require_bin() {
 }
 
 # --------------------------------------------------------------- api key --
+# Resolution order is ofctl's, and tests/fang/run.sh's: the environment first,
+# then the config file. It used to be the config file and nothing else, which
+# made run.sh's preflight a statement about a credential these repros never
+# used — `OPENFANG_API_KEY=<key> ./run.sh` proved that key against the target,
+# printed "credential: ACCEPTED", and then FANG-9/10/13/47 went off and used
+# whatever `api_key` happened to sit in $CONFIG. Measured: with a valid key in
+# the environment and a different stand's config in $CONFIG, the preflight got
+# HTTP 200 and this function's key got HTTP 401 from the same route.
 _api_key_cache=""
 api_key() {
   if [ -z "$_api_key_cache" ]; then
-    _api_key_cache="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+    if [ -n "${OPENFANG_API_KEY:-}" ]; then
+      _api_key_cache="$OPENFANG_API_KEY"
+    else
+      _api_key_cache="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+    fi
   fi
   printf '%s' "$_api_key_cache"
 }
@@ -240,7 +252,13 @@ stub_exec() {
   local host="$1" port="$2" path="$3" method="$4" auth="${5:-}"
   docker exec -i "$CONTAINER" python3 -c "
 import sys, urllib.request, urllib.error
-body = sys.stdin.buffer.read()
+# Read the request body from stdin only when the method can carry one.
+# 'docker exec -i' hands this python its caller's stdin, and a bodyless GET
+# that still calls stdin.read() blocks until that stdin reaches EOF — which
+# never happens when fangrig is run from a terminal, or from inside a shell
+# loop whose stdin is still open. That is a hang with no error and no
+# output: 'fangrig journal' simply never returns. Found by tests/fang/run.sh.
+body = sys.stdin.buffer.read() if '$method' not in ('GET', 'HEAD') else b''
 req = urllib.request.Request('http://$host:$port$path', data=(body or None), method='$method')
 req.add_header('Content-Type', 'application/json')
 $( [ -n "$auth" ] && printf "req.add_header('Authorization', 'Bearer %s')\n" "$auth" )

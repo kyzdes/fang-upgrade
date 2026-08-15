@@ -1,0 +1,67 @@
+# GREEN 1b — the CORRECT pairing still runs, still sweeps through the API,
+#            and now names what it left on disk instead of rm -rf'ing it.
+# stand A holds the probe agent AND a directory of that name on its volume;
+# stand B holds its planted precious.txt and is named nowhere in this run.
+total 8
+-rw-r--r-- 1 root root 996 Aug 14 18:37 agent.toml
+-rw-r--r-- 1 root root  30 Aug 14 18:42 leftover.txt
+8237ae4d14d00a7364630ccf128506aa  /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt
+
+==== OPENFANG_API_KEY=<A key> ./run.sh --only A-2 --base-url http://127.0.0.1:4211 --container of-r3a ====
+======================================================================
+tests/fang/run.sh — 20260814-174257
+target      : http://127.0.0.1:4211   container: of-r3a
+same stand? : PROVEN — 'of-r3a' publishes 127.0.0.1:4211, which is exactly what http://127.0.0.1:4211 asks for
+data dir    : /var/lib/docker/volumes/of-r3a-data/_data   (from of-r3a:/data)
+config      : /var/lib/docker/volumes/of-r3a-data/_data/config.toml
+api key     : 23 chars from $OPENFANG_API_KEY (environment)
+staging     : up (image openfang:sprint3)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-174257
+======================================================================
+
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (1s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+PASS           A-2      GREEN
+
+PASS=1  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+every repro in the registry carries a witness pattern.
+
+witnesses confirmed by a run recorded on disk : A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-9 FANG-10 FANG-13 FANG-47
+witnesses no recorded run confirms            : FANG-45
+  (the pattern is a line the script prints, but nothing captured on disk
+   shows it: the file under baseline/ for that repro is a written-up
+   document rather than the script's stdout. Not wrong — never yet seen
+   to fire. Capture one as evidence-run*/live-<ID>.log and this line
+   will shorten by itself.)
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4211
+======================================================================
+  removed agent test-a1-probe (fdf9deb5-4683-4f17-a2cb-6b3e1d10490e) via DELETE http://127.0.0.1:4211/api/agents/fdf9deb5-4683-4f17-a2cb-6b3e1d10490e
+  http://127.0.0.1:4211/api/agents lists no probe agent now.
+  LEFT ON DISK, not deleted, under /var/lib/docker/volumes/of-r3a-data/_data/agents: test-a1-probe
+  This sweep does not remove directories. Delete them by hand if you
+  want them gone — and check the path before you do.
+
+======================================================================
+
+==== after ====
+# stand A on disk — left alone, and named in the report above:
+total 8
+-rw-r--r-- 1 root root 996 Aug 14 18:37 agent.toml
+-rw-r--r-- 1 root root  30 Aug 14 18:42 leftover.txt
+# stand A via the API — the probe agent is gone:
+    assistant
+# stand B — untouched:
+8237ae4d14d00a7364630ccf128506aa  /var/lib/docker/volumes/of-r3b-data/_data/agents/test-a1-probe/precious.txt

@@ -76,7 +76,12 @@ esac
 # Created after the guards, so a refused run leaves nothing behind at all.
 WORK="$(mktemp -d /tmp/fang31.XXXXXX)"
 
-API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" | head -1)"
+# The key resolves the way ofctl and harness/lib.sh resolve it: the environment
+# first, then the config file. Config-only made tests/fang/run.sh's preflight a
+# statement about a credential this script never sent — it proved $OPENFANG_API_KEY
+# against the target, printed "credential: ACCEPTED", and then every call below
+# went out with whatever api_key happened to sit in $CONFIG.
+API_KEY="${OPENFANG_API_KEY:-$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" | head -1)}"
 NETPID="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER")" || exit 3
 SECRETS="$(dirname "$CONFIG")/secrets.env"
 

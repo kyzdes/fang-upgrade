@@ -1,0 +1,26 @@
+### RED-4: a typo in --only is indistinguishable from an honest 'everything skipped'
+$ OF_CONTAINER=openfang-fangrun ./run.sh --only A-42 --base-url http://127.0.0.1:4203
+======================================================================
+tests/fang/run.sh — 20260814-151444
+target      : http://127.0.0.1:4203   container: openfang-fangrun
+staging     : up (image openfang:sprint3)
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : /tmp/fang-run/20260814-151444
+======================================================================
+
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+
+PASS=0  FAIL=0  REVIEW=0  SKIPPED=0  ERROR=0
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+EXIT=4
+
+(exit 4 = 'NOTHING RAN — all 0 repro(s) were skipped'; identical to a real all-skipped run,
+ and the message even says 'all 0 repro(s)'. No usage error, no named id.)
