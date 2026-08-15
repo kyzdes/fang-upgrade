@@ -283,6 +283,93 @@ fn finish_calls(calls: &mut Vec<LlmCall>) -> Vec<LlmCall> {
     std::mem::take(calls)
 }
 
+/// How many tool calls a max-iterations summary names one by one before the
+/// list is elided. A runaway loop repeats itself; twenty lines show its shape.
+const MAX_ITER_SUMMARY_CALLS: usize = 20;
+
+/// Per-call argument budget in that listing, in characters. Long enough to
+/// carry the arguments that identify the call (a path, a key, a query),
+/// short enough that fifty of them cannot blow up a response body.
+const MAX_ITER_SUMMARY_ARG_CHARS: usize = 300;
+
+/// Truncate on a character boundary, marking that something was cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push('…');
+    out
+}
+
+/// The tool calls a turn actually made, read back off the session the loop has
+/// been appending to: `(name, argument JSON)` per `ToolUse` block from index
+/// `from` onwards, in execution order.
+///
+/// The session is the right source: it is what the loop persists, so this
+/// cannot disagree with the history the agent will be re-fed next turn.
+fn tool_uses_since(messages: &[Message], from: usize) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for msg in messages.iter().skip(from) {
+        if let MessageContent::Blocks(blocks) = &msg.content {
+            for block in blocks {
+                if let ContentBlock::ToolUse { name, input, .. } = block {
+                    out.push((name.clone(), input.to_string()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The response handed back when a turn runs out of iterations: what was
+/// reached, and what was done on the way.
+///
+/// It keeps the words "Max iterations exceeded (N)" because that names which
+/// exit door the loop left by — the circuit breaker says something else — and
+/// because the operator's next move (raise the limit) has to be spelled out
+/// somewhere the caller can see.
+fn max_iterations_summary(
+    max_iterations: u32,
+    accumulated_text: &str,
+    tool_uses: &[(String, String)],
+) -> String {
+    let mut out = format!(
+        "[Turn incomplete — Max iterations exceeded ({max_iterations}). \
+         The agent had not finished; everything below really ran and is saved \
+         in the session. Configure a higher limit in agent.toml under \
+         [autonomous] max_iterations.]"
+    );
+
+    let text = accumulated_text.trim();
+    if !text.is_empty() {
+        out.push_str("\n\n");
+        out.push_str(text);
+    }
+
+    if tool_uses.is_empty() {
+        out.push_str("\n\nNo tool calls were executed in this turn.");
+        return out;
+    }
+
+    out.push_str(&format!("\n\nTool calls executed ({}):", tool_uses.len()));
+    for (i, (name, args)) in tool_uses.iter().take(MAX_ITER_SUMMARY_CALLS).enumerate() {
+        out.push_str(&format!(
+            "\n  {}. {} {}",
+            i + 1,
+            name,
+            truncate_chars(args, MAX_ITER_SUMMARY_ARG_CHARS)
+        ));
+    }
+    if tool_uses.len() > MAX_ITER_SUMMARY_CALLS {
+        out.push_str(&format!(
+            "\n  … and {} more",
+            tool_uses.len() - MAX_ITER_SUMMARY_CALLS
+        ));
+    }
+    out
+}
+
 /// Record how many tool calls the just-finished LLM response actually asked for.
 ///
 /// Called after text-based recovery, because a model that emits `<function=…>` in prose has
@@ -567,6 +654,9 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // Where this turn's contribution to the session starts. Read back at the
+    // max-iterations exit to say which tool calls the turn actually made.
+    let session_msgs_before = session.messages.len();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -1199,10 +1289,35 @@ pub async fn run_agent_loop(
         }
     }
 
-    // Save session before failing so conversation history is preserved
+    // Iterations exhausted. This is a TRUNCATED turn, not a failed one: the
+    // assistant text accumulated above is real, the tool calls really executed,
+    // the files they wrote are really on disk, and the provider has really
+    // billed every token in `total_usage`.
+    //
+    // Returning `Err(MaxIterationsExceeded)` here threw all of that away twice
+    // over. The caller got a bare HTTP 500 carrying neither the partial text nor
+    // the list of calls (FANG-10), and the kernel — which books usage only on
+    // the Ok arm, `record_usage` / `record_tool_calls` / `record_turn_usage` —
+    // never saw `calls`, so `usage_events`, `/api/usage/by-model` and the quota
+    // counters all moved by zero for a turn the provider charged for (FANG-47).
+    // The session was already being saved right here, so the runtime kept the
+    // work for itself and told the caller nothing.
+    let tool_uses = tool_uses_since(&session.messages, session_msgs_before);
+    let summary = max_iterations_summary(max_iterations, &accumulated_text, &tool_uses);
+    session.messages.push(Message::assistant(summary.clone()));
+
+    // Save session so conversation history is preserved
     if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
+
+    warn!(
+        agent = %manifest.name,
+        iterations = max_iterations,
+        tool_calls = tool_uses.len(),
+        tokens = total_usage.total(),
+        "Max iterations reached — returning the partial result"
+    );
 
     // Fire AgentLoopEnd hook on max iterations exceeded
     if let Some(hook_reg) = hooks {
@@ -1213,12 +1328,22 @@ pub async fn run_agent_loop(
             data: serde_json::json!({
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
+                "partial": true,
+                "tool_calls": tool_uses.len(),
             }),
         };
         let _ = hook_reg.fire(&ctx);
     }
 
-    Err(OpenFangError::MaxIterationsExceeded(max_iterations))
+    Ok(AgentLoopResult {
+        response: summary,
+        total_usage,
+        iterations: max_iterations,
+        cost_usd: None,
+        silent: false,
+        directives: Default::default(),
+        calls: finish_calls(&mut calls),
+    })
 }
 
 /// Call an LLM driver with automatic retry on rate-limit and overload errors.
@@ -1825,6 +1950,9 @@ pub async fn run_agent_loop_streaming(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // Where this turn's contribution to the session starts. Read back at the
+    // max-iterations exit to say which tool calls the turn actually made.
+    let session_msgs_before = session.messages.len();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -2474,9 +2602,34 @@ pub async fn run_agent_loop_streaming(
         }
     }
 
+    // Same exit, same reasoning as the non-streaming loop above: exhaustion is
+    // a truncated turn, so hand back the partial result instead of an Err that
+    // costs the caller the work (FANG-10) and the ledger the tokens (FANG-47).
+    let tool_uses = tool_uses_since(&session.messages, session_msgs_before);
+    let summary = max_iterations_summary(max_iterations, &accumulated_text, &tool_uses);
+    session.messages.push(Message::assistant(summary.clone()));
+
+    // The WS/SSE client's transcript is built from TextDelta events, not from
+    // the returned result (ws.rs accumulates `accumulated_text` and sends it as
+    // the `response` event). Without this, a streaming caller would still see a
+    // turn that ends with nothing said.
+    let _ = stream_tx
+        .send(StreamEvent::TextDelta {
+            text: summary.clone(),
+        })
+        .await;
+
     if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
+
+    warn!(
+        agent = %manifest.name,
+        iterations = max_iterations,
+        tool_calls = tool_uses.len(),
+        tokens = total_usage.total(),
+        "Max iterations reached (streaming) — returning the partial result"
+    );
 
     // Fire AgentLoopEnd hook on max iterations exceeded
     if let Some(hook_reg) = hooks {
@@ -2487,12 +2640,22 @@ pub async fn run_agent_loop_streaming(
             data: serde_json::json!({
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
+                "partial": true,
+                "tool_calls": tool_uses.len(),
             }),
         };
         let _ = hook_reg.fire(&ctx);
     }
 
-    Err(OpenFangError::MaxIterationsExceeded(max_iterations))
+    Ok(AgentLoopResult {
+        response: summary,
+        total_usage,
+        iterations: max_iterations,
+        cost_usd: None,
+        silent: false,
+        directives: Default::default(),
+        calls: finish_calls(&mut calls),
+    })
 }
 
 /// Recover tool calls that LLMs output as plain text instead of the proper
@@ -5927,6 +6090,170 @@ mod tests {
             Some(("hyperfusion", "adv-primary")),
             "the last call was the primary's — and that is all model_used claims"
         );
+    }
+
+    // ── FANG-10 / FANG-47: the max-iterations exit ────────────────────────
+    //
+    // Both defects live on one line. `Err(MaxIterationsExceeded)` gave the
+    // caller a bare 500 with none of the turn in it (FANG-10) and gave the
+    // kernel — which books usage on the Ok arm only — nothing to book, so the
+    // ledger moved by zero for a turn the provider had already billed
+    // (FANG-47). Before the fix this test failed on its first assertion:
+    // `run_agent_loop` returned Err.
+
+    /// Asks for a fresh tool call forever. The only response shape that can
+    /// reach the max-iterations exit — a text default ends the turn instead.
+    /// Arguments differ per call so the loop guard's repeat block (5 identical
+    /// calls) never fires and every iteration is a real, distinct call.
+    struct NeverStopsDriver {
+        calls: AtomicU32,
+    }
+
+    #[async_trait]
+    impl LlmDriver for NeverStopsDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            let n = self.calls.fetch_add(1, Ordering::Relaxed);
+            let input = serde_json::json!({
+                "path": format!("output/step-{n}.txt"),
+                "content": "MAXITER-PARTIAL-CANARY",
+            });
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::ToolUse {
+                    id: format!("call_{n}"),
+                    name: "file_write".to_string(),
+                    input: input.clone(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::ToolUse,
+                tool_calls: vec![ToolCall {
+                    id: format!("call_{n}"),
+                    name: "file_write".to_string(),
+                    input,
+                }],
+                usage: usage(7919, 7907),
+            })
+        }
+    }
+
+    fn never_stops_manifest(max_iterations: u32) -> AgentManifest {
+        AgentManifest {
+            name: "test-max-iterations".to_string(),
+            model: openfang_types::agent::ModelConfig {
+                system_prompt: "You are a test agent.".to_string(),
+                ..adv_model()
+            },
+            autonomous: Some(openfang_types::agent::AutonomousConfig {
+                max_iterations,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_max_iterations_hands_back_the_partial_turn_not_an_error() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let result = run_agent_loop(
+            &never_stops_manifest(3),
+            "start the unbounded task",
+            &mut session,
+            &memory,
+            Arc::new(NeverStopsDriver {
+                calls: AtomicU32::new(0),
+            }),
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("exhausting the iteration budget truncates a turn; it does not fail one");
+
+        // FANG-47: every call the provider served is in the turn's accounting,
+        // which is the only thing the kernel can book. Losing the Err lost all
+        // three rows and both totals.
+        assert_eq!(result.iterations, 3);
+        assert_eq!(result.calls.len(), 3, "one accounting row per LLM call");
+        assert_eq!(result.total_usage.input_tokens, 3 * 7919);
+        assert_eq!(result.total_usage.output_tokens, 3 * 7907);
+        assert_eq!(
+            result.calls.iter().map(|c| c.input_tokens).sum::<u64>(),
+            result.total_usage.input_tokens,
+            "the rows must add up to the turn's own totals"
+        );
+        assert!(
+            result.calls.iter().all(|c| c.model == "adv-primary"),
+            "booked to the model that served the calls"
+        );
+
+        // FANG-10: the caller is told what ran, and by which door the loop left.
+        assert!(!result.silent);
+        assert!(
+            result.response.contains("Max iterations exceeded (3)"),
+            "the exit door has to be named, and it is not the circuit breaker: {}",
+            result.response
+        );
+        assert!(
+            result.response.contains("file_write"),
+            "the tool calls the turn made are part of the result: {}",
+            result.response
+        );
+        assert!(
+            result.response.contains("MAXITER-PARTIAL-CANARY"),
+            "and named concretely enough to identify the work: {}",
+            result.response
+        );
+
+        // What the caller was told is what the history records.
+        assert_eq!(
+            session.messages.last().map(|m| m.content.text_content()),
+            Some(result.response.clone()),
+        );
+    }
+
+    #[test]
+    fn test_max_iterations_summary_elides_a_long_tool_list_without_losing_the_count() {
+        let uses: Vec<(String, String)> = (0..50)
+            .map(|n| ("file_write".to_string(), format!("{{\"n\":{n}}}")))
+            .collect();
+        let s = max_iterations_summary(50, "partial answer so far", &uses);
+        assert!(s.contains("Max iterations exceeded (50)"));
+        assert!(s.contains("partial answer so far"));
+        assert!(s.contains("Tool calls executed (50)"));
+        assert!(s.contains("… and 30 more"), "{s}");
+        assert!(
+            s.contains("{\"n\":0}") && !s.contains("{\"n\":49}"),
+            "the head of the list is what is shown"
+        );
+    }
+
+    #[test]
+    fn test_max_iterations_summary_says_so_when_nothing_ran() {
+        let s = max_iterations_summary(2, "", &[]);
+        assert!(s.contains("No tool calls were executed in this turn."));
     }
 
     /// A retry inside `call_with_retry` is the same call, not a new one.
