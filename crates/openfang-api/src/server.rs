@@ -6,6 +6,7 @@ use crate::rate_limiter;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
+use axum::http::{header, Method};
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use std::future::IntoFuture;
@@ -37,6 +38,23 @@ use tracing::{info, warn};
 /// Override with `OPENFANG_SHUTDOWN_DRAIN_SECS` when a deployment gives the
 /// process a different grace period.
 const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn credentialed_passkey_cors(origin: axum::http::HeaderValue) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(origin)
+        // Credentialed CORS cannot use wildcard methods or headers. Keep
+        // this list explicit so tower-http and browsers both fail closed.
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_credentials(true)
+}
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -99,11 +117,7 @@ pub async fn build_router(
             .rp_origin()
             .parse()
             .expect("validated passkey RP origin must be a valid header");
-        CorsLayer::new()
-            .allow_origin(origin)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-            .allow_credentials(true)
+        credentialed_passkey_cors(origin)
     } else if state.kernel.config.api_key.trim().is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
@@ -1282,5 +1296,18 @@ mod tests {
 
         // Unset.
         assert_eq!(parse_drain_timeout(None), SHUTDOWN_DRAIN_TIMEOUT_DEFAULT);
+
+    use super::credentialed_passkey_cors;
+
+    /// Не про wildcard в выводе, а про то, что слой вообще собирается.
+    /// `tower-http` паникует ПРИ ПОСТРОЕНИИ, если `allow_credentials(true)`
+    /// встречается с `Any` в методах или заголовках — так требует спецификация
+    /// CORS. Поэтому вызов без паники и есть утверждение: до этой правки
+    /// ветка пасскея роняла роутер на старте демона, а не отдавала плохой
+    /// заголовок.
+    #[test]
+    fn credentialed_passkey_cors_builds_without_panicking() {
+        let origin = "https://denis-openfang.moone.dev".parse().unwrap();
+        let _ = credentialed_passkey_cors(origin);
     }
 }
