@@ -6,6 +6,7 @@ use crate::rate_limiter;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
+use axum::http::{header, Method};
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use std::net::SocketAddr;
@@ -16,6 +17,23 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
+
+fn credentialed_passkey_cors(origin: axum::http::HeaderValue) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(origin)
+        // Credentialed CORS cannot use wildcard methods or headers. Keep
+        // this list explicit so tower-http and browsers both fail closed.
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_credentials(true)
+}
 
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -78,11 +96,7 @@ pub async fn build_router(
             .rp_origin()
             .parse()
             .expect("validated passkey RP origin must be a valid header");
-        CorsLayer::new()
-            .allow_origin(origin)
-            .allow_methods(tower_http::cors::Any)
-            .allow_headers(tower_http::cors::Any)
-            .allow_credentials(true)
+        credentialed_passkey_cors(origin)
     } else if state.kernel.config.api_key.trim().is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
@@ -1069,5 +1083,16 @@ fn is_daemon_responding(addr: &str) -> bool {
         std::net::TcpStream::connect(addr_only)
             .map(|_| true)
             .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::credentialed_passkey_cors;
+
+    #[test]
+    fn credentialed_passkey_cors_uses_no_wildcards() {
+        let origin = "https://denis-openfang.moone.dev".parse().unwrap();
+        let _ = credentialed_passkey_cors(origin);
     }
 }
