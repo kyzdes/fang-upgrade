@@ -433,62 +433,43 @@ pub async fn kill_process_tree(pid: u32, grace_ms: u64) -> Result<bool, String> 
 
 #[cfg(unix)]
 async fn kill_tree_unix(pid: u32, grace_ms: u64) -> Result<bool, String> {
-    use tokio::process::Command;
+    let pid_i32 = i32::try_from(pid).map_err(|_| format!("Invalid process ID: {pid}"))?;
 
-    let pid_i32 = pid as i32;
+    // Only address a process group when the target is its leader. A managed
+    // process is started that way by ProcessManager; arbitrary subprocesses may
+    // not be. This guard prevents signaling an unrelated parent process group.
+    let group_leader = unsafe { libc::getpgid(pid_i32) } == pid_i32;
+    if unsafe { libc::kill(pid_i32, 0) } != 0 {
+        return Ok(false);
+    }
 
-    // Try to kill the process group first (negative PID).
-    // This kills the process and all its children.
-    let group_kill = Command::new("kill")
-        .args(["-TERM", &format!("-{pid_i32}")])
-        .output()
-        .await;
-
-    let group_kill_succeeded = matches!(&group_kill, Ok(output) if output.status.success());
-    if !group_kill_succeeded {
-        // Fallback: kill just the process.
-        let _ = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output()
-            .await;
+    let term_target = if group_leader { -pid_i32 } else { pid_i32 };
+    if unsafe { libc::kill(term_target, libc::SIGTERM) } != 0 {
+        let target_kind = if group_leader {
+            "process group"
+        } else {
+            "process"
+        };
+        return Err(format!(
+            "Failed to send SIGTERM to {target_kind} {pid}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
 
     // Wait for grace period.
     tokio::time::sleep(std::time::Duration::from_millis(grace_ms)).await;
 
-    // Check if still alive.
-    let check = Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .output()
-        .await;
+    if unsafe { libc::kill(pid_i32, 0) } == 0 {
+        tracing::warn!(
+            pid,
+            "Process still alive after grace period, sending SIGKILL"
+        );
 
-    match check {
-        Ok(output) if output.status.success() => {
-            // Still alive — force kill.
-            tracing::warn!(
-                pid,
-                "Process still alive after grace period, sending SIGKILL"
-            );
-
-            // Try group kill first.
-            let _ = Command::new("kill")
-                .args(["-9", &format!("-{pid_i32}")])
-                .output()
-                .await;
-
-            // Also try direct kill.
-            let _ = Command::new("kill")
-                .args(["-9", &pid.to_string()])
-                .output()
-                .await;
-
-            Ok(true)
-        }
-        _ => {
-            // Process is already dead (kill -0 failed = no such process).
-            Ok(true)
-        }
+        let kill_target = if group_leader { -pid_i32 } else { pid_i32 };
+        let _ = unsafe { libc::kill(kill_target, libc::SIGKILL) };
     }
+
+    Ok(true)
 }
 
 #[cfg(windows)]

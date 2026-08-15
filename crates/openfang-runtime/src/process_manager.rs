@@ -291,6 +291,15 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].agent_id, "agent1");
 
+        #[cfg(unix)]
+        {
+            let process = pm.processes.get(&id).unwrap();
+            let child_pid = process.child.id().unwrap() as i32;
+            let child_pgid = unsafe { libc::getpgid(child_pid) };
+            assert_eq!(child_pgid, child_pid);
+            assert_ne!(child_pgid, unsafe { libc::getpgrp() });
+        }
+
         // Cleanup
         let _ = pm.kill(&id).await;
     }
