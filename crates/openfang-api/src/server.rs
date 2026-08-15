@@ -1074,7 +1074,11 @@ pub fn read_daemon_info(home_dir: &Path) -> Option<DaemonInfo> {
 /// That is the operator's call to make, and the supervisor's SIGKILL is the
 /// backstop.
 fn shutdown_drain_timeout() -> std::time::Duration {
-    parse_drain_timeout(std::env::var("OPENFANG_SHUTDOWN_DRAIN_SECS").ok().as_deref())
+    parse_drain_timeout(
+        std::env::var("OPENFANG_SHUTDOWN_DRAIN_SECS")
+            .ok()
+            .as_deref(),
+    )
 }
 
 /// The body of [`shutdown_drain_timeout`], without the environment.
@@ -1216,20 +1220,16 @@ mod tests {
         // Honoured.
         assert_eq!(parse_drain_timeout(Some("0")), Duration::ZERO);
         assert_eq!(parse_drain_timeout(Some("7")), Duration::from_secs(7));
-        assert_eq!(parse_drain_timeout(Some(" 2.5 ")), Duration::from_secs_f64(2.5));
+        assert_eq!(
+            parse_drain_timeout(Some(" 2.5 ")),
+            Duration::from_secs_f64(2.5)
+        );
 
         // Rejected, each falling back to the default rather than aborting.
         for raw in [
-            "1e30",     // parses as f64, far too large for a Duration
-            "1e400",    // parses as f64 infinity
-            "inf",
-            "-inf",
-            "NaN",
-            "-1",
-            "",
-            "  ",
-            "three",
-            "3s",
+            "1e30",  // parses as f64, far too large for a Duration
+            "1e400", // parses as f64 infinity
+            "inf", "-inf", "NaN", "-1", "", "  ", "three", "3s",
         ] {
             assert_eq!(
                 parse_drain_timeout(Some(raw)),

@@ -126,7 +126,12 @@ impl ChannelAdapter for CountingAdapter {
         &self,
     ) -> Result<Pin<Box<dyn Stream<Item = ChannelMessage> + Send>>, Box<dyn std::error::Error>>
     {
-        let rx = self.rx.lock().unwrap().take().expect("start() called twice");
+        let rx = self
+            .rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("start() called twice");
         Ok(Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx)))
     }
     async fn send(

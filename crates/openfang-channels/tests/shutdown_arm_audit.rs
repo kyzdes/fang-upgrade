@@ -418,7 +418,12 @@ fn audit_source(file: &str, text: &str) -> Vec<Offender> {
         let body = arm_body(&lines, idx);
         let code = code_only(&body);
         let in_loop = select_is_in_loop(&lines, idx);
-        let mut fail = |reason: String| offenders.push(Offender { location: location.clone(), reason });
+        let mut fail = |reason: String| {
+            offenders.push(Offender {
+                location: location.clone(),
+                reason,
+            })
+        };
 
         if binding == "_" {
             // Result discarded: the arm cannot tell `Err` from a real change,
@@ -584,7 +589,11 @@ fn audit_rejects_every_known_spin_shape() {
                     }
                 }
 "#;
-    assert_eq!(audit_source("unchecked.rs", unchecked).len(), 1, "{unchecked}");
+    assert_eq!(
+        audit_source("unchecked.rs", unchecked).len(),
+        1,
+        "{unchecked}"
+    );
 
     // Tests is_err(), then does not leave the loop.
     let no_break = r#"
@@ -756,9 +765,15 @@ fn parse_arm_recognises_both_forms_and_ignores_plain_awaits() {
         Some(("changed".to_string(), "hb_shutdown".to_string()))
     );
     // Plain await, not a select arm — no fall-through, nothing to spin.
-    assert_eq!(parse_arm("            let _ = shutdown_rx.changed().await;"), None);
+    assert_eq!(
+        parse_arm("            let _ = shutdown_rx.changed().await;"),
+        None
+    );
     // A different future in the same select! must not be mistaken for one.
-    assert_eq!(parse_arm("                    _ = tokio::time::sleep(d) => {}"), None);
+    assert_eq!(
+        parse_arm("                    _ = tokio::time::sleep(d) => {}"),
+        None
+    );
 }
 
 /// `arm_body` must stop at the arm's closing brace.
@@ -870,10 +885,11 @@ fn loop_detection_separates_re_entered_selects_from_one_shot_ones() {
 #[test]
 fn err_guard_accepts_only_the_shape_it_documents() {
     assert!(err_guard_exits("if changed.is_err() { break; }", "changed").is_ok());
-    assert!(
-        err_guard_exits("if changed.is_err() || *rx.borrow() { let _ = tx.close(); return; }", "changed")
-            .is_ok()
-    );
+    assert!(err_guard_exits(
+        "if changed.is_err() || *rx.borrow() { let _ = tx.close(); return; }",
+        "changed"
+    )
+    .is_ok());
     // Nothing may precede the test.
     assert!(err_guard_exits("warn!( ); if changed.is_err() { break; }", "changed").is_err());
     // The test must not share its condition with anything but `||`.
@@ -884,8 +900,9 @@ fn err_guard_accepts_only_the_shape_it_documents() {
     assert!(err_guard_exits("if changed.is_err() { continue; }", "changed").is_err());
     assert!(err_guard_exits("if changed.is_err() { if late { break; } }", "changed").is_err());
     // A `break` after the guard is not the guard's exit.
-    assert!(
-        err_guard_exits("if changed.is_err() { warn!( ); } if *rx.borrow() { break; }", "changed")
-            .is_err()
-    );
+    assert!(err_guard_exits(
+        "if changed.is_err() { warn!( ); } if *rx.borrow() { break; }",
+        "changed"
+    )
+    .is_err());
 }
