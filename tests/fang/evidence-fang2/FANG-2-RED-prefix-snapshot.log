@@ -1,0 +1,293 @@
+
+=== stand: ofrelease-stand on 127.0.0.1:4203 from openfang-openfang:v0.6.9-pristine
+/dev/sda1        77G   67G  9.6G  88% /
+api_key rotated in the clone
+target       : ofrelease-stand (running)
+image        : openfang-openfang:v0.6.9-pristine
+image id     : sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824
+volume       : ofrelease-stand-data -> /var/lib/docker/volumes/ofrelease-stand-data/_data
+published    : 127.0.0.1:4203:4200
+url          : http://127.0.0.1:4203
+health       : {"status":"ok","version":"0.6.9"}
+version      : 0.6.9
+user_version : 8
+agents       : 14
+guards       : pass
+ledger       : /var/lib/ofrelease/ofrelease-stand.jsonl
+rollback to  : <nothing to roll back to>
+prev objects : 0
+PASS  stand starts at the pre-migration schema (8)
+PASS  stand guards pass (pass)
+
+=== T1  the fingerprint does not drift while the daemon idles
+PASS  fingerprint stable over 6s of live traffic-free operation (27966c83d409a6079c46655d5ed5bb55eb0c75414e4cd644562c320f28ebe697)
+
+=== T2  promote --dry-run changes nothing
+PASS  dry-run exits 0 (0)
+PASS  dry-run printed a plan
+PASS  fingerprint before == after (27966c83d409a6079c46655d5ed5bb55eb0c75414e4cd644562c320f28ebe697)
+PASS  no ledger line was written (0)
+PASS  no snapshot was taken (0)
+PASS  container id unchanged (3f54a14a4ede06138fc2f03404557aa5b569bb066624947032cf40b84a2c626f)
+PASS  image unchanged (sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824)
+      fingerprint: 27966c83d409a6079c46655d5ed5bb55eb0c75414e4cd644562c320f28ebe697
+
+=== T3  promote openfang-openfang:v0.6.9-pristine -> openfang:sprint3
+      | disk: 10G free on /
+      | 
+      | == pre-state of ofrelease-stand
+      | before promote:
+      |   image id     : sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824
+      |   /api/health  : {"status":"ok","version":"0.6.9"}
+      |   version      : 0.6.9
+      |   user_version : 8
+      |   agents       : 14
+      | 
+      | == snapshot ofrelease-stand-data before anything else
+      | snapshotting ofrelease-stand:/data/data/openfang.db (SQLite backup API, no downtime)
+      | archiving state from /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | OpenFang backup 20260815-223016Z
+      | source     : ofrelease-stand  /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | openfang.db: 12304384 bytes
+      | state.tgz  : config.toml secrets.env cron_jobs.json custom_models.json hand_state.json daemon.json hands workspaces agents
+      |            : 5765846 bytes
+      | 
+      | integrity_check : ok
+      | user_version    : 8
+      | tables          : 13
+      |                   agents, audit_entries, canonical_sessions, entities, events, kv_store, memories, migrations, paired_devices, relations, sessions, task_queue, usage_events
+      | 
+      | NOT captured (memory-only, never restorable): triggers, workflow runs.
+      | Contains secrets.env and config.toml in clear - keep this directory at 0700.
+      | 
+      | -> /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+      | snapshot verified (live, via ofbackup): /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+      | 
+      | == stop ofrelease-stand
+      | 
+      | == set the old container aside as ofrelease-stand--prev-20260815-223016Z
+      | 
+      | == start ofrelease-stand from openfang:sprint3
+      | 
+      | == wait for /api/health
+      | 
+      | == promoted
+      | after promote:
+      |   image id     : sha256:cbbebc3f9e38b3190368ef729849acc1fd07b14256962f69abc917f4ca9799cd
+      |   /api/health  : {"status":"ok","version":"0.6.9"}
+      |   version      : 0.6.9
+      |   user_version : 9
+      |   agents       : 14
+      | 
+      | release id : rel-20260815-223016Z
+      | snapshot   : /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+      | previous   : container ofrelease-stand--prev-20260815-223016Z (image openfang-openfang:v0.6.9-pristine, sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824)
+      | rollback   : ofrelease rollback --container ofrelease-stand [--with-volume]
+PASS  promote exits 0 (0)
+PASS  target now runs the new image (sha256:cbbebc3f9e38b3190368ef729849acc1fd07b14256962f69abc917f4ca9799cd)
+PASS  container object was replaced (3f54a14a4ede06138fc2f03404557aa5b569bb066624947032cf40b84a2c626f != 800402feed41d7d22cd686a5b1b0a5ceb97527d6d986395731c73b238b3426b8)
+PASS  the new image migrated the schema (9)
+PASS  agents survived the promote (14)
+PASS  health is ok after promote
+PASS  the snapshot was integrity_check'd
+PASS  snapshot exists on disk: /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+PASS  previous container kept as ofrelease-stand--prev-20260815-223016Z
+PASS  the kept container still is the old image (sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824)
+      ledger: rel-20260815-223016Z pre={'image_id': 'sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824', 'health': '{"status":"ok","version":"0.6.9"}', 'version': '0.6.9', 'user_version': '8', 'agents': '14'} snapshot=/srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+PASS  the ledger holds a complete, parseable rollback point
+
+=== T4  promoting the same image again is a no-op
+PASS  repeat promote exits 0 (0)
+PASS  it says so instead of redeploying
+PASS  container id untouched (800402feed41d7d22cd686a5b1b0a5ceb97527d6d986395731c73b238b3426b8)
+PASS  no new ledger line (2)
+PASS  no new snapshot (1)
+PASS  fingerprint untouched (32229a38e9fcc29f85b4b29b5fdb53cc41ec4ed0e732e944a39fbc3ebad8242c)
+
+=== T5  the three production guards, one call each
+
+--- T5a  container openfang-openfang-1
+      | REFUSING [guard: container] 'openfang-openfang-1' is production.
+      | REFUSING [guard: volume] container 'openfang-openfang-1' mounts the production volume 'openfang_openfang-data' at /data.
+      | REFUSING [guard: port] container 'openfang-openfang-1' publishes host port 4200 (production).
+      | ofrelease: production is not a target for this tool. Nothing was touched.
+PASS  refused with exit 2 (2)
+PASS  the container guard named itself
+
+--- T5b  a container that mounts openfang_openfang-data
+      | REFUSING [guard: volume] container 'ofr-guard-volume' mounts the production volume 'openfang_openfang-data' at /data.
+      | ofrelease: production is not a target for this tool. Nothing was touched.
+PASS  refused with exit 2 (2)
+PASS  the volume guard fired on its own
+PASS  the container guard stayed quiet: the checks are independent
+PASS  the production volume still exists after the decoy is gone (0)
+
+--- T5c  a container that publishes host port 4200
+      | REFUSING [guard: port] container 'ofr-guard-port' publishes host port 4200 (production).
+      | ofrelease: production is not a target for this tool. Nothing was touched.
+PASS  refused with exit 2 (2)
+PASS  the port guard fired on its own
+PASS  only the port guard fired
+PASS  production is still answering on 4200
+
+=== T6  rollback --with-volume, and the proof it demands
+      | 
+      | == snapshot the current volume before rolling back
+      | snapshotting ofrelease-stand:/data/data/openfang.db (SQLite backup API, no downtime)
+      | archiving state from /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | OpenFang backup 20260815-223026Z
+      | source     : ofrelease-stand  /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | openfang.db: 12304384 bytes
+      | state.tgz  : config.toml secrets.env cron_jobs.json custom_models.json hand_state.json daemon.json hands workspaces agents
+      |            : 5765850 bytes
+      | 
+      | integrity_check : ok
+      | user_version    : 9
+      | tables          : 13
+      |                   agents, audit_entries, canonical_sessions, entities, events, kv_store, memories, migrations, paired_devices, relations, sessions, task_queue, usage_events
+      | 
+      | NOT captured (memory-only, never restorable): triggers, workflow runs.
+      | Contains secrets.env and config.toml in clear - keep this directory at 0700.
+      | 
+      | -> /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223026Z
+      | snapshot verified (live, via ofbackup): /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223026Z
+      | 
+      | == remove the promoted container
+      | 
+      | == put openfang-openfang:v0.6.9-pristine back (rename)
+      | 
+      | == restore the volume from /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+      | restore plan  /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z -> /var/lib/docker/volumes/ofrelease-stand-data/_data  (container ofrelease-stand)
+      |   1. docker stop ofrelease-stand
+      |   2. tar xzf /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z/state.tgz -C /var/lib/docker/volumes/ofrelease-stand-data/_data
+      |   3. cp /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z/openfang.db /var/lib/docker/volumes/ofrelease-stand-data/_data/data/openfang.db
+      |   4. rm -f /var/lib/docker/volumes/ofrelease-stand-data/_data/data/openfang.db-wal /var/lib/docker/volumes/ofrelease-stand-data/_data/data/openfang.db-shm
+      |      (a stale -wal replays a half-written transaction over your good snapshot)
+      |   5. chmod 600 /var/lib/docker/volumes/ofrelease-stand-data/_data/config.toml /var/lib/docker/volumes/ofrelease-stand-data/_data/secrets.env
+      |   6. docker start ofrelease-stand
+      |   triggers and workflow runs do not come back - they never persisted.
+      | 
+      | executing
+      | ofrelease-stand
+      | ofrelease-stand
+      | started. Confirm with: ofdoctor
+      | 
+      | == prove the return
+      | 
+      |   field         expected (before promote)  observed                   match
+      |   image_id      sha256:8b010f24ebb6fc3dedf sha256:8b010f24ebb6fc3dedf yes
+      |   version       0.6.9                      0.6.9                      yes
+      |   health        ok                         ok                         yes
+      |   user_version  8                          8                          yes
+      |   agents        14                         14                         yes
+      | 
+      | rolled back to openfang-openfang:v0.6.9-pristine, verified. Safety snapshot of the promoted state: /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223026Z
+PASS  rollback exits 0 (0)
+PASS  image is back (sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824)
+PASS  the ORIGINAL container object is back (3f54a14a4ede06138fc2f03404557aa5b569bb066624947032cf40b84a2c626f)
+PASS  schema is back at 8 (8)
+PASS  agent count is back (14)
+PASS  health is ok after rollback
+PASS  every asserted field in the proof table matched
+PASS  rollback proved the image, it did not just claim it
+PASS  rollback proved the schema version
+PASS  rollback took its own snapshot first
+
+=== T7  a promote that never becomes healthy, with --auto-rollback (and --build)
+      | disk: 10G free on /
+      | 
+      | == build ofrelease-broken:test from /tmp/tmp.j4cEybwD7X
+      | #0 building with "default" instance using docker driver
+      | 
+      | #1 [internal] load build definition from Dockerfile
+      | #1 transferring dockerfile: 77B done
+      | #1 DONE 0.0s
+      | 
+      | #2 [internal] load metadata for docker.io/library/alpine:latest
+      | #2 DONE 0.0s
+      | 
+      | #3 [internal] load .dockerignore
+      | #3 transferring context: 2B done
+      | #3 DONE 0.0s
+      | 
+      | #4 [1/1] FROM docker.io/library/alpine:latest
+      | #4 CACHED
+      | 
+      | #5 exporting to image
+      | #5 exporting layers done
+      | #5 writing image sha256:6069fb8ac789850bdcf9f3a78440d5cf67b145660abfc1f7c3ba9a5a38643602 done
+      | #5 naming to docker.io/library/ofrelease-broken:test done
+      | #5 DONE 0.0s
+      | 
+      | == pre-state of ofrelease-stand
+      | before promote:
+      |   image id     : sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824
+      |   /api/health  : {"status":"ok","version":"0.6.9"}
+      |   version      : 0.6.9
+      |   user_version : 8
+      |   agents       : 14
+      | 
+      | == snapshot ofrelease-stand-data before anything else
+      | snapshotting ofrelease-stand:/data/data/openfang.db (SQLite backup API, no downtime)
+      | archiving state from /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | OpenFang backup 20260815-223035Z
+      | source     : ofrelease-stand  /var/lib/docker/volumes/ofrelease-stand-data/_data
+      | openfang.db: 12304384 bytes
+      | state.tgz  : config.toml secrets.env cron_jobs.json custom_models.json hand_state.json daemon.json hands workspaces agents
+      |            : 5765854 bytes
+      | 
+      | integrity_check : ok
+      | user_version    : 8
+      | tables          : 13
+      |                   agents, audit_entries, canonical_sessions, entities, events, kv_store, memories, migrations, paired_devices, relations, sessions, task_queue, usage_events
+      | 
+      | NOT captured (memory-only, never restorable): triggers, workflow runs.
+      | Contains secrets.env and config.toml in clear - keep this directory at 0700.
+      | 
+      | -> /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223035Z
+      | snapshot verified (live, via ofbackup): /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223035Z
+      | 
+      | == stop ofrelease-stand
+      | 
+      | == set the old container aside as ofrelease-stand--prev-20260815-223035Z
+      | 
+      | == start ofrelease-stand from ofrelease-broken:test
+      | 
+      | == wait for /api/health
+      | no healthy answer from http://127.0.0.1:4203/api/health in 12s. Last log lines:
+      | --auto-rollback: rolling ofrelease-stand back to openfang-openfang:v0.6.9-pristine
+      | 
+      | == snapshot the current volume before rolling back
+      | snapshotting ofrelease-stand:/data/data/openfang.db (SQLite backup API, no downtime)
+      | OCI runtime exec failed: exec failed: unable to start container process: exec: "python3": executable file not found in $PATH
+      | ofbackup: snapshot failed
+      | ofrelease: ofbackup create failed (exit 1) — no snapshot was taken
+PASS  promote of an unhealthy image does not exit 0 (0 != 1)
+PASS  --auto-rollback engaged
+FAIL  the stand is back on the working image: expected 'sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824', got 'sha256:6069fb8ac789850bdcf9f3a78440d5cf67b145660abfc1f7c3ba9a5a38643602'
+FAIL  schema untouched by the failed promote: expected '8', got 'OCI runtime exec failed: exec failed: unable to start container process: exec: "python3": executable file not found in $PATH
+?'
+FAIL  stand health: <no answer>
+
+=== history
+2026-08-15T22:30:18Z  rel-20260815-223016Z  promote   openfang-openfang:v0.6.9-pristine -> openfang:sprint3
+                        snapshot /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223016Z
+                        pre: image=sha256:8b010f24ebb6 uv=8 agents=14 version=0.6.9
+2026-08-15T22:30:19Z  rel-20260815-223016Z    -> ok
+2026-08-15T22:30:28Z  rb-20260815-223028Z  rollback of rel-20260815-223016Z  with_volume=True
+2026-08-15T22:30:30Z  rb-20260815-223028Z    -> ok  image=sha256:8b010f24ebb6fc3dedfc03027a2874db46334fb06a175bfe3fb6b873fd716824 uv=8 agents=14 health={"status":"ok","version":"0.6.9"}
+2026-08-15T22:30:37Z  rel-20260815-223035Z  promote   openfang-openfang:v0.6.9-pristine -> ofrelease-broken:test
+                        snapshot /srv/backups/ofrelease/ofrelease-stand/openfang-20260815-223035Z
+                        pre: image=sha256:8b010f24ebb6 uv=8 agents=14 version=0.6.9
+2026-08-15T22:30:50Z  rel-20260815-223035Z    -> failed-health
+
+=== result
+passed 49, failed 3
+
+--- teardown
+removed container ofrelease-stand
+removed container ofrelease-stand--prev-20260815-223035Z
+removed volume ofrelease-stand-data
+removed image ofrelease-broken:test
+removed ledger and snapshots for ofrelease-stand
+reference volume openfang-staging-premigration: intact
