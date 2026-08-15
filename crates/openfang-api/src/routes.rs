@@ -11185,9 +11185,7 @@ pub async fn config_reload(State(state): State<Arc<AppState>>) -> impl IntoRespo
             // both "no in-process apply path yet" and "reload mode doesn't
             // auto-apply" — either way the operator needs to restart for
             // those specific actions (see FANG-42).
-            let status = if plan.restart_required {
-                "partial"
-            } else if !plan.deferred_actions.is_empty() {
+            let status = if plan.restart_required || !plan.deferred_actions.is_empty() {
                 "partial"
             } else if !plan.applied_actions.is_empty() {
                 "applied"
