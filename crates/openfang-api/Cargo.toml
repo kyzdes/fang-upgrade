@@ -41,6 +41,12 @@ rand = { workspace = true }
 webauthn-rs = { workspace = true }
 url = { workspace = true }
 
+# webauthn-rs-core uses OpenSSL for attestation verification. GitHub's Windows
+# runners do not ship a discoverable OpenSSL installation, so build it only on
+# Windows; Linux/macOS continue to use their system libraries.
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
+
 [dev-dependencies]
 tokio-test = { workspace = true }
 tempfile = { workspace = true }
