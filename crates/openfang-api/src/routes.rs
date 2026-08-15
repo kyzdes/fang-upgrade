@@ -13224,13 +13224,7 @@ mod tests {
         let mut before = String::new();
         render_agent_usage_metrics(
             &mut before,
-            &[(
-                agent.clone(),
-                provider.clone(),
-                configured.clone(),
-                336,
-                0,
-            )],
+            &[(agent.clone(), provider.clone(), configured.clone(), 336, 0)],
         );
         render_llm_call_metrics(
             &mut before,
@@ -13249,13 +13243,7 @@ mod tests {
         let mut after = String::new();
         render_agent_usage_metrics(
             &mut after,
-            &[(
-                agent.clone(),
-                provider.clone(),
-                configured.clone(),
-                495,
-                0,
-            )],
+            &[(agent.clone(), provider.clone(), configured.clone(), 495, 0)],
         );
         render_llm_call_metrics(
             &mut after,
