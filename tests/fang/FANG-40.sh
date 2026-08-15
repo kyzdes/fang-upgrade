@@ -23,25 +23,39 @@
 
 set -uo pipefail
 
-BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 CONTAINER="${OF_CONTAINER:-openfang-staging}"
-CONFIG="${OF_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}"
 STUB_PORT="${OF_STUB_PORT:-8097}"
 FAKE_TOKEN="111111:AAAA-fake-token-for-evict-probe"
-WORK="$(mktemp -d /tmp/fang40.XXXXXX)"
 
 # ---------------------------------------------------------------- prod guard --
-case "$BASE_URL" in
-  *:4200*) echo "REFUSING: $BASE_URL looks like production. FANG-40 rewrites the" \
-                "channel config and must only run against the staging copy." >&2; exit 2;;
-esac
 if [ "$CONTAINER" = "openfang-openfang-1" ]; then
   echo "REFUSING: $CONTAINER is production." >&2; exit 2
 fi
 for bin in docker nsenter python3 curl; do
   command -v "$bin" >/dev/null || { echo "missing dependency: $bin" >&2; exit 3; }
 done
+docker inspect "$CONTAINER" >/dev/null 2>&1 || { echo "no such container: $CONTAINER" >&2; exit 3; }
+
+# Same correction FANG-31.sh got in this commit, and for the same reason: the
+# config path was hardcoded to openfang-staging-data while the container was a
+# variable, so `OF_CONTAINER=mine ./FANG-40.sh` rewrote the shared stand's
+# config.toml while probing something else. Both are read off the container now.
+DATA_DIR="$(docker inspect \
+  -f '{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' "$CONTAINER")"
+HOST_PORT="$(docker inspect \
+  -f '{{with index .NetworkSettings.Ports "4200/tcp"}}{{(index . 0).HostPort}}{{end}}' "$CONTAINER")"
+CONFIG="${OF_CONFIG:-${DATA_DIR:+$DATA_DIR/config.toml}}"
+BASE_URL="${1:-${OPENFANG_URL:-${HOST_PORT:+http://127.0.0.1:$HOST_PORT}}}"
+[ -n "$CONFIG" ]   || { echo "no /data mount on $CONTAINER — set OF_CONFIG" >&2; exit 3; }
+[ -n "$BASE_URL" ] || { echo "no published 4200/tcp on $CONTAINER — set OPENFANG_URL" >&2; exit 3; }
+case "$BASE_URL" in
+  *:4200*) echo "REFUSING: $BASE_URL looks like production. FANG-40 rewrites the" \
+                "channel config and must only run against the staging copy." >&2; exit 2;;
+esac
 [ -f "$CONFIG" ] || { echo "no config at $CONFIG" >&2; exit 3; }
+
+# After the guards, so a refused run leaves no /tmp/fang40.* behind.
+WORK="$(mktemp -d /tmp/fang40.XXXXXX)"
 
 API_KEY="$(sed -n 's/^api_key *= *"\(.*\)"/\1/p' "$CONFIG" | head -1)"
 NETPID="$(docker inspect -f '{{.State.Pid}}' "$CONTAINER")" || exit 3
@@ -148,6 +162,13 @@ docker logs --timestamps --since 2m "$CONTAINER" 2>&1 | sed 's/\x1b\[[0-9;]*m//g
   | grep -E "Unregistered channel adapter|polling loop stopped|Shutting down channel adapter|hot-reload complete"
 echo
 echo "OF40_POLLS_AFTER_DELETE=$OF40_POLLS_AFTER_DELETE      # stub requests 20s after the delete (want 0)"
-[ "$OF40_POLLS_AFTER_DELETE" -gt 0 ] \
-  && echo "RESULT: RED — the deleted channel's poller is still running" \
-  || echo "RESULT: GREEN — the adapter was stopped and unregistered"
+# Exit 1 on RED, 0 on GREEN, like FANG-31.sh and FANG-40-sigterm.sh. This used
+# to return 0 either way, so in a pipeline the RED verdict passed silently —
+# the reader saw the word, a gate saw success.
+if [ "$OF40_POLLS_AFTER_DELETE" -gt 0 ]; then
+  echo "RESULT: RED — the deleted channel's poller is still running"
+  exit 1
+else
+  echo "RESULT: GREEN — the adapter was stopped and unregistered"
+  exit 0
+fi
