@@ -35,10 +35,10 @@ fn hex_val(b: u8) -> Option<u8> {
 pub mod channel_bridge;
 pub mod middleware;
 pub mod openai_compat;
+pub mod passkey_auth;
 pub mod rate_limiter;
 pub mod routes;
 pub mod server;
-pub mod session_auth;
 pub mod stream_chunker;
 pub mod stream_dedup;
 pub mod types;
