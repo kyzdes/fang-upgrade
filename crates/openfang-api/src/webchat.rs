@@ -191,3 +191,16 @@ const WEBCHAT_HTML: &str = concat!(
     "\n</script>\n",
     "</body></html>"
 );
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dashboard_reserves_authorization_header_for_reverse_proxy_auth() {
+        let api_js = include_str!("../static/js/api.js");
+
+        assert!(api_js.contains("h['X-API-Key'] = _authToken"));
+        assert!(api_js.contains("hdrs['X-API-Key'] = _authToken"));
+        assert!(!api_js.contains("h['Authorization'] = 'Bearer ' + _authToken"));
+        assert!(!api_js.contains("hdrs['Authorization'] = 'Bearer ' + _authToken"));
+    }
+}
