@@ -143,7 +143,9 @@ var OpenFangAPI = (function() {
 
   function headers() {
     var h = { 'Content-Type': 'application/json' };
-    if (_authToken) h['Authorization'] = 'Bearer ' + _authToken;
+    // Use OpenFang's alternate API-key header so a reverse proxy can reserve
+    // Authorization for HTTP Basic auth without the two schemes fighting.
+    if (_authToken) h['X-API-Key'] = _authToken;
     return h;
   }
 
@@ -309,7 +311,7 @@ var OpenFangAPI = (function() {
 
   function upload(agentId, file) {
     var hdrs = {};
-    if (_authToken) hdrs['Authorization'] = 'Bearer ' + _authToken;
+    if (_authToken) hdrs['X-API-Key'] = _authToken;
 	var form = new FormData();
     form.append('file', file);
     form.append('filename', file.name);
