@@ -230,8 +230,15 @@ done
 #
 # WHERE THE PATTERNS COME FROM. Every one is a literal line its script prints,
 # and two of them are lines it prints only when the stand ALSO answered well:
-# A-6's `DETERMINABLE: YES` is the judge's reading of a served turn, and A-7's
-# `test-a7-control 200 answered` needs the control agent to have replied. A
+# A-6's `turns that returned a response : <nonzero>` is its own count of turns
+# the stand actually answered, and A-7's
+# `test-a7-control 200 answered` needs the control agent to have replied.
+#
+# A-6's witness used to be `DETERMINABLE: YES`, which was a tautology: the
+# script's `judge_selftest` prints that exact string for a hand-made body before
+# it has touched the stand at all (A-6.sh:272), so the pattern was satisfied by
+# a probe that never made a request. The summary count cannot be reached that
+# way — it is printed once, at the end, from turns that came back. A
 # stand that takes the request and then answers badly therefore reads here as
 # "no evidence the probe did its work", when the truer sentence is "the probe
 # worked and the stand did not". That is a false alarm, never a false pass, and
@@ -247,7 +254,7 @@ REPROS=(
   "A-1|A-1.sh|manual|-|cheap|^agent_id: [0-9a-f]{8}|PUT /api/agents/{id}/update was a 200-returning no-op (fixes b86e65b, 6cb20be)"
   "A-2|A-2.sh|a2|GREEN|cheap|\"status\": \"added\"&&\"status\": \"removed\"|remove_custom_model did not recompute provider.model_count (fix 5891b2b)"
   "A-4|A-4.sh|manual|-|costly|^agent_id: +[0-9a-f]{8}|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
-  "A-6|A-6.sh|manual|-|costly|DETERMINABLE: YES|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
+  "A-6|A-6.sh|manual|-|costly|turns that returned a response *: *[1-9]|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
   "A-7|A-7.sh|manual|-|costly|^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}&&^test-a7-control +200 +answered|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
   "FANG-31|FANG-31.sh|result|RED|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
