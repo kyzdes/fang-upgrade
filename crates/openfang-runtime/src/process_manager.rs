@@ -84,11 +84,20 @@ impl ProcessManager {
             ));
         }
 
-        let mut child = tokio::process::Command::new(command)
+        let mut child_command = tokio::process::Command::new(command);
+        child_command
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Managed commands must not share OpenFang's process group. Besides
+        // making tree termination reliable, this prevents a negative-PID kill
+        // from ever reaching the server (or a CI runner hosting its tests).
+        #[cfg(unix)]
+        child_command.process_group(0);
+
+        let mut child = child_command
             .spawn()
             .map_err(|e| format!("Failed to start process '{}': {}", command, e))?;
 

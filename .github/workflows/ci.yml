@@ -70,9 +70,8 @@ jobs:
 
       - name: cargo test
         # The openfang-runtime binary contains hundreds of Wasmtime-heavy tests.
-        # The default runner-wide thread count intermittently exhausts the
-        # GitHub-hosted VM and cargo is killed with SIGTERM 143 mid-suite.
-        # Keep the complete workspace suite, but cap in-process test concurrency.
+        # Keep the complete workspace suite while bounding peak memory use on
+        # GitHub-hosted runners.
         run: cargo test --workspace -- --test-threads=2
 
 # ─────────────────────────────────────────────────────────────────────────────
