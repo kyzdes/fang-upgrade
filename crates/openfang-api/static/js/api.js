@@ -118,7 +118,7 @@ var OpenFangToast = (function() {
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
   if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
-  if (status === 401) return 'Not authorized — check your API key';
+  if (status === 401) return 'Your session has expired';
   if (status === 403) return 'Permission denied';
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
@@ -132,21 +132,14 @@ function friendlyError(status, serverMsg) {
 var OpenFangAPI = (function() {
   var BASE = window.location.origin;
   var WS_BASE = BASE.replace(/^http/, 'ws');
-  var _authToken = '';
 
   // Connection state tracking
   var _connectionState = 'connected';
   var _reconnectAttempt = 0;
   var _connectionListeners = [];
 
-  function setAuthToken(token) { _authToken = token; }
-
   function headers() {
-    var h = { 'Content-Type': 'application/json' };
-    // Use OpenFang's alternate API-key header so a reverse proxy can reserve
-    // Authorization for HTTP Basic auth without the two schemes fighting.
-    if (_authToken) h['X-API-Key'] = _authToken;
-    return h;
+    return { 'Content-Type': 'application/json' };
   }
 
   function setConnectionState(state) {
@@ -163,16 +156,10 @@ var OpenFangAPI = (function() {
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
-        // On 401, auto-show auth prompt so the user can re-enter their key
-        if (r.status === 401 && typeof Alpine !== 'undefined') {
-          try {
-            var store = Alpine.store('app');
-            if (store && !store.showAuthPrompt) {
-              _authToken = '';
-              localStorage.removeItem('openfang-api-key');
-              store.showAuthPrompt = true;
-            }
-          } catch(e2) { /* ignore Alpine errors */ }
+        // Browser access is passkey-session only. Never ask for or persist the
+        // machine API key in the dashboard.
+        if (r.status === 401 && window.location.pathname !== '/login') {
+          window.location.replace('/login');
         }
         return r.text().then(function(text) {
           var msg = '';
@@ -225,7 +212,6 @@ var OpenFangAPI = (function() {
   function _doConnect(agentId) {
     try {
       var url = WS_BASE + '/api/agents/' + agentId + '/ws';
-      if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
       var socket = new WebSocket(url);
       _ws = socket;
 
@@ -307,11 +293,8 @@ var OpenFangAPI = (function() {
 
   function getConnectionState() { return _connectionState; }
 
-  function getToken() { return _authToken; }
-
   function upload(agentId, file) {
     var hdrs = {};
-    if (_authToken) hdrs['X-API-Key'] = _authToken;
 	var form = new FormData();
     form.append('file', file);
     form.append('filename', file.name);
@@ -326,8 +309,6 @@ var OpenFangAPI = (function() {
   }
 
   return {
-    setAuthToken: setAuthToken,
-    getToken: getToken,
     get: get,
     post: post,
     put: put,

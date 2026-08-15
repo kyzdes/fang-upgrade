@@ -197,8 +197,8 @@ pub(crate) struct WsAuthCtx<'a> {
     pub api_key: &'a str,
     /// Whether dashboard session login is enabled in config.
     pub auth_enabled: bool,
-    /// Secret used to verify session cookies (api_key when set, else password hash).
-    pub session_secret: &'a str,
+    /// A persistent passkey session was validated and its Origin is exact.
+    pub passkey_session_valid: bool,
     /// Whether the request originated from a loopback address.
     pub is_loopback: bool,
     /// True iff `OPENFANG_ALLOW_NO_AUTH=1` is set (loose mode for LAN binds).
@@ -213,7 +213,7 @@ pub(crate) struct WsAuthCtx<'a> {
 /// `Err(StatusCode::UNAUTHORIZED)` otherwise. Accepts:
 ///   1. `Authorization: Bearer <api_key>` header
 ///   2. `?token=<api_key>` query parameter
-///   3. `openfang_session=<token>` cookie when dashboard auth is enabled
+///   3. A validated `__Host-openfang_session` cookie with the exact RP Origin
 ///   4. Loopback origin when no api_key is configured
 ///   5. Any origin when `OPENFANG_ALLOW_NO_AUTH=1`
 ///
@@ -235,14 +235,8 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         // When dashboard auth is configured, require a valid session cookie
         // regardless of bind address. Loopback no longer bypasses login.
         if ctx.auth_enabled {
-            if !ctx.session_secret.is_empty() {
-                if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
-                    if crate::session_auth::verify_session_token(&token, ctx.session_secret)
-                        .is_some()
-                    {
-                        return Ok(());
-                    }
-                }
+            if ctx.passkey_session_valid {
+                return Ok(());
             }
             return Err(StatusCode::UNAUTHORIZED);
         }
@@ -285,15 +279,9 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
         return Ok(());
     }
 
-    // Dashboard session cookie (issue #1085). When auth_enabled is on the
-    // session_secret is set by server.rs to either the api_key or the
-    // configured password hash, mirroring the HTTP auth middleware.
-    if ctx.auth_enabled && !ctx.session_secret.is_empty() {
-        if let Some(token) = crate::session_auth::extract_session_cookie(ctx.headers) {
-            if crate::session_auth::verify_session_token(&token, ctx.session_secret).is_some() {
-                return Ok(());
-            }
-        }
+    // Passkey sessions are server-side and valid for WS only with the exact RP Origin.
+    if ctx.auth_enabled && ctx.passkey_session_valid {
+        return Ok(());
     }
 
     Err(StatusCode::UNAUTHORIZED)
@@ -302,9 +290,8 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
 /// GET /api/agents/:id/ws — Upgrade to WebSocket for real-time chat.
 ///
 /// SECURITY: Authenticates via Bearer token in Authorization header,
-/// `?token=` query parameter (for browser WebSocket clients that cannot
-/// set custom headers), or the `openfang_session` cookie set by the
-/// dashboard's session login flow (issue #1085).
+/// `?token=` query parameter (for machine clients that cannot set custom
+/// headers), or the server-side passkey session cookie used by the dashboard.
 pub async fn agent_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
@@ -323,21 +310,20 @@ pub async fn agent_ws(
         .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(false);
 
-    // Mirror the session_secret derivation in server.rs::AuthState so cookies
-    // issued by /api/auth/login verify the same way over HTTP and WS.
     let auth_enabled = state.kernel.config.auth.enabled;
-    let session_secret_owned: String = if !api_key.is_empty() {
-        api_key.to_string()
-    } else if auth_enabled {
-        state.kernel.config.auth.password_hash.clone()
-    } else {
-        String::new()
-    };
+    let passkey_session_valid = state
+        .passkey_auth
+        .as_ref()
+        .map(|service| {
+            service.validate_request_session(&headers).is_some()
+                && service.validate_origin(&headers)
+        })
+        .unwrap_or(false);
 
     let auth_ctx = WsAuthCtx {
         api_key,
         auth_enabled,
-        session_secret: &session_secret_owned,
+        passkey_session_valid,
         is_loopback,
         allow_no_auth,
         headers: &headers,
@@ -347,7 +333,7 @@ pub async fn agent_ws(
     if let Err(status) = check_ws_auth(&auth_ctx) {
         warn!(
             ip = %addr.ip(),
-            "WebSocket upgrade rejected: no valid Bearer token, ?token=, or openfang_session cookie"
+            "WebSocket upgrade rejected: no valid API key or passkey session"
         );
         return status.into_response();
     }
@@ -1800,7 +1786,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "secret",
             auth_enabled: false,
-            session_secret: "secret",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1816,7 +1802,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "secret",
             auth_enabled: false,
-            session_secret: "secret",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1827,17 +1813,12 @@ mod tests {
 
     #[test]
     fn ws_auth_accepts_session_cookie() {
-        // Issue #1085: the dashboard logs in via cookie, so WS must accept it.
-        let secret = "shared-secret";
-        let token = crate::session_auth::create_session_token("alice", secret, 1);
-        let cookie = format!("foo=bar; openfang_session={token}");
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("cookie", cookie.parse().unwrap());
+        let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
-            api_key: secret,
+            api_key: "secret",
             auth_enabled: true,
-            session_secret: secret,
+            passkey_session_valid: true,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1851,19 +1832,12 @@ mod tests {
 
     #[test]
     fn ws_auth_session_cookie_rejected_when_auth_disabled() {
-        // If dashboard auth is off, cookies must not grant access.
-        let secret = "shared-secret";
-        let token = crate::session_auth::create_session_token("alice", secret, 1);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
-        );
+        let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
-            api_key: secret,
+            api_key: "secret",
             auth_enabled: false,
-            session_secret: secret,
+            passkey_session_valid: true,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1877,15 +1851,12 @@ mod tests {
 
     #[test]
     fn ws_auth_rejects_wrong_session_cookie() {
-        // Cookie signed with the wrong secret must fail.
-        let bad = crate::session_auth::create_session_token("alice", "other-secret", 1);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("cookie", format!("openfang_session={bad}").parse().unwrap());
+        let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
             auth_enabled: true,
-            session_secret: "secret",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1904,7 +1875,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "secret",
             auth_enabled: true,
-            session_secret: "secret",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1924,7 +1895,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "secret",
             auth_enabled: false,
-            session_secret: "secret",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1943,7 +1914,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: false,
-            session_secret: "",
+            passkey_session_valid: false,
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -1960,7 +1931,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: false,
-            session_secret: "",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -1979,7 +1950,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: false,
-            session_secret: "",
+            passkey_session_valid: false,
             is_loopback: false,
             allow_no_auth: true,
             headers: &headers,
@@ -1990,20 +1961,12 @@ mod tests {
 
     #[test]
     fn ws_auth_empty_key_session_cookie_grants_non_loopback() {
-        // When only dashboard login is configured (no api_key, auth_enabled=true),
-        // a valid session cookie must allow non-loopback WS upgrades.
-        let secret = "password-hash-style-secret";
-        let token = crate::session_auth::create_session_token("admin", secret, 1);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
-        );
+        let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: true,
-            session_secret: secret,
+            passkey_session_valid: true,
             is_loopback: false,
             allow_no_auth: false,
             headers: &headers,
@@ -2023,13 +1986,12 @@ mod tests {
         // the empty-api_key branch allowed any loopback request through, even
         // when dashboard credentials were configured. HTTP middleware rejects
         // this path; WS must too.
-        let secret = "password-hash-style-secret";
         let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: true,
-            session_secret: secret,
+            passkey_session_valid: false,
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -2044,20 +2006,12 @@ mod tests {
 
     #[test]
     fn ws_auth_dashboard_on_loopback_valid_cookie_accepted() {
-        // With dashboard auth on, a valid session cookie is the supported
-        // credential and must upgrade successfully from loopback too.
-        let secret = "password-hash-style-secret";
-        let token = crate::session_auth::create_session_token("admin", secret, 1);
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
-        );
+        let headers = axum::http::HeaderMap::new();
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: true,
-            session_secret: secret,
+            passkey_session_valid: true,
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,
@@ -2078,7 +2032,7 @@ mod tests {
         let ctx = WsAuthCtx {
             api_key: "",
             auth_enabled: false,
-            session_secret: "",
+            passkey_session_valid: false,
             is_loopback: true,
             allow_no_auth: false,
             headers: &headers,

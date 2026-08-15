@@ -48,7 +48,7 @@ pub async fn request_logging(request: Request<Body>, next: Next) -> Response<Bod
 pub struct AuthState {
     pub api_key: String,
     pub auth_enabled: bool,
-    pub session_secret: String,
+    pub passkey_auth: Option<std::sync::Arc<crate::passkey_auth::PasskeyAuthService>>,
     /// Set from `OPENFANG_ALLOW_NO_AUTH=1` to permit running without an api_key
     /// on a non-loopback bind. Off by default so empty keys fail closed.
     pub allow_no_auth: bool,
@@ -89,55 +89,68 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // Public endpoints that don't require auth (dashboard needs these).
-    // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
-    // SECURITY: Public endpoints are GET-only unless explicitly noted.
-    // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
-    // unauthenticated writes (cron job creation, skill install, etc.).
+    // Passkey mode exposes only the ceremony surface, health, and login assets.
+    // The old broad read-only allowlist remains only for local/no-passkey mode.
     let is_get = method == axum::http::Method::GET;
-    let is_public = path == "/"
-        || path == "/logo.png"
-        || path == "/favicon.ico"
-        || (path == "/.well-known/agent.json" && is_get)
-        || (path.starts_with("/a2a/") && is_get)
-        || path == "/api/health"
-        || path == "/api/health/detail"
-        || path == "/api/status"
-        || path == "/api/version"
-        || (path == "/api/agents" && is_get)
-        || (path == "/api/profiles" && is_get)
-        || (path == "/api/config" && is_get)
-        || (path == "/api/config/schema" && is_get)
-        || (path.starts_with("/api/uploads/") && is_get)
-        // Dashboard read endpoints — allow unauthenticated so the SPA can
-        // render before the user enters their API key.
-        || (path == "/api/models" && is_get)
-        || (path == "/api/models/aliases" && is_get)
-        || (path == "/api/providers" && is_get)
-        || (path == "/api/budget" && is_get)
-        || (path == "/api/budget/agents" && is_get)
-        || (path.starts_with("/api/budget/agents/") && is_get)
-        || (path == "/api/network/status" && is_get)
-        || (path == "/api/a2a/agents" && is_get)
-        || (path == "/api/approvals" && is_get)
-        || (path.starts_with("/api/approvals/") && is_get)
-        || (path == "/api/channels" && is_get)
-        || (path == "/api/hands" && is_get)
-        || (path == "/api/hands/active" && is_get)
-        || (path.starts_with("/api/hands/") && is_get)
-        || (path == "/api/skills" && is_get)
-        || (path.starts_with("/api/skills/") && path.ends_with("/config") && is_get)
-        || (path == "/api/sessions" && is_get)
-        || (path == "/api/integrations" && is_get)
-        || (path == "/api/integrations/available" && is_get)
-        || (path == "/api/integrations/health" && is_get)
-        || (path == "/api/workflows" && is_get)
-        || path == "/api/logs/stream"  // SSE stream, read-only
-        || (path.starts_with("/api/cron/") && is_get)
-        || path.starts_with("/api/providers/github-copilot/oauth/")
-        || path == "/api/auth/login"
-        || path == "/api/auth/logout"
-        || (path == "/api/auth/check" && is_get);
+    let is_public = if auth_state.auth_enabled {
+        (is_get
+            && matches!(
+                path,
+                "/login"
+                    | "/register"
+                    | "/logo.png"
+                    | "/favicon.ico"
+                    | "/api/health"
+                    | "/api/auth/check"
+            ))
+            || (method == axum::http::Method::POST
+                && matches!(
+                    path,
+                    "/api/auth/passkey/login/start"
+                        | "/api/auth/passkey/login/finish"
+                        | "/api/auth/passkey/register/start"
+                        | "/api/auth/passkey/register/finish"
+                ))
+    } else {
+        path == "/"
+            || path == "/logo.png"
+            || path == "/favicon.ico"
+            || (path == "/.well-known/agent.json" && is_get)
+            || (path.starts_with("/a2a/") && is_get)
+            || path == "/api/health"
+            || path == "/api/health/detail"
+            || path == "/api/status"
+            || path == "/api/version"
+            || (path == "/api/agents" && is_get)
+            || (path == "/api/profiles" && is_get)
+            || (path == "/api/config" && is_get)
+            || (path == "/api/config/schema" && is_get)
+            || (path.starts_with("/api/uploads/") && is_get)
+            || (path == "/api/models" && is_get)
+            || (path == "/api/models/aliases" && is_get)
+            || (path == "/api/providers" && is_get)
+            || (path == "/api/budget" && is_get)
+            || (path == "/api/budget/agents" && is_get)
+            || (path.starts_with("/api/budget/agents/") && is_get)
+            || (path == "/api/network/status" && is_get)
+            || (path == "/api/a2a/agents" && is_get)
+            || (path == "/api/approvals" && is_get)
+            || (path.starts_with("/api/approvals/") && is_get)
+            || (path == "/api/channels" && is_get)
+            || (path == "/api/hands" && is_get)
+            || (path == "/api/hands/active" && is_get)
+            || (path.starts_with("/api/hands/") && is_get)
+            || (path == "/api/skills" && is_get)
+            || (path.starts_with("/api/skills/") && path.ends_with("/config") && is_get)
+            || (path == "/api/sessions" && is_get)
+            || (path == "/api/integrations" && is_get)
+            || (path == "/api/integrations/available" && is_get)
+            || (path == "/api/integrations/health" && is_get)
+            || (path == "/api/workflows" && is_get)
+            || path == "/api/logs/stream"
+            || (path.starts_with("/api/cron/") && is_get)
+            || path.starts_with("/api/providers/github-copilot/oauth/")
+    };
 
     if is_public {
         return next.run(request).await;
@@ -186,7 +199,7 @@ pub async fn auth(
     // SECURITY: Use constant-time comparison to prevent timing attacks.
     let header_auth = api_token.map(|token| {
         use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
+        if api_key.is_empty() || token.len() != api_key.len() {
             return false;
         }
         token.as_bytes().ct_eq(api_key.as_bytes()).into()
@@ -203,7 +216,7 @@ pub async fn auth(
     // SECURITY: Use constant-time comparison to prevent timing attacks.
     let query_auth = query_token_decoded.as_deref().map(|token| {
         use subtle::ConstantTimeEq;
-        if token.len() != api_key.len() {
+        if api_key.is_empty() || token.len() != api_key.len() {
             return false;
         }
         token.as_bytes().ct_eq(api_key.as_bytes()).into()
@@ -214,14 +227,27 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // Check session cookie (dashboard login sessions)
-    if auth_state.auth_enabled {
-        if let Some(token) = crate::session_auth::extract_session_cookie(request.headers()) {
-            if crate::session_auth::verify_session_token(&token, &auth_state.session_secret)
-                .is_some()
-            {
+    // Check the opaque, server-side dashboard session. Cookie-authenticated
+    // mutations must carry the exact configured Origin; API-key clients are exempt.
+    if let Some(service) = auth_state.passkey_auth.as_ref() {
+        if service
+            .validate_request_session(request.headers())
+            .is_some()
+        {
+            let safe_method = matches!(
+                method,
+                axum::http::Method::GET | axum::http::Method::HEAD | axum::http::Method::OPTIONS
+            );
+            if safe_method || service.validate_origin(request.headers()) {
                 return next.run(request).await;
             }
+            return Response::builder()
+                .status(StatusCode::FORBIDDEN)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"error": "Invalid request origin"}).to_string(),
+                ))
+                .unwrap_or_default();
         }
     }
 
@@ -233,9 +259,25 @@ pub async fn auth(
         "Missing Authorization: Bearer <api_key> header"
     };
 
+    let wants_html = path == "/"
+        || request
+            .headers()
+            .get(axum::http::header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.contains("text/html"))
+            .unwrap_or(false);
+    if auth_state.auth_enabled && wants_html {
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header(axum::http::header::LOCATION, "/login")
+            .body(Body::empty())
+            .unwrap_or_default();
+    }
+
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("www-authenticate", "Bearer")
+        .header("content-type", "application/json")
         .body(Body::from(
             serde_json::json!({"error": error_msg}).to_string(),
         ))
@@ -294,7 +336,7 @@ mod tests {
         AuthState {
             api_key: String::new(),
             auth_enabled: false,
-            session_secret: String::new(),
+            passkey_auth: None,
             allow_no_auth: false,
         }
     }
@@ -303,7 +345,16 @@ mod tests {
         AuthState {
             api_key: key.to_string(),
             auth_enabled: false,
-            session_secret: key.to_string(),
+            passkey_auth: None,
+            allow_no_auth: false,
+        }
+    }
+
+    fn auth_state_passkey_without_session() -> AuthState {
+        AuthState {
+            api_key: String::new(),
+            auth_enabled: true,
+            passkey_auth: None,
             allow_no_auth: false,
         }
     }
@@ -314,6 +365,8 @@ mod tests {
 
     fn router(state: AuthState) -> Router {
         Router::new()
+            .route("/", get(ok_handler))
+            .route("/api/health", get(ok_handler))
             .route("/api/agents/1", get(ok_handler))
             .route_layer(axum::middleware::from_fn_with_state(state, auth))
     }
@@ -395,5 +448,44 @@ mod tests {
         req.extensions_mut().insert(ConnectInfo(addr));
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn passkey_mode_protects_reads_but_keeps_health_public() {
+        let app = router(auth_state_passkey_without_session());
+        let protected = app.clone().oneshot(req_from("203.0.113.5")).await.unwrap();
+        assert_eq!(protected.status(), StatusCode::UNAUTHORIZED);
+
+        let health = Request::builder()
+            .method(Method::GET)
+            .uri("/api/health")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(health).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn empty_bearer_never_matches_an_empty_machine_key() {
+        let app = router(auth_state_passkey_without_session());
+        let mut req = req_from("203.0.113.5");
+        req.headers_mut()
+            .insert("authorization", "Bearer ".parse().unwrap());
+        let response = app.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_dashboard_navigation_redirects_to_login() {
+        let app = router(auth_state_passkey_without_session());
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/")
+            .header("accept", "text/html")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers().get("location").unwrap(), "/login");
     }
 }

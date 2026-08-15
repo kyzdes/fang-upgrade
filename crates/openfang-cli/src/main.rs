@@ -708,8 +708,49 @@ enum CronCommands {
 
 #[derive(Subcommand)]
 enum AuthCommands {
-    /// Generate an Argon2id password hash for dashboard authentication.
-    HashPassword,
+    /// List passkey slots without revealing credentials or invitations.
+    List {
+        /// Output as JSON for scripting.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Create the three initial passkey invitations (Slava, Denis, Reserve).
+    Bootstrap {
+        /// Public HTTPS origin. Defaults to auth.rp_origin from config.toml.
+        #[arg(long)]
+        origin: Option<String>,
+        /// Invitation lifetime in hours.
+        #[arg(long, default_value = "72")]
+        expires_hours: u64,
+        /// New mode-0600 file that will receive the secret invitation links.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Revoke a slot's credential, sessions, and pending invitations.
+    Revoke {
+        /// Slot slug, for example `denis`.
+        slot: String,
+        /// Permanently delete the slot after revocation (for ephemeral tests only).
+        #[arg(long)]
+        delete: bool,
+    },
+    /// Revoke a slot and issue one replacement invitation.
+    ResetSlot {
+        /// Slot slug, for example `denis`.
+        slot: String,
+        /// Display name. Required only when creating a previously unknown slot.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Public HTTPS origin. Defaults to auth.rp_origin from config.toml.
+        #[arg(long)]
+        origin: Option<String>,
+        /// Invitation lifetime in hours.
+        #[arg(long, default_value = "72")]
+        expires_hours: u64,
+        /// New mode-0600 file that will receive the replacement secret link.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1098,7 +1139,34 @@ fn main() {
         Some(Commands::Logs { lines, follow }) => cmd_logs(lines, follow),
         Some(Commands::Health { json }) => cmd_health(json),
         Some(Commands::Auth(sub)) => match sub {
-            AuthCommands::HashPassword => cmd_auth_hash_password(),
+            AuthCommands::List { json } => cmd_auth_list(cli.config.as_deref(), json),
+            AuthCommands::Bootstrap {
+                origin,
+                expires_hours,
+                output,
+            } => cmd_auth_bootstrap(
+                cli.config.as_deref(),
+                origin.as_deref(),
+                expires_hours,
+                &output,
+            ),
+            AuthCommands::Revoke { slot, delete } => {
+                cmd_auth_revoke(cli.config.as_deref(), &slot, delete)
+            }
+            AuthCommands::ResetSlot {
+                slot,
+                display_name,
+                origin,
+                expires_hours,
+                output,
+            } => cmd_auth_reset_slot(
+                cli.config.as_deref(),
+                &slot,
+                display_name.as_deref(),
+                origin.as_deref(),
+                expires_hours,
+                &output,
+            ),
         },
         Some(Commands::Security(sub)) => match sub {
             SecurityCommands::Status { json } => cmd_security_status(json),
@@ -6291,26 +6359,277 @@ fn cmd_health(json: bool) {
     }
 }
 
-fn cmd_auth_hash_password() {
-    let password = prompt_input("Enter password: ");
-    if password.is_empty() {
-        ui::error("Empty password.");
-        std::process::exit(1);
+fn cmd_auth_list(config_path: Option<&std::path::Path>, json: bool) {
+    let memory = open_auth_memory(config_path);
+    let slots = memory
+        .dashboard_auth()
+        .list_slots(unix_timestamp())
+        .unwrap_or_else(|error| auth_cli_error(&format!("Could not list passkey slots: {error}")));
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&slots).unwrap_or_default()
+        );
+        return;
     }
-    let confirm = prompt_input("Confirm password: ");
-    if password != confirm {
-        ui::error("Passwords do not match.");
-        std::process::exit(1);
+    if slots.is_empty() {
+        ui::hint("No passkey slots exist.");
+        return;
     }
-    let hash = openfang_api::session_auth::hash_password(&password);
-    println!();
-    ui::success("Argon2id hash generated. Add this to your config.toml:");
-    println!();
-    println!("  [auth]");
-    println!("  enabled = true");
-    println!("  password_hash = \"{}\"", hash);
-    println!();
-    ui::hint("Restart the daemon after updating config.toml");
+    for slot in slots {
+        let invite = slot
+            .pending_invite_expires_at
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "none".into());
+        println!(
+            "{}\t{}\tcredentials={}\tpending_invite_expires_unix={}",
+            slot.slug, slot.display_name, slot.active_credentials, invite
+        );
+    }
+}
+
+fn cmd_auth_bootstrap(
+    config_path: Option<&std::path::Path>,
+    origin_override: Option<&str>,
+    expires_hours: u64,
+    output: &std::path::Path,
+) {
+    validate_invite_hours(expires_hours);
+    let (memory, config) = open_auth_memory_with_config(config_path);
+    let origin = resolve_auth_origin(&config, origin_override);
+    let slots = [
+        ("slava", "Слава"),
+        ("denis", "Денис"),
+        ("reserve", "Резерв"),
+    ];
+    let existing = memory
+        .dashboard_auth()
+        .list_slots(unix_timestamp())
+        .unwrap_or_else(|error| {
+            auth_cli_error(&format!("Could not inspect passkey slots: {error}"))
+        });
+    if existing.iter().any(|item| {
+        slots.iter().any(|(slug, _)| *slug == item.slug)
+            && (item.active_credentials > 0 || item.pending_invite_expires_at.is_some())
+    }) {
+        auth_cli_error("Bootstrap requires all three target slots to have no active passkey or pending invitation. Use reset-slot for recovery.");
+    }
+
+    let mut secret_file = create_private_output(output);
+    let now = unix_timestamp();
+    let expires_at = invite_expiry(now, expires_hours);
+    let mut links = Vec::new();
+    for (slug, display_name) in slots {
+        let token = openfang_api::passkey_auth::generate_secret_token();
+        let hash = openfang_api::passkey_auth::hash_secret(token.as_bytes());
+        if let Err(error) =
+            memory
+                .dashboard_auth()
+                .create_invite(slug, display_name, &hash, now, expires_at)
+        {
+            let _ = std::fs::remove_file(output);
+            auth_cli_error(&format!("Could not create invitation for {slug}: {error}"));
+        }
+        links.push((
+            display_name,
+            openfang_api::passkey_auth::registration_url(&origin, &token),
+        ));
+    }
+    let mut contents =
+        format!("OpenFang passkey invitations\norigin: {origin}\nexpires_unix: {expires_at}\n\n");
+    for (display_name, link) in links {
+        contents.push_str(&format!("{display_name}: {link}\n"));
+    }
+    if let Err(error) = secret_file.write_all(contents.as_bytes()) {
+        let _ = std::fs::remove_file(output);
+        auth_cli_error(&format!("Could not write invitation file: {error}"));
+    }
+    ui::success("Created three passkey invitations.");
+    ui::kv("Secret file", &output.display().to_string());
+    ui::kv("Expires (Unix)", &expires_at.to_string());
+}
+
+fn cmd_auth_revoke(config_path: Option<&std::path::Path>, slot: &str, delete: bool) {
+    let memory = open_auth_memory(config_path);
+    match memory.dashboard_auth().revoke_slot(slot, unix_timestamp()) {
+        Ok(true) if delete => match memory.dashboard_auth().delete_slot(slot) {
+            Ok(true) => ui::success(&format!(
+                "Revoked and permanently deleted passkey slot '{slot}'."
+            )),
+            Ok(false) => auth_cli_error(&format!(
+                "Passkey slot '{slot}' disappeared before it could be deleted."
+            )),
+            Err(error) => auth_cli_error(&format!("Could not delete passkey slot: {error}")),
+        },
+        Ok(true) => ui::success(&format!(
+            "Revoked passkey slot '{slot}' and all of its sessions."
+        )),
+        Ok(false) => auth_cli_error(&format!("Passkey slot '{slot}' does not exist.")),
+        Err(error) => auth_cli_error(&format!("Could not revoke passkey slot: {error}")),
+    }
+}
+
+fn cmd_auth_reset_slot(
+    config_path: Option<&std::path::Path>,
+    slot: &str,
+    display_name_override: Option<&str>,
+    origin_override: Option<&str>,
+    expires_hours: u64,
+    output: &std::path::Path,
+) {
+    validate_invite_hours(expires_hours);
+    let (memory, config) = open_auth_memory_with_config(config_path);
+    let origin = resolve_auth_origin(&config, origin_override);
+    let statuses = memory
+        .dashboard_auth()
+        .list_slots(unix_timestamp())
+        .unwrap_or_else(|error| {
+            auth_cli_error(&format!("Could not inspect passkey slots: {error}"))
+        });
+    let display_name = display_name_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            statuses
+                .iter()
+                .find(|item| item.slug == slot)
+                .map(|item| item.display_name.clone())
+        })
+        .unwrap_or_else(|| auth_cli_error("--display-name is required when creating a new slot"));
+
+    let mut secret_file = create_private_output(output);
+    let now = unix_timestamp();
+    if let Err(error) = memory.dashboard_auth().revoke_slot(slot, now) {
+        let _ = std::fs::remove_file(output);
+        auth_cli_error(&format!("Could not revoke passkey slot: {error}"));
+    }
+    let token = openfang_api::passkey_auth::generate_secret_token();
+    let hash = openfang_api::passkey_auth::hash_secret(token.as_bytes());
+    let expires_at = invite_expiry(now, expires_hours);
+    if let Err(error) =
+        memory
+            .dashboard_auth()
+            .create_invite(slot, &display_name, &hash, now, expires_at)
+    {
+        let _ = std::fs::remove_file(output);
+        auth_cli_error(&format!("Could not create replacement invitation: {error}"));
+    }
+    let contents = format!(
+        "OpenFang passkey replacement invitation\norigin: {origin}\nexpires_unix: {expires_at}\n\n{display_name}: {}\n",
+        openfang_api::passkey_auth::registration_url(&origin, &token)
+    );
+    if let Err(error) = secret_file.write_all(contents.as_bytes()) {
+        let _ = std::fs::remove_file(output);
+        auth_cli_error(&format!("Could not write invitation file: {error}"));
+    }
+    ui::success(&format!(
+        "Reset passkey slot '{slot}' and revoked all prior sessions."
+    ));
+    ui::kv("Secret file", &output.display().to_string());
+    ui::kv("Expires (Unix)", &expires_at.to_string());
+}
+
+fn open_auth_memory(config_path: Option<&std::path::Path>) -> openfang_memory::MemorySubstrate {
+    open_auth_memory_with_config(config_path).0
+}
+
+fn open_auth_memory_with_config(
+    config_path: Option<&std::path::Path>,
+) -> (
+    openfang_memory::MemorySubstrate,
+    openfang_types::config::KernelConfig,
+) {
+    let config = openfang_kernel::config::load_config(config_path);
+    let db_path = config
+        .memory
+        .sqlite_path
+        .clone()
+        .unwrap_or_else(|| config.data_dir.join("openfang.db"));
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            auth_cli_error(&format!("Could not create data directory: {error}"))
+        });
+    }
+    let memory =
+        openfang_memory::MemorySubstrate::open(&db_path, config.memory.decay_rate, &config.memory)
+            .unwrap_or_else(|error| {
+                auth_cli_error(&format!("Could not open OpenFang database: {error}"))
+            });
+    (memory, config)
+}
+
+fn resolve_auth_origin(
+    config: &openfang_types::config::KernelConfig,
+    origin_override: Option<&str>,
+) -> String {
+    let origin = origin_override.unwrap_or(&config.auth.rp_origin).trim();
+    let parsed = url::Url::parse(origin)
+        .unwrap_or_else(|error| auth_cli_error(&format!("Invalid passkey origin: {error}")));
+    if parsed.scheme() != "https"
+        || parsed.host_str() != Some(config.auth.rp_id.trim())
+        || parsed.port().is_some()
+        || parsed.path() != "/"
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        auth_cli_error(
+            "Passkey origin must be the exact HTTPS origin whose host equals auth.rp_id.",
+        );
+    }
+    origin.to_string()
+}
+
+fn create_private_output(path: &std::path::Path) -> std::fs::File {
+    if path.as_os_str().is_empty() || path.parent().is_none() {
+        auth_cli_error("Invitation output must be an explicit file path.");
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap_or_else(|error| {
+            auth_cli_error(&format!("Could not create output directory: {error}"))
+        });
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path).unwrap_or_else(|error| {
+        auth_cli_error(&format!("Could not create private output file: {error}"))
+    });
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap_or_else(
+            |error| auth_cli_error(&format!("Could not restrict output permissions: {error}")),
+        );
+    }
+    file
+}
+
+fn validate_invite_hours(hours: u64) {
+    if !(1..=168).contains(&hours) {
+        auth_cli_error("Invitation lifetime must be between 1 and 168 hours.");
+    }
+}
+
+fn invite_expiry(now: i64, hours: u64) -> i64 {
+    now.checked_add((hours as i64) * 3600)
+        .unwrap_or_else(|| auth_cli_error("Invitation expiry overflow."))
+}
+
+fn unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn auth_cli_error(message: &str) -> ! {
+    ui::error(message);
+    std::process::exit(1);
 }
 
 fn cmd_security_status(json: bool) {
