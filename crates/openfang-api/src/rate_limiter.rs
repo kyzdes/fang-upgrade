@@ -21,6 +21,9 @@ pub fn operation_cost(method: &str, path: &str) -> NonZeroU32 {
         ("GET", "/api/skills") => NonZeroU32::new(2).unwrap(),
         ("GET", "/api/peers") => NonZeroU32::new(2).unwrap(),
         ("GET", "/api/config") => NonZeroU32::new(2).unwrap(),
+        // Five login attempts consume the full per-minute burst for one IP.
+        // This is deliberately much stricter than ordinary read endpoints.
+        ("POST", "/api/auth/login") => NonZeroU32::new(100).unwrap(),
         ("GET", "/api/usage") => NonZeroU32::new(3).unwrap(),
         ("GET", p) if p.starts_with("/api/audit") => NonZeroU32::new(5).unwrap(),
         ("GET", p) if p.starts_with("/api/marketplace") => NonZeroU32::new(10).unwrap(),
@@ -105,5 +108,6 @@ mod tests {
         assert_eq!(operation_cost("GET", "/api/audit/recent").get(), 5);
         assert_eq!(operation_cost("POST", "/api/skills/install").get(), 50);
         assert_eq!(operation_cost("POST", "/api/migrate").get(), 100);
+        assert_eq!(operation_cost("POST", "/api/auth/login").get(), 100);
     }
 }

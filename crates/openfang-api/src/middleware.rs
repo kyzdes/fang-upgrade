@@ -89,13 +89,31 @@ pub async fn auth(
         return next.run(request).await;
     }
 
-    // Public endpoints that don't require auth (dashboard needs these).
+    // When dashboard auth is enabled, expose only the login bootstrap and the
+    // minimal liveness endpoint. Every dashboard/data route, including the
+    // formerly public GET endpoints below, must pass session or API-key auth.
+    let is_get = method == axum::http::Method::GET;
+    let is_post = method == axum::http::Method::POST;
+    let is_auth_bootstrap_public = (is_get
+        && matches!(
+            path,
+            "/login" | "/api/health" | "/logo.png" | "/favicon.ico"
+        ))
+        || (path == "/api/auth/login" && is_post)
+        || (path == "/api/auth/logout" && is_post)
+        || (path == "/api/auth/check" && is_get);
+
+    if auth_state.auth_enabled && is_auth_bootstrap_public {
+        return next.run(request).await;
+    }
+
+    // Legacy public endpoints used when dashboard auth is disabled.
     // SECURITY: /api/agents is GET-only (listing). POST (spawn) requires auth.
     // SECURITY: Public endpoints are GET-only unless explicitly noted.
     // POST/PUT/DELETE to any endpoint ALWAYS requires auth to prevent
     // unauthenticated writes (cron job creation, skill install, etc.).
-    let is_get = method == axum::http::Method::GET;
     let is_public = path == "/"
+        || path == "/login"
         || path == "/logo.png"
         || path == "/favicon.ico"
         || (path == "/.well-known/agent.json" && is_get)
@@ -139,7 +157,7 @@ pub async fn auth(
         || path == "/api/auth/logout"
         || (path == "/api/auth/check" && is_get);
 
-    if is_public {
+    if !auth_state.auth_enabled && is_public {
         return next.run(request).await;
     }
 
@@ -233,6 +251,16 @@ pub async fn auth(
         "Missing Authorization: Bearer <api_key> header"
     };
 
+    // Browser navigation gets a real login page. API clients continue to get
+    // a JSON 401 and can authenticate with Bearer or X-API-Key.
+    if auth_state.auth_enabled && is_get && path == "/" && !credential_provided {
+        return Response::builder()
+            .status(StatusCode::SEE_OTHER)
+            .header("location", "/login")
+            .body(Body::empty())
+            .unwrap_or_default();
+    }
+
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
         .header("www-authenticate", "Bearer")
@@ -308,12 +336,25 @@ mod tests {
         }
     }
 
+    fn auth_state_with_session(key: &str) -> AuthState {
+        AuthState {
+            api_key: key.to_string(),
+            auth_enabled: true,
+            session_secret: key.to_string(),
+            allow_no_auth: false,
+        }
+    }
+
     async fn ok_handler() -> &'static str {
         "ok"
     }
 
     fn router(state: AuthState) -> Router {
         Router::new()
+            .route("/", get(ok_handler))
+            .route("/login", get(ok_handler))
+            .route("/api/health", get(ok_handler))
+            .route("/api/sessions", get(ok_handler))
             .route("/api/agents/1", get(ok_handler))
             .route_layer(axum::middleware::from_fn_with_state(state, auth))
     }
@@ -393,6 +434,78 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         req.extensions_mut().insert(ConnectInfo(addr));
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_auth_blocks_formerly_public_sessions_route() {
+        let app = router(auth_state_with_session("secret"));
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/sessions")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn dashboard_auth_accepts_valid_session_cookie() {
+        let app = router(auth_state_with_session("secret"));
+        let token = crate::session_auth::create_session_token("denis", "secret", 1);
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/sessions")
+            .header(
+                "cookie",
+                format!("{}={token}", crate::session_auth::SESSION_COOKIE_NAME),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn dashboard_auth_redirects_root_to_login() {
+        let app = router(auth_state_with_session("secret"));
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(resp.headers().get("location").unwrap(), "/login");
+        assert!(resp.headers().get("www-authenticate").is_none());
+    }
+
+    #[tokio::test]
+    async fn dashboard_auth_keeps_login_and_health_public() {
+        let state = auth_state_with_session("secret");
+
+        for path in ["/login", "/api/health"] {
+            let app = router(state.clone());
+            let req = Request::builder()
+                .method(Method::GET)
+                .uri(path)
+                .body(Body::empty())
+                .unwrap();
+            let resp = app.oneshot(req).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "path {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn dashboard_auth_still_accepts_api_key_for_automation() {
+        let app = router(auth_state_with_session("secret"));
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/sessions")
+            .header("x-api-key", "secret")
+            .body(Body::empty())
+            .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }

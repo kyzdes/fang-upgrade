@@ -213,7 +213,7 @@ pub(crate) struct WsAuthCtx<'a> {
 /// `Err(StatusCode::UNAUTHORIZED)` otherwise. Accepts:
 ///   1. `Authorization: Bearer <api_key>` header
 ///   2. `?token=<api_key>` query parameter
-///   3. `openfang_session=<token>` cookie when dashboard auth is enabled
+///   3. `__Host-openfang_session=<token>` cookie when dashboard auth is enabled
 ///   4. Loopback origin when no api_key is configured
 ///   5. Any origin when `OPENFANG_ALLOW_NO_AUTH=1`
 ///
@@ -303,7 +303,7 @@ pub(crate) fn check_ws_auth(ctx: &WsAuthCtx<'_>) -> Result<(), axum::http::Statu
 ///
 /// SECURITY: Authenticates via Bearer token in Authorization header,
 /// `?token=` query parameter (for browser WebSocket clients that cannot
-/// set custom headers), or the `openfang_session` cookie set by the
+/// set custom headers), or the `__Host-openfang_session` cookie set by the
 /// dashboard's session login flow (issue #1085).
 pub async fn agent_ws(
     ws: WebSocketUpgrade,
@@ -347,7 +347,7 @@ pub async fn agent_ws(
     if let Err(status) = check_ws_auth(&auth_ctx) {
         warn!(
             ip = %addr.ip(),
-            "WebSocket upgrade rejected: no valid Bearer token, ?token=, or openfang_session cookie"
+            "WebSocket upgrade rejected: no valid Bearer token, ?token=, or dashboard session cookie"
         );
         return status.into_response();
     }
@@ -1830,7 +1830,7 @@ mod tests {
         // Issue #1085: the dashboard logs in via cookie, so WS must accept it.
         let secret = "shared-secret";
         let token = crate::session_auth::create_session_token("alice", secret, 1);
-        let cookie = format!("foo=bar; openfang_session={token}");
+        let cookie = format!("foo=bar; __Host-openfang_session={token}");
         let mut headers = axum::http::HeaderMap::new();
         headers.insert("cookie", cookie.parse().unwrap());
         let uri = empty_uri();
@@ -1857,7 +1857,7 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("__Host-openfang_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
@@ -1880,7 +1880,10 @@ mod tests {
         // Cookie signed with the wrong secret must fail.
         let bad = crate::session_auth::create_session_token("alice", "other-secret", 1);
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert("cookie", format!("openfang_session={bad}").parse().unwrap());
+        headers.insert(
+            "cookie",
+            format!("__Host-openfang_session={bad}").parse().unwrap(),
+        );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
             api_key: "secret",
@@ -1997,7 +2000,7 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("__Host-openfang_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {
@@ -2051,7 +2054,7 @@ mod tests {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
             "cookie",
-            format!("openfang_session={token}").parse().unwrap(),
+            format!("__Host-openfang_session={token}").parse().unwrap(),
         );
         let uri = empty_uri();
         let ctx = WsAuthCtx {

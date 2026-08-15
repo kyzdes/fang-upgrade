@@ -118,7 +118,7 @@ var OpenFangToast = (function() {
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
   if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
-  if (status === 401) return 'Not authorized — check your API key';
+  if (status === 401) return 'Not authorized — sign in again or check your API key';
   if (status === 403) return 'Permission denied';
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
@@ -163,11 +163,14 @@ var OpenFangAPI = (function() {
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
-        // On 401, auto-show auth prompt so the user can re-enter their key
+        // Session-authenticated dashboards use the standalone login page.
+        // API-key-only local setups retain the inline key prompt.
         if (r.status === 401 && typeof Alpine !== 'undefined') {
           try {
             var store = Alpine.store('app');
-            if (store && !store.showAuthPrompt) {
+            if (store && store.authMode === 'session') {
+              window.location.replace('/login');
+            } else if (store && !store.showAuthPrompt) {
               _authToken = '';
               localStorage.removeItem('openfang-api-key');
               store.showAuthPrompt = true;

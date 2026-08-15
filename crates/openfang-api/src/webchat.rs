@@ -114,6 +114,36 @@ pub async fn webchat_page() -> impl IntoResponse {
     )
 }
 
+/// GET /login — Serve the standalone dashboard login page.
+pub async fn login_page() -> impl IntoResponse {
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let html = LOGIN_HTML.replace(NONCE_PLACEHOLDER, &nonce);
+    let csp = format!(
+        "default-src 'none'; \
+         script-src 'nonce-{nonce}'; \
+         style-src 'nonce-{nonce}'; \
+         img-src 'self'; \
+         connect-src 'self'; \
+         object-src 'none'; \
+         frame-ancestors 'none'; \
+         base-uri 'none'; \
+         form-action 'self'"
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (
+                header::HeaderName::from_static("content-security-policy"),
+                csp,
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        html,
+    )
+}
+
+const LOGIN_HTML: &str = include_str!("../static/login.html");
+
 /// The embedded HTML/CSS/JS for the OpenFang Dashboard.
 ///
 /// Assembled at compile time from organized static files.
@@ -202,5 +232,16 @@ mod tests {
         assert!(api_js.contains("hdrs['X-API-Key'] = _authToken"));
         assert!(!api_js.contains("h['Authorization'] = 'Bearer ' + _authToken"));
         assert!(!api_js.contains("hdrs['Authorization'] = 'Bearer ' + _authToken"));
+    }
+
+    #[test]
+    fn login_page_uses_cookie_session_without_browser_secret_storage() {
+        let login_html = include_str!("../static/login.html");
+
+        assert!(login_html.contains("fetch('/api/auth/login'"));
+        assert!(login_html.contains("credentials: 'same-origin'"));
+        assert!(login_html.contains("autocomplete=\"current-password\""));
+        assert!(!login_html.contains("localStorage.setItem"));
+        assert!(!login_html.contains("sessionStorage.setItem"));
     }
 }

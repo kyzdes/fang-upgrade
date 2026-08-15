@@ -8,11 +8,11 @@
 //! Run: cargo test -p openfang-api --test api_integration_test -- --nocapture
 
 use axum::Router;
-use openfang_api::middleware;
 use openfang_api::routes::{self, AppState};
 use openfang_api::ws;
+use openfang_api::{middleware, session_auth, webchat};
 use openfang_kernel::OpenFangKernel;
-use openfang_types::config::{DefaultModelConfig, KernelConfig};
+use openfang_types::config::{AuthConfig, DefaultModelConfig, KernelConfig};
 use std::sync::Arc;
 use std::time::Instant;
 use tower_http::cors::CorsLayer;
@@ -1011,6 +1011,86 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     }
 }
 
+/// Start a test server with the production dashboard session flow enabled.
+async fn start_test_server_with_dashboard_auth() -> TestServer {
+    let tmp = tempfile::tempdir().expect("Failed to create temp dir");
+    let api_key = "dashboard-api-key";
+
+    let config = KernelConfig {
+        home_dir: tmp.path().to_path_buf(),
+        data_dir: tmp.path().join("data"),
+        api_key: api_key.to_string(),
+        auth: AuthConfig {
+            enabled: true,
+            username: "denis".to_string(),
+            password_hash: session_auth::hash_password("correct-password"),
+            session_ttl_hours: 168,
+        },
+        default_model: DefaultModelConfig {
+            provider: "ollama".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: "OLLAMA_API_KEY".to_string(),
+            base_url: None,
+            subprocess_timeout_secs: None,
+        },
+        ..KernelConfig::default()
+    };
+
+    let kernel = OpenFangKernel::boot_with_config(config).expect("Kernel should boot");
+    let kernel = Arc::new(kernel);
+    kernel.set_self_handle();
+
+    let state = Arc::new(AppState {
+        kernel,
+        started_at: Instant::now(),
+        peer_registry: None,
+        bridge_manager: tokio::sync::Mutex::new(None),
+        channels_config: tokio::sync::RwLock::new(Default::default()),
+        shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+        clawhub_cache: dashmap::DashMap::new(),
+        provider_probe_cache: openfang_runtime::provider_health::ProbeCache::new(),
+        budget_config: Arc::new(tokio::sync::RwLock::new(Default::default())),
+    });
+
+    let auth_state = middleware::AuthState {
+        api_key: api_key.to_string(),
+        auth_enabled: true,
+        session_secret: api_key.to_string(),
+        allow_no_auth: false,
+    };
+
+    let app = Router::new()
+        .route("/", axum::routing::get(webchat::webchat_page))
+        .route("/login", axum::routing::get(webchat::login_page))
+        .route("/logo.png", axum::routing::get(webchat::logo_png))
+        .route("/api/health", axum::routing::get(routes::health))
+        .route("/api/sessions", axum::routing::get(routes::list_sessions))
+        .route("/api/auth/login", axum::routing::post(routes::auth_login))
+        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
+        .route("/api/auth/check", axum::routing::get(routes::auth_check))
+        .layer(axum::middleware::from_fn_with_state(
+            auth_state,
+            middleware::auth,
+        ))
+        .layer(axum::middleware::from_fn(middleware::security_headers))
+        .with_state(state.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("Failed to bind test server");
+    let addr = listener.local_addr().unwrap();
+
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    TestServer {
+        base_url: format!("http://{addr}"),
+        state,
+        _tmp: tmp,
+    }
+}
+
 #[tokio::test]
 async fn test_auth_health_is_public() {
     let server = start_test_server_with_auth("secret-key-123").await;
@@ -1090,6 +1170,129 @@ async fn test_auth_disabled_when_no_key() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_dashboard_session_login_end_to_end() {
+    let server = start_test_server_with_dashboard_auth().await;
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+
+    let root = client
+        .get(format!("{}/", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(root.status(), 303);
+    assert_eq!(root.headers().get("location").unwrap(), "/login");
+    assert!(root.headers().get("www-authenticate").is_none());
+
+    let login_page = client
+        .get(format!("{}/login", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login_page.status(), 200);
+    assert!(login_page
+        .headers()
+        .get("content-security-policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("frame-ancestors 'none'"));
+    let login_html = login_page.text().await.unwrap();
+    assert!(login_html.contains("id=\"login-form\""));
+    assert!(login_html.contains("autocomplete=\"current-password\""));
+
+    let sessions = client
+        .get(format!("{}/api/sessions", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sessions.status(), 401);
+
+    let rejected = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .json(&serde_json::json!({
+            "username": "denis",
+            "password": "wrong-password"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 401);
+    assert!(rejected.headers().get("set-cookie").is_none());
+
+    let accepted = client
+        .post(format!("{}/api/auth/login", server.base_url))
+        .json(&serde_json::json!({
+            "username": "denis",
+            "password": "correct-password"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+    let set_cookie = accepted
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(set_cookie.starts_with("__Host-openfang_session="));
+    assert!(set_cookie.contains("; Path=/"));
+    assert!(set_cookie.contains("; HttpOnly"));
+    assert!(set_cookie.contains("; Secure"));
+    assert!(set_cookie.contains("; SameSite=Strict"));
+    assert!(set_cookie.contains("; Max-Age=604800"));
+    assert!(!set_cookie.contains("Domain="));
+    let body: serde_json::Value = accepted.json().await.unwrap();
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["username"], "denis");
+    assert!(body.get("token").is_none());
+
+    let cookie = set_cookie.split(';').next().unwrap();
+    let authenticated_root = client
+        .get(format!("{}/", server.base_url))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authenticated_root.status(), 200);
+
+    let authenticated_sessions = client
+        .get(format!("{}/api/sessions", server.base_url))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authenticated_sessions.status(), 200);
+
+    let logout = client
+        .post(format!("{}/api/auth/logout", server.base_url))
+        .header("cookie", cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 200);
+    let expired_cookie = logout
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(expired_cookie.starts_with("__Host-openfang_session=;"));
+    assert!(expired_cookie.contains("Max-Age=0"));
+
+    let after_logout = client
+        .get(format!("{}/api/sessions", server.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(after_logout.status(), 401);
 }
 
 // ---------------------------------------------------------------------------

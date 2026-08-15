@@ -12741,7 +12741,7 @@ pub async fn comms_task(
 
 // ── Dashboard Authentication (username/password sessions) ──
 
-/// POST /api/auth/login — Authenticate with username/password, returns session token.
+/// POST /api/auth/login — Authenticate and establish an HttpOnly browser session.
 pub async fn auth_login(
     State(state): State<Arc<AppState>>,
     Json(req): Json<serde_json::Value>,
@@ -12802,9 +12802,7 @@ pub async fn auth_login(
 
     let token =
         crate::session_auth::create_session_token(username, &secret, auth_cfg.session_ttl_hours);
-    let ttl_secs = auth_cfg.session_ttl_hours * 3600;
-    let cookie =
-        format!("openfang_session={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={ttl_secs}");
+    let cookie = crate::session_auth::session_cookie(&token, auth_cfg.session_ttl_hours);
 
     state.kernel.audit_log.record(
         "system",
@@ -12817,23 +12815,21 @@ pub async fn auth_login(
         .status(StatusCode::OK)
         .header("content-type", "application/json")
         .header("set-cookie", &cookie)
-        .body(Body::from(
-            serde_json::json!({
-                "status": "ok",
-                "token": token,
-                "username": username,
-            })
-            .to_string(),
-        ))
+        .body(Body::from(crate::session_auth::login_success_json(
+            username,
+        )))
         .unwrap()
 }
 
 /// POST /api/auth/logout — Clear the session cookie.
 pub async fn auth_logout() -> impl IntoResponse {
-    let cookie = "openfang_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0";
+    let cookie = crate::session_auth::expired_session_cookie();
     (
         StatusCode::OK,
-        [("content-type", "application/json"), ("set-cookie", cookie)],
+        [
+            ("content-type", "application/json".to_string()),
+            ("set-cookie", cookie),
+        ],
         serde_json::json!({"status": "ok"}).to_string(),
     )
 }

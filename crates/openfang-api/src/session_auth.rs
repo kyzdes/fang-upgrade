@@ -6,6 +6,13 @@ use sha2::Sha256;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Host-only secure cookie used for dashboard sessions.
+///
+/// The `__Host-` prefix is enforced by browsers: the cookie must be Secure,
+/// have `Path=/`, and must not have a Domain attribute. That prevents a
+/// sibling subdomain from shadowing the dashboard session cookie.
+pub const SESSION_COOKIE_NAME: &str = "__Host-openfang_session";
+
 /// Create a session token: base64(username:expiry_unix:hmac_hex)
 pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> String {
     use base64::Engine;
@@ -17,7 +24,7 @@ pub fn create_session_token(username: &str, secret: &str, ttl_hours: u64) -> Str
     base64::engine::general_purpose::STANDARD.encode(format!("{payload}:{signature}"))
 }
 
-/// Extract the `openfang_session` cookie value from a `Cookie` header string.
+/// Extract the dashboard session cookie value from a `Cookie` header string.
 ///
 /// Returns `None` if the header is absent or the cookie is not present.
 /// Used by both the HTTP auth middleware and the WebSocket upgrade handler so
@@ -30,10 +37,33 @@ pub fn extract_session_cookie(headers: &axum::http::HeaderMap) -> Option<String>
         .and_then(|cookies| {
             cookies.split(';').find_map(|c| {
                 c.trim()
-                    .strip_prefix("openfang_session=")
-                    .map(|v| v.to_string())
+                    .strip_prefix(SESSION_COOKIE_NAME)
+                    .and_then(|v| v.strip_prefix('=').map(std::string::ToString::to_string))
             })
         })
+}
+
+/// Build the hardened Set-Cookie value for a new dashboard session.
+pub fn session_cookie(token: &str, ttl_hours: u64) -> String {
+    let ttl_secs = ttl_hours.saturating_mul(3600);
+    format!(
+        "{SESSION_COOKIE_NAME}={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={ttl_secs}"
+    )
+}
+
+/// Build the Set-Cookie value that expires the dashboard session.
+pub fn expired_session_cookie() -> String {
+    format!("{SESSION_COOKIE_NAME}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0")
+}
+
+/// Serialize the successful login response without exposing the session token
+/// to JavaScript. The token is delivered only in the HttpOnly cookie.
+pub fn login_success_json(username: &str) -> String {
+    serde_json::json!({
+        "status": "ok",
+        "username": username,
+    })
+    .to_string()
 }
 
 /// Verify a session token. Returns the username if valid and not expired.
@@ -166,7 +196,7 @@ mod tests {
         let mut h = axum::http::HeaderMap::new();
         h.insert(
             "cookie",
-            "foo=bar; openfang_session=abc.def.ghi; baz=qux"
+            "foo=bar; __Host-openfang_session=abc.def.ghi; baz=qux"
                 .parse()
                 .unwrap(),
         );
@@ -189,7 +219,40 @@ mod tests {
     #[test]
     fn test_extract_session_cookie_only_value() {
         let mut h = axum::http::HeaderMap::new();
-        h.insert("cookie", "openfang_session=lonely".parse().unwrap());
+        h.insert("cookie", "__Host-openfang_session=lonely".parse().unwrap());
         assert_eq!(extract_session_cookie(&h).as_deref(), Some("lonely"));
+    }
+
+    #[test]
+    fn test_session_cookie_is_host_only_secure_and_http_only() {
+        let cookie = session_cookie("signed-token", 168);
+        assert!(cookie.starts_with("__Host-openfang_session=signed-token;"));
+        assert!(cookie.contains("Path=/"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("Secure"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Max-Age=604800"));
+        assert!(!cookie.contains("Domain="));
+    }
+
+    #[test]
+    fn test_expired_session_cookie_preserves_security_attributes() {
+        let cookie = expired_session_cookie();
+        assert!(cookie.starts_with("__Host-openfang_session=;"));
+        assert!(cookie.contains("Path=/"));
+        assert!(cookie.contains("HttpOnly"));
+        assert!(cookie.contains("Secure"));
+        assert!(cookie.contains("SameSite=Strict"));
+        assert!(cookie.contains("Max-Age=0"));
+        assert!(!cookie.contains("Domain="));
+    }
+
+    #[test]
+    fn test_login_response_does_not_expose_session_token() {
+        let body = login_success_json("denis");
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["username"], "denis");
+        assert!(value.get("token").is_none());
     }
 }

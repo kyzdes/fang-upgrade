@@ -223,8 +223,9 @@ document.addEventListener('alpine:init', function() {
             this.showAuthPrompt = false;
             return;
           }
-          // Session auth enabled but not authenticated — show login prompt
-          this.showAuthPrompt = true;
+          // Session auth enabled but not authenticated — use the standalone
+          // login page so credentials never share the dashboard DOM.
+          window.location.replace('/login');
           return;
         }
       } catch(e) { /* ignore — fall through to API key check */ }
@@ -253,27 +254,12 @@ document.addEventListener('alpine:init', function() {
       this.refreshAgents();
     },
 
-    async sessionLogin(username, password) {
-      try {
-        var result = await OpenFangAPI.post('/api/auth/login', { username: username, password: password });
-        if (result.status === 'ok') {
-          this.sessionUser = result.username;
-          this.showAuthPrompt = false;
-          this.refreshAgents();
-        } else {
-          OpenFangToast.error(result.error || 'Login failed');
-        }
-      } catch(e) {
-        OpenFangToast.error(e.message || 'Login failed');
-      }
-    },
-
     async sessionLogout() {
       try {
         await OpenFangAPI.post('/api/auth/logout');
       } catch(e) { /* ignore */ }
       this.sessionUser = null;
-      this.showAuthPrompt = true;
+      window.location.replace('/login');
     },
 
     clearApiKey() {
