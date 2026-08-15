@@ -21,11 +21,6 @@ services:
       - openfang-data:/data
     networks:
       - dokploy-network
-    labels:
-      # The native Dokploy domain references this middleware as
-      # denis-openfang-basic-auth@docker. Only the password hash is injected.
-      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.users: "${OPENFANG_BASIC_AUTH:?OPENFANG_BASIC_AUTH is required}"
-      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.removeheader: "true"
     healthcheck:
       test:
         - CMD
