@@ -22,7 +22,7 @@ version = "0.6.9"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
-rust-version = "1.88"
+rust-version = "1.91"
 
 [workspace.dependencies]
 # Async runtime
