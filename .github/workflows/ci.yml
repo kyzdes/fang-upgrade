@@ -69,7 +69,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace
+        # The openfang-runtime binary contains hundreds of Wasmtime-heavy tests.
+        # The default runner-wide thread count intermittently exhausts the
+        # GitHub-hosted VM and cargo is killed with SIGTERM 143 mid-suite.
+        # Keep the complete workspace suite, but cap in-process test concurrency.
+        run: cargo test --workspace -- --test-threads=2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Two things this workflow does not do, stated so nobody assumes otherwise.
