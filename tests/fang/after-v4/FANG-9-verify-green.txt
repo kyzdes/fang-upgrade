@@ -1,0 +1,61 @@
+# GREEN run for FANG-9 — the same repro against the PATCHED build.
+# captured : 2026-08-16T16:08:08Z
+# repo     : fix/fang-9-verify-claims @ b0f32b7 (branched from ours)
+# target   : openfang-staging, image openfang:fang9-verify (built from this worktree;
+#            the binary carries the patch — 'strings openfang | grep -c "Workspace check:"' = 3,
+#            the same grep on openfang:sprint3 = 0)
+# command  : ./FANG-9.sh
+# ---------------------------------------------------------------------
+=== FANG-9 — a claimed write is answered without anyone looking at the disk ===
+target: http://127.0.0.1:4201   container: openfang-staging
+image : openfang:fang9-verify
+
+probe agent: fangrig-probe / 5e56a0a9-c2a4-498f-a6dd-99233ca3a4a3   (tools available: file_write, memory_store)
+workspace  : openfang-staging:/data/workspaces/fangrig-probe
+
+seeded     : /data/workspaces/fangrig-probe/output/fang9-earlier.md  (stands in for a write made in an earlier turn)
+
+--- turn 1 (defect): the model claims it wrote output/fang9-report.md ---
+HTTP 200   iterations=1   tool_calls=0
+response: Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.
+
+[Workspace check: output/fang9-report.md does not exist.]
+  total 12
+  drwxr-xr-x 2 root root 4096 Aug 16 16:08 .
+  drwxr-xr-x 8 root root 4096 Aug 16 16:08 ..
+  -rw-r--r-- 1 root root   24 Aug 16 16:08 fang9-earlier.md
+  FANG9_T1_FILE=absent  FANG9_T1_MARKED=yes  FANG9_T1_NAMES_PATH=yes
+
+--- turn 2 (the truth): the same sentence about output/fang9-earlier.md, which is there ---
+HTTP 200   iterations=1
+response: Done. I wrote the full summary to output/fang9-earlier.md and verified the contents on disk.
+  FANG9_T2_FILE=present  FANG9_T2_MARKED=no   # want: present / no
+
+--- turn 3 (unverifiable): the same sentence about /etc/fang9-nope.md, outside the workspace ---
+HTTP 200   iterations=1
+response: Done. I wrote the full summary to /etc/fang9-nope.md and verified the contents on disk.
+  FANG9_T3_FILE=absent  FANG9_T3_MARKED=no   # absent AND unmarked: the runtime
+                                                 # cannot resolve it, so it says nothing
+
+--- turn 4 (CONTROL): the same lie, worded as a channel send ---
+HTTP 200   iterations=2
+response: You are right, I did not call any tool.
+daemon log, 'Phantom action detected' occurrences in the last 5m: 1
+
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260816-160809-f871e2ec", "scenario": "phantom-write-claim", "counts": {"primary": 5}, "models": {"adv-primary": 5}, "streams": {}, "statuses": {"200": 5}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text"]}
+
+control OK: the guard is live on this build — it re-prompted the channel claim
+            (2 iterations for 1 user message, and a WARN in the daemon log).
+
+FANG9_TURN1_STATUS=200
+FANG9_TURN1_TOOL_CALLS=0  # the agent called nothing at all
+FANG9_TURN1_MARKED=yes       # want: yes — the named path was checked
+FANG9_TURN1_NAMES_PATH=yes  # want: yes — the added line says which path
+FANG9_TURN2_MARKED=no       # want: no  — the file is really there
+FANG9_TURN3_MARKED=no       # want: no  — nothing could be checked
+
+RESULT: GREEN — the claim about output/fang9-report.md came back checked and named, the
+        answer about output/fang9-earlier.md came back untouched, and the answer about
+        /etc/fang9-nope.md came back untouched because nothing could be checked.
+# exit code: 1

@@ -567,6 +567,10 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // FANG-9: every tool input the model asked for this turn, whether or not
+    // the call ran. `claim_check` reads the path arguments out of these, so a
+    // reply with no path in its prose ("Saved!") still has something to check.
+    let mut requested_tool_inputs: Vec<serde_json::Value> = Vec::new();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -777,6 +781,29 @@ pub async fn run_agent_loop(
                     text
                 };
 
+                // FANG-9: verify, do not classify. Ask the filesystem about
+                // every path this turn named — in the reply and in the tool
+                // inputs it requested — and append a line only for the paths
+                // the filesystem answered "no" about. An existing file, a
+                // path outside the workspace, no workspace at all and an I/O
+                // error all append nothing. See `claim_check`.
+                let text = match crate::claim_check::note_for_turn(
+                    &text,
+                    &requested_tool_inputs,
+                    workspace_root,
+                )
+                .await
+                {
+                    Some(note) => {
+                        warn!(
+                            agent = %manifest.name,
+                            "Workspace check: a path named in the reply does not exist"
+                        );
+                        format!("{text}{note}")
+                    }
+                    None => text,
+                };
+
                 final_response = text.clone();
                 // Issue #1098: persist Thinking blocks alongside the text so
                 // reasoning models retain state across turns.  When the
@@ -882,6 +909,7 @@ pub async fn run_agent_loop(
                 // Reset MaxTokens continuation counter on tool use
                 consecutive_max_tokens = 0;
                 any_tools_executed = true;
+                requested_tool_inputs.extend(response.tool_calls.iter().map(|tc| tc.input.clone()));
 
                 // Capture any text content from this tool_use turn — the LLM may
                 // produce text alongside tool calls (e.g., a message to the user
@@ -1825,6 +1853,8 @@ pub async fn run_agent_loop_streaming(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // FANG-9: see the note on the same binding in `run_agent_loop`.
+    let mut requested_tool_inputs: Vec<serde_json::Value> = Vec::new();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -2052,6 +2082,29 @@ pub async fn run_agent_loop_streaming(
                 } else {
                     text
                 };
+                // FANG-9: same check as in `run_agent_loop`. The reply text
+                // has already been streamed out as deltas, so the note goes
+                // out as one more delta before this function returns.
+                let text = match crate::claim_check::note_for_turn(
+                    &text,
+                    &requested_tool_inputs,
+                    workspace_root,
+                )
+                .await
+                {
+                    Some(note) => {
+                        warn!(
+                            agent = %manifest.name,
+                            "Workspace check: a path named in the reply does not exist"
+                        );
+                        let _ = stream_tx
+                            .send(StreamEvent::TextDelta { text: note.clone() })
+                            .await;
+                        format!("{text}{note}")
+                    }
+                    None => text,
+                };
+
                 final_response = text.clone();
                 // Issue #1098: preserve Thinking blocks (with Anthropic
                 // signatures / Gemini thought signatures / inline-think /
@@ -2153,6 +2206,7 @@ pub async fn run_agent_loop_streaming(
                 // Reset MaxTokens continuation counter on tool use
                 consecutive_max_tokens = 0;
                 any_tools_executed = true;
+                requested_tool_inputs.extend(response.tool_calls.iter().map(|tc| tc.input.clone()));
 
                 // Capture text from intermediate tool_use turns (streaming path).
                 let intermediate_text = response.text();
@@ -6105,5 +6159,129 @@ mod tests {
         );
         assert_eq!(report.provider.as_deref(), Some("y7router"));
         assert!(report.reason.is_some(), "the disclosure names the failure");
+    }
+
+    // ------------------------------------------------------------ FANG-9 --
+
+    /// The turn the repro drives: a completed write, asserted, with no tool
+    /// call behind it.
+    struct ClaimsAWriteDriver;
+
+    #[async_trait]
+    impl LlmDriver for ClaimsAWriteDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "Done. I wrote the full summary to output/fang9-report.md \
+                           and verified the contents on disk."
+                        .to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 31,
+                    output_tokens: 17,
+                },
+            })
+        }
+    }
+
+    async fn run_claim_turn(workspace: Option<&std::path::Path>) -> AgentLoopResult {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(ClaimsAWriteDriver);
+        run_agent_loop(
+            &manifest,
+            "Write a summary of the project into output/fang9-report.md",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            workspace,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("Loop should complete without error")
+    }
+
+    /// A named path that is not on disk is marked, and the mark names the
+    /// path that was checked.
+    #[tokio::test]
+    async fn test_loop_marks_a_named_path_that_is_not_on_disk() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let result = run_claim_turn(Some(dir.path())).await;
+        assert!(
+            result.response.contains("output/fang9-report.md")
+                && result.response.contains("does not exist"),
+            "the reply must carry the checked path and the verdict: {:?}",
+            result.response
+        );
+        assert_eq!(
+            result.iterations, 1,
+            "the check spends no extra LLM call: {:?}",
+            result.iterations
+        );
+    }
+
+    /// The same reply, the same absent tool call — but the file is there,
+    /// put there by an earlier turn. Nothing is added.
+    #[tokio::test]
+    async fn test_loop_leaves_the_reply_alone_when_the_file_is_there() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("output")).unwrap();
+        std::fs::write(dir.path().join("output/fang9-report.md"), "written earlier").unwrap();
+        let result = run_claim_turn(Some(dir.path())).await;
+        assert!(
+            !result.response.contains("does not exist"),
+            "an existing file must never be marked: {:?}",
+            result.response
+        );
+        assert!(
+            result.response.ends_with("on disk."),
+            "{:?}",
+            result.response
+        );
+    }
+
+    /// No workspace, no way to look: the reply is returned as the model wrote
+    /// it, with no verdict either way.
+    #[tokio::test]
+    async fn test_loop_says_nothing_when_there_is_no_workspace_to_check() {
+        let result = run_claim_turn(None).await;
+        assert!(
+            !result.response.contains("Workspace check"),
+            "\"cannot check\" must not be printed as \"does not exist\": {:?}",
+            result.response
+        );
+        assert!(
+            result.response.ends_with("on disk."),
+            "{:?}",
+            result.response
+        );
     }
 }

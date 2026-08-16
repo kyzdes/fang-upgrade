@@ -1,6 +1,6 @@
 {
   "name": "phantom-write-claim",
-  "doc": "FANG-9: the agent reports a completed WRITE it never performed, and the runtime forwards the claim as its own HTTP 200 answer. The runtime does have a guard for exactly this class - phantom_action_detected() at agent_loop.rs:97-115, wired in at :764-776 - but its vocabulary is channel-delivery only: verbs {sent, posted, emailed, delivered, forwarded} AND a channel word {telegram, whatsapp, slack, discord, email, channel, ...}. Nothing about writing, creating or saving a file, and nothing about memory. Turn 1 (step 0) is the defect: a plain 'I wrote the file' claim, no tool_calls at all, passes straight through - one LLM call, tool_calls=0, HTTP 200, and output/fang9-report.md does not exist in the agent workspace. Turn 2 (steps 1-2) is the CONTROL that keeps turn 1 from being a tautology: the same shape of lie, worded as a channel send, DOES trip the guard on this very build - the runtime injects its '[System: You claimed to perform an action but did not call any tools...]' reprompt and burns a second LLM call, so turn 2 costs two calls where turn 1 cost one. A green run of this scenario would need the guard to cover writes; an environment problem would take the control down with it. Run with --tools file_write,memory_store, so the tool the agent claims to have used was available the whole time.",
+  "doc": "FANG-9: the agent reports a completed WRITE it never performed, and the runtime forwards the claim as its own HTTP 200 answer. Five steps, four turns. Step 0 is the defect: 'I wrote the full summary to output/fang9-report.md', no tool_calls, and no such file in the agent workspace - the fixed runtime must stat the named path and say so. Step 1 is the truth the fix must never touch: the same shape of sentence about output/fang9-earlier.md, which the script put on the volume BEFORE the turn, the way a write from an earlier turn would have left it; the session is reset before every turn here, so nothing in this turn's state knows the file exists and only the filesystem can answer. Step 2 is the unverifiable case: the same sentence about /etc/fang9-nope.md, an absolute path outside the workspace, which the runtime cannot check and must therefore say nothing about - 'cannot check' is not 'does not exist'. Steps 3-4 are the CONTROL that keeps the whole thing from being a tautology: the same lie worded as a channel send, which trips the pre-existing phantom_action_detected() guard (agent_loop.rs:97-115, wired at :764-776) on every build in this series and burns a second LLM call. If the control does not fire, the environment is broken and the other turns prove nothing. Run with --tools file_write,memory_store, so the tool the agent claims to have used was available the whole time.",
   "endpoints": [
     {
       "role": "primary",
@@ -11,6 +11,18 @@
         {
           "type": "text",
           "content": "Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.",
+          "finish_reason": "stop",
+          "usage": [31, 17]
+        },
+        {
+          "type": "text",
+          "content": "Done. I wrote the full summary to output/fang9-earlier.md and verified the contents on disk.",
+          "finish_reason": "stop",
+          "usage": [31, 17]
+        },
+        {
+          "type": "text",
+          "content": "Done. I wrote the full summary to /etc/fang9-nope.md and verified the contents on disk.",
           "finish_reason": "stop",
           "usage": [31, 17]
         },

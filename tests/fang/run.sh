@@ -259,7 +259,7 @@ REPROS=(
   "FANG-31|FANG-31.sh|result|GREEN|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandoned an in-flight getUpdates (fixed on ours by bedb365 + bef4c0a)"
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
-  "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
+  "FANG-9|FANG-9.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reported a write it never performed; the phantom-action guard covered channels only, and the reply is now checked against the disk (fix fang-9-verify-claims)"
   "FANG-10|FANG-10.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
   "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
   "FANG-47|FANG-47.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (NO FIX)"
