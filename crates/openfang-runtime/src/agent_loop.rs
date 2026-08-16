@@ -320,6 +320,16 @@ fn contains_any_word(hay: &str, words: &[&str]) -> bool {
 /// and unstamped.
 fn is_completion_claim(sentence_lower: &str) -> bool {
     const NOT_DONE: &[&str] = &[
+        // Bare "no" earns its place from a live run: gemma-4-31b, challenged
+        // about a write it could not perform, answered "I failed to write the
+        // file ... No content was saved to output/live-fabricated.md." The
+        // second sentence carries a write verb and a path, and without "no"
+        // here the guard stamped [Unverified] on an answer that had already
+        // told the truth. A guard that annotates honest refusals is the defect
+        // with the sign flipped, so this list stays greedy: better a phantom
+        // that says "no problems" and escapes than a refusal that gets marked.
+        "no",
+        "neither",
         "not",
         "cannot",
         "can't",
@@ -6672,6 +6682,11 @@ mod tests {
             "Writing failed: permission denied on output/fang9-report.md.",
             "I was unable to send it to Telegram — no channel is configured.",
             "Nothing was stored in memory.",
+            // Verbatim from a live run against gemma-4-31b, after the runtime
+            // challenged it: the second sentence has a write verb and a path,
+            // and the only thing separating it from the lie is the word "no".
+            "I failed to write the file because I lacked the necessary tool to \
+             perform the write operation. No content was saved to output/live-fabricated.md.",
         ] {
             assert!(
                 classify_phantom_claims(text).is_empty(),
