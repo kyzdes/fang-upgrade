@@ -283,8 +283,9 @@ fn finish_calls(calls: &mut Vec<LlmCall>) -> Vec<LlmCall> {
     std::mem::take(calls)
 }
 
-/// How many tool calls a max-iterations summary names one by one before the
-/// list is elided. A runaway loop repeats itself; twenty lines show its shape.
+/// How many tool calls each section of a max-iterations summary names one by
+/// one before the rest are elided into a count. A runaway loop repeats itself;
+/// twenty lines show its shape.
 const MAX_ITER_SUMMARY_CALLS: usize = 20;
 
 /// Per-call argument budget in that listing, in characters. Long enough to
@@ -302,72 +303,138 @@ fn truncate_chars(s: &str, max: usize) -> String {
     out
 }
 
-/// The tool calls a turn actually made, read back off the session the loop has
-/// been appending to: `(name, argument JSON)` per `ToolUse` block from index
-/// `from` onwards, in execution order.
+/// What became of one tool call the model asked for.
 ///
-/// The session is the right source: it is what the loop persists, so this
-/// cannot disagree with the history the agent will be re-fed next turn.
-fn tool_uses_since(messages: &[Message], from: usize) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for msg in messages.iter().skip(from) {
-        if let MessageContent::Blocks(blocks) = &msg.content {
-            for block in blocks {
-                if let ContentBlock::ToolUse { name, input, .. } = block {
-                    out.push((name.clone(), input.to_string()));
-                }
-            }
-        }
-    }
-    out
+/// Recorded where the decision is taken, not reconstructed from the transcript
+/// afterwards: a `ToolUse` block sits in the session whether or not the call
+/// ever reached a tool, so reading the session back cannot tell the two apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolCallFate {
+    /// The tool ran and reported success.
+    Completed,
+    /// The tool ran, or refused to, and reported an error — a failure, a
+    /// timeout, a denied approval, a capability it does not hold.
+    Errored,
+    /// The call never reached the tool. The word is what stopped it.
+    Blocked(&'static str),
 }
 
-/// The response handed back when a turn runs out of iterations: what was
-/// reached, and what was done on the way.
+/// One tool call of this turn and what became of it.
+#[derive(Debug, Clone)]
+struct TurnToolCall {
+    name: String,
+    args: String,
+    fate: ToolCallFate,
+}
+
+impl TurnToolCall {
+    fn new(name: &str, args: &serde_json::Value, fate: ToolCallFate) -> Self {
+        Self {
+            name: name.to_string(),
+            args: args.to_string(),
+            fate,
+        }
+    }
+}
+
+/// How many of a turn's recorded tool calls ran, returned an error and were
+/// stopped before they ran, in that order. What the log line and the
+/// AgentLoopEnd hook report, so neither has to say "tool calls" and leave the
+/// reader to guess whether the blocked ones are in the number.
+fn fate_counts(calls: &[TurnToolCall]) -> (usize, usize, usize) {
+    let mut counts = (0usize, 0usize, 0usize);
+    for call in calls {
+        match call.fate {
+            ToolCallFate::Completed => counts.0 += 1,
+            ToolCallFate::Errored => counts.1 += 1,
+            ToolCallFate::Blocked(_) => counts.2 += 1,
+        }
+    }
+    counts
+}
+
+/// Render one section of the max-iterations listing, or nothing when no call
+/// had that fate. The count in the heading is the number of calls in the
+/// section, not the number of lines printed under it.
+fn push_fate_section(out: &mut String, heading: &str, calls: &[&TurnToolCall]) {
+    if calls.is_empty() {
+        return;
+    }
+    out.push_str(&format!("\n\n{heading} ({}):", calls.len()));
+    for (i, call) in calls.iter().take(MAX_ITER_SUMMARY_CALLS).enumerate() {
+        let reason = match call.fate {
+            ToolCallFate::Blocked(by) => format!(" — {by}"),
+            _ => String::new(),
+        };
+        out.push_str(&format!(
+            "\n  {}. {}{} {}",
+            i + 1,
+            call.name,
+            reason,
+            truncate_chars(&call.args, MAX_ITER_SUMMARY_ARG_CHARS)
+        ));
+    }
+    if calls.len() > MAX_ITER_SUMMARY_CALLS {
+        out.push_str(&format!(
+            "\n  … and {} more",
+            calls.len() - MAX_ITER_SUMMARY_CALLS
+        ));
+    }
+}
+
+/// The notice appended to a turn that ran out of iterations: which exit door
+/// the loop left by, and what became of each tool call on the way.
+///
+/// Every line is built from a `TurnToolCall` recorded at the moment the loop
+/// decided that call's fate, so a call the loop guard stopped is listed as
+/// stopped and is never counted among the calls that ran. The notice makes no
+/// statement about calls it has no record of.
 ///
 /// It keeps the words "Max iterations exceeded (N)" because that names which
 /// exit door the loop left by — the circuit breaker says something else — and
 /// because the operator's next move (raise the limit) has to be spelled out
 /// somewhere the caller can see.
-fn max_iterations_summary(
-    max_iterations: u32,
-    accumulated_text: &str,
-    tool_uses: &[(String, String)],
-) -> String {
+fn max_iterations_notice(max_iterations: u32, tool_calls: &[TurnToolCall]) -> String {
     let mut out = format!(
-        "[Turn incomplete — Max iterations exceeded ({max_iterations}). \
-         The agent had not finished; everything below really ran and is saved \
-         in the session. Configure a higher limit in agent.toml under \
-         [autonomous] max_iterations.]"
+        "[Turn incomplete — Max iterations exceeded ({max_iterations}). The agent \
+         stopped here without finishing. Configure a higher limit in agent.toml \
+         under [autonomous] max_iterations.]"
     );
 
-    let text = accumulated_text.trim();
-    if !text.is_empty() {
-        out.push_str("\n\n");
-        out.push_str(text);
-    }
+    let completed: Vec<&TurnToolCall> = tool_calls
+        .iter()
+        .filter(|c| matches!(c.fate, ToolCallFate::Completed))
+        .collect();
+    let errored: Vec<&TurnToolCall> = tool_calls
+        .iter()
+        .filter(|c| matches!(c.fate, ToolCallFate::Errored))
+        .collect();
+    let blocked: Vec<&TurnToolCall> = tool_calls
+        .iter()
+        .filter(|c| matches!(c.fate, ToolCallFate::Blocked(_)))
+        .collect();
 
-    if tool_uses.is_empty() {
+    if completed.is_empty() && errored.is_empty() && blocked.is_empty() {
         out.push_str("\n\nNo tool calls were executed in this turn.");
         return out;
     }
 
-    out.push_str(&format!("\n\nTool calls executed ({}):", tool_uses.len()));
-    for (i, (name, args)) in tool_uses.iter().take(MAX_ITER_SUMMARY_CALLS).enumerate() {
-        out.push_str(&format!(
-            "\n  {}. {} {}",
-            i + 1,
-            name,
-            truncate_chars(args, MAX_ITER_SUMMARY_ARG_CHARS)
-        ));
-    }
-    if tool_uses.len() > MAX_ITER_SUMMARY_CALLS {
-        out.push_str(&format!(
-            "\n  … and {} more",
-            tool_uses.len() - MAX_ITER_SUMMARY_CALLS
-        ));
-    }
+    push_fate_section(&mut out, "Tool calls that ran and succeeded", &completed);
+    push_fate_section(&mut out, "Tool calls that returned an error", &errored);
+    push_fate_section(&mut out, "Tool calls stopped before they ran", &blocked);
     out
+}
+
+/// The full max-iterations response: the text the turn produced, then the
+/// notice. The notice goes last so that the streaming loop — whose caller has
+/// already received `accumulated_text` as deltas — can emit exactly the notice
+/// and arrive at the same string without repeating a word of the text.
+fn max_iterations_summary(accumulated_text: &str, notice: &str) -> String {
+    let text = accumulated_text.trim();
+    if text.is_empty() {
+        return notice.to_string();
+    }
+    format!("{text}\n\n{notice}")
 }
 
 /// Record how many tool calls the just-finished LLM response actually asked for.
@@ -654,9 +721,9 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
-    // Where this turn's contribution to the session starts. Read back at the
-    // max-iterations exit to say which tool calls the turn actually made.
-    let session_msgs_before = session.messages.len();
+    // What became of each tool call this turn, recorded as each fate is
+    // decided. Read at the max-iterations exit; nothing else consumes it.
+    let mut turn_tool_calls: Vec<TurnToolCall> = Vec::new();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -1034,6 +1101,11 @@ pub async fn run_agent_loop(
                         }
                         LoopGuardVerdict::Block(msg) => {
                             warn!(tool = %tool_call.name, "Tool call blocked by loop guard");
+                            turn_tool_calls.push(TurnToolCall::new(
+                                &tool_call.name,
+                                &tool_call.input,
+                                ToolCallFate::Blocked("stopped by the loop guard"),
+                            ));
                             tool_result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 tool_name: tool_call.name.clone(),
@@ -1072,6 +1144,11 @@ pub async fn run_agent_loop(
                             }),
                         };
                         if let Err(reason) = hook_reg.fire(&ctx) {
+                            turn_tool_calls.push(TurnToolCall::new(
+                                &tool_call.name,
+                                &tool_call.input,
+                                ToolCallFate::Blocked("stopped by a BeforeToolCall hook"),
+                            ));
                             tool_result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 tool_name: tool_call.name.clone(),
@@ -1160,6 +1237,15 @@ pub async fn run_agent_loop(
                         content
                     };
 
+                    turn_tool_calls.push(TurnToolCall::new(
+                        &tool_call.name,
+                        &tool_call.input,
+                        if result.is_error {
+                            ToolCallFate::Errored
+                        } else {
+                            ToolCallFate::Completed
+                        },
+                    ));
                     tool_result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: result.tool_use_id,
                         tool_name: tool_call.name.clone(),
@@ -1290,8 +1376,8 @@ pub async fn run_agent_loop(
     }
 
     // Iterations exhausted. This is a TRUNCATED turn, not a failed one: the
-    // assistant text accumulated above is real, the tool calls really executed,
-    // the files they wrote are really on disk, and the provider has really
+    // assistant text accumulated above is real, the tool calls in
+    // `turn_tool_calls` really reached their fates, and the provider has really
     // billed every token in `total_usage`.
     //
     // Returning `Err(MaxIterationsExceeded)` here threw all of that away twice
@@ -1302,8 +1388,8 @@ pub async fn run_agent_loop(
     // counters all moved by zero for a turn the provider charged for (FANG-47).
     // The session was already being saved right here, so the runtime kept the
     // work for itself and told the caller nothing.
-    let tool_uses = tool_uses_since(&session.messages, session_msgs_before);
-    let summary = max_iterations_summary(max_iterations, &accumulated_text, &tool_uses);
+    let notice = max_iterations_notice(max_iterations, &turn_tool_calls);
+    let summary = max_iterations_summary(&accumulated_text, &notice);
     session.messages.push(Message::assistant(summary.clone()));
 
     // Save session so conversation history is preserved
@@ -1311,10 +1397,13 @@ pub async fn run_agent_loop(
         warn!("Failed to save session on max iterations: {e}");
     }
 
+    let (n_ran, n_errored, n_blocked) = fate_counts(&turn_tool_calls);
     warn!(
         agent = %manifest.name,
         iterations = max_iterations,
-        tool_calls = tool_uses.len(),
+        tool_calls_ran = n_ran,
+        tool_calls_errored = n_errored,
+        tool_calls_blocked = n_blocked,
         tokens = total_usage.total(),
         "Max iterations reached — returning the partial result"
     );
@@ -1329,7 +1418,9 @@ pub async fn run_agent_loop(
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
                 "partial": true,
-                "tool_calls": tool_uses.len(),
+                "tool_calls_ran": n_ran,
+                "tool_calls_errored": n_errored,
+                "tool_calls_blocked": n_blocked,
             }),
         };
         let _ = hook_reg.fire(&ctx);
@@ -1950,9 +2041,9 @@ pub async fn run_agent_loop_streaming(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
-    // Where this turn's contribution to the session starts. Read back at the
-    // max-iterations exit to say which tool calls the turn actually made.
-    let session_msgs_before = session.messages.len();
+    // What became of each tool call this turn, recorded as each fate is
+    // decided. Read at the max-iterations exit; nothing else consumes it.
+    let mut turn_tool_calls: Vec<TurnToolCall> = Vec::new();
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -2336,6 +2427,11 @@ pub async fn run_agent_loop_streaming(
                         }
                         LoopGuardVerdict::Block(msg) => {
                             warn!(tool = %tool_call.name, "Tool call blocked by loop guard (streaming)");
+                            turn_tool_calls.push(TurnToolCall::new(
+                                &tool_call.name,
+                                &tool_call.input,
+                                ToolCallFate::Blocked("stopped by the loop guard"),
+                            ));
                             tool_result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 tool_name: tool_call.name.clone(),
@@ -2374,6 +2470,11 @@ pub async fn run_agent_loop_streaming(
                             }),
                         };
                         if let Err(reason) = hook_reg.fire(&ctx) {
+                            turn_tool_calls.push(TurnToolCall::new(
+                                &tool_call.name,
+                                &tool_call.input,
+                                ToolCallFate::Blocked("stopped by a BeforeToolCall hook"),
+                            ));
                             tool_result_blocks.push(ContentBlock::ToolResult {
                                 tool_use_id: tool_call.id.clone(),
                                 tool_name: tool_call.name.clone(),
@@ -2477,6 +2578,15 @@ pub async fn run_agent_loop_streaming(
                         warn!(agent = %manifest.name, "Stream consumer disconnected — continuing tool loop but will not stream further");
                     }
 
+                    turn_tool_calls.push(TurnToolCall::new(
+                        &tool_call.name,
+                        &tool_call.input,
+                        if result.is_error {
+                            ToolCallFate::Errored
+                        } else {
+                            ToolCallFate::Completed
+                        },
+                    ));
                     tool_result_blocks.push(ContentBlock::ToolResult {
                         tool_use_id: result.tool_use_id,
                         tool_name: tool_call.name.clone(),
@@ -2605,28 +2715,37 @@ pub async fn run_agent_loop_streaming(
     // Same exit, same reasoning as the non-streaming loop above: exhaustion is
     // a truncated turn, so hand back the partial result instead of an Err that
     // costs the caller the work (FANG-10) and the ledger the tokens (FANG-47).
-    let tool_uses = tool_uses_since(&session.messages, session_msgs_before);
-    let summary = max_iterations_summary(max_iterations, &accumulated_text, &tool_uses);
+    let notice = max_iterations_notice(max_iterations, &turn_tool_calls);
+    let summary = max_iterations_summary(&accumulated_text, &notice);
     session.messages.push(Message::assistant(summary.clone()));
 
     // The WS/SSE client's transcript is built from TextDelta events, not from
-    // the returned result (ws.rs accumulates `accumulated_text` and sends it as
-    // the `response` event). Without this, a streaming caller would still see a
-    // turn that ends with nothing said.
-    let _ = stream_tx
-        .send(StreamEvent::TextDelta {
-            text: summary.clone(),
-        })
-        .await;
+    // the returned result (ws.rs concatenates the deltas and sends the result as
+    // the `response` event). Without a delta here, a streaming caller would see
+    // a turn that ends with nothing said about why it ended.
+    //
+    // Only the notice is sent. `accumulated_text` reached the client as deltas
+    // already, and `max_iterations_summary` puts the notice after it, so
+    // delta-stream and returned `response` end up as the same string — emitting
+    // the whole summary here would print the partial text to the client twice.
+    let delta = if accumulated_text.trim().is_empty() {
+        notice.clone()
+    } else {
+        format!("\n\n{notice}")
+    };
+    let _ = stream_tx.send(StreamEvent::TextDelta { text: delta }).await;
 
     if let Err(e) = memory.save_session_async(session).await {
         warn!("Failed to save session on max iterations: {e}");
     }
 
+    let (n_ran, n_errored, n_blocked) = fate_counts(&turn_tool_calls);
     warn!(
         agent = %manifest.name,
         iterations = max_iterations,
-        tool_calls = tool_uses.len(),
+        tool_calls_ran = n_ran,
+        tool_calls_errored = n_errored,
+        tool_calls_blocked = n_blocked,
         tokens = total_usage.total(),
         "Max iterations reached (streaming) — returning the partial result"
     );
@@ -2641,7 +2760,9 @@ pub async fn run_agent_loop_streaming(
                 "reason": "max_iterations_exceeded",
                 "iterations": max_iterations,
                 "partial": true,
-                "tool_calls": tool_uses.len(),
+                "tool_calls_ran": n_ran,
+                "tool_calls_errored": n_errored,
+                "tool_calls_blocked": n_blocked,
             }),
         };
         let _ = hook_reg.fire(&ctx);
@@ -6101,12 +6222,81 @@ mod tests {
     // (FANG-47). Before the fix this test failed on its first assertion:
     // `run_agent_loop` returned Err.
 
+    /// The tool this section drives the loop with. `system_time` takes no
+    /// arguments, needs no kernel and no workspace, and always succeeds — so
+    /// "the call completed" in these tests is the tool really having run, not
+    /// a stub saying so.
+    fn system_time_tools() -> Vec<ToolDefinition> {
+        vec![ToolDefinition {
+            name: "system_time".to_string(),
+            description: "Current time".to_string(),
+            input_schema: serde_json::json!({"type": "object", "properties": {}}),
+        }]
+    }
+
+    fn system_time_response(n: u32, input: serde_json::Value, text: Option<String>) -> CompletionResponse {
+        let mut content = Vec::new();
+        if let Some(t) = &text {
+            content.push(ContentBlock::Text {
+                text: t.clone(),
+                provider_metadata: None,
+            });
+        }
+        content.push(ContentBlock::ToolUse {
+            id: format!("call_{n}"),
+            name: "system_time".to_string(),
+            input: input.clone(),
+            provider_metadata: None,
+        });
+        CompletionResponse {
+            content,
+            stop_reason: StopReason::ToolUse,
+            tool_calls: vec![ToolCall {
+                id: format!("call_{n}"),
+                name: "system_time".to_string(),
+                input,
+            }],
+            usage: usage(7919, 7907),
+        }
+    }
+
     /// Asks for a fresh tool call forever. The only response shape that can
     /// reach the max-iterations exit — a text default ends the turn instead.
     /// Arguments differ per call so the loop guard's repeat block (5 identical
-    /// calls) never fires and every iteration is a real, distinct call.
+    /// calls) never fires and every iteration is a real, distinct call that
+    /// really executes.
     struct NeverStopsDriver {
         calls: AtomicU32,
+        /// Text emitted alongside each tool call. `{n}` is replaced with the
+        /// call index. None means tool call only.
+        text: Option<&'static str>,
+        /// When true every call carries identical arguments, which is what the
+        /// loop guard blocks after `block_threshold` repeats.
+        identical_args: bool,
+    }
+
+    impl NeverStopsDriver {
+        fn distinct() -> Self {
+            Self {
+                calls: AtomicU32::new(0),
+                text: None,
+                identical_args: false,
+            }
+        }
+        fn repeating() -> Self {
+            Self {
+                calls: AtomicU32::new(0),
+                text: None,
+                identical_args: true,
+            }
+        }
+        fn talking(text: &'static str) -> Self {
+            Self {
+                calls: AtomicU32::new(0),
+                text: Some(text),
+                identical_args: false,
+            }
+        }
     }
 
     #[async_trait]
@@ -6116,25 +6306,13 @@ mod tests {
             _request: CompletionRequest,
         ) -> Result<CompletionResponse, LlmError> {
             let n = self.calls.fetch_add(1, Ordering::Relaxed);
-            let input = serde_json::json!({
-                "path": format!("output/step-{n}.txt"),
-                "content": "MAXITER-PARTIAL-CANARY",
-            });
-            Ok(CompletionResponse {
-                content: vec![ContentBlock::ToolUse {
-                    id: format!("call_{n}"),
-                    name: "file_write".to_string(),
-                    input: input.clone(),
-                    provider_metadata: None,
-                }],
-                stop_reason: StopReason::ToolUse,
-                tool_calls: vec![ToolCall {
-                    id: format!("call_{n}"),
-                    name: "file_write".to_string(),
-                    input,
-                }],
-                usage: usage(7919, 7907),
-            })
+            let input = if self.identical_args {
+                serde_json::json!({ "note": "MAXITER-PARTIAL-CANARY" })
+            } else {
+                serde_json::json!({ "note": "MAXITER-PARTIAL-CANARY", "step": n })
+            };
+            let text = self.text.map(|t| t.replace("{n}", &n.to_string()));
+            Ok(system_time_response(n, input, text))
         }
     }
 
@@ -6153,26 +6331,27 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_max_iterations_hands_back_the_partial_turn_not_an_error() {
-        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
-        let agent_id = openfang_types::agent::AgentId::new();
-        let mut session = openfang_memory::session::Session {
+    fn blank_session() -> openfang_memory::session::Session {
+        openfang_memory::session::Session {
             id: openfang_types::agent::SessionId::new(),
-            agent_id,
+            agent_id: openfang_types::agent::AgentId::new(),
             messages: Vec::new(),
             context_window_tokens: 0,
             label: None,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn test_max_iterations_hands_back_the_partial_turn_not_an_error() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let mut session = blank_session();
         let result = run_agent_loop(
             &never_stops_manifest(3),
             "start the unbounded task",
             &mut session,
             &memory,
-            Arc::new(NeverStopsDriver {
-                calls: AtomicU32::new(0),
-            }),
-            &[],
+            Arc::new(NeverStopsDriver::distinct()),
+            &system_time_tools(),
             None,
             None,
             None,
@@ -6216,8 +6395,22 @@ mod tests {
             "the exit door has to be named, and it is not the circuit breaker: {}",
             result.response
         );
+        // Three distinct calls, all allowed by the loop guard, all executed by
+        // the real tool runner: the section that says they ran says three.
         assert!(
-            result.response.contains("file_write"),
+            result
+                .response
+                .contains("Tool calls that ran and succeeded (3)"),
+            "{}",
+            result.response
+        );
+        assert!(
+            !result.response.contains("stopped before they ran"),
+            "nothing was stopped in this turn, so nothing is listed as stopped: {}",
+            result.response
+        );
+        assert!(
+            result.response.contains("system_time"),
             "the tool calls the turn made are part of the result: {}",
             result.response
         );
@@ -6234,15 +6427,179 @@ mod tests {
         );
     }
 
+    /// The defect the first patch introduced: it read the turn's tool calls
+    /// back off the session, where a `ToolUse` block sits whether or not the
+    /// call ever reached a tool, and announced all of them as executed. A
+    /// runaway loop is exactly the case where that is false — the loop guard
+    /// blocks a call repeated `block_threshold` (5) times, so on a 50-iteration
+    /// runaway most of the "executed" calls never ran at all.
+    #[tokio::test]
+    async fn test_max_iterations_does_not_report_loop_guard_blocked_calls_as_executed() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let mut session = blank_session();
+        // 9 iterations of one identical call. LoopGuardConfig::default() warns
+        // at 3 and blocks from the 5th occurrence on, so 4 run and 5 do not.
+        let result = run_agent_loop(
+            &never_stops_manifest(9),
+            "start the unbounded task",
+            &mut session,
+            &memory,
+            Arc::new(NeverStopsDriver::repeating()),
+            &system_time_tools(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the loop still leaves by the max-iterations door");
+
+        assert_eq!(result.iterations, 9);
+        assert_eq!(result.calls.len(), 9, "the provider served nine calls");
+
+        assert!(
+            result
+                .response
+                .contains("Tool calls that ran and succeeded (4)"),
+            "only the four the loop guard let through ran: {}",
+            result.response
+        );
+        assert!(
+            result
+                .response
+                .contains("Tool calls stopped before they ran (5)"),
+            "the five the loop guard blocked are named as blocked: {}",
+            result.response
+        );
+        assert!(
+            result
+                .response
+                .contains("system_time — stopped by the loop guard"),
+            "and what stopped them is named: {}",
+            result.response
+        );
+        // The claim the reviewer caught: nine calls asked for, nine announced
+        // as executed.
+        assert!(
+            !result.response.contains("ran and succeeded (9)"),
+            "all nine announced as executed — the defect this test exists for: {}",
+            result.response
+        );
+    }
+
+    /// The streaming half, which the first patch shipped with no test at all.
+    ///
+    /// A WS/SSE caller's transcript is the concatenation of the `TextDelta`
+    /// events (ws.rs:781-782), so the max-iterations notice has to arrive as a
+    /// delta or the turn ends saying nothing. Sending the whole summary as that
+    /// delta — which is what the first patch did — repeats every word of the
+    /// partial text the caller already received chunk by chunk.
+    #[tokio::test]
+    async fn test_streaming_max_iterations_notice_does_not_repeat_the_streamed_text() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let mut session = blank_session();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<StreamEvent>(4096);
+
+        let result = run_agent_loop_streaming(
+            &never_stops_manifest(3),
+            "start the unbounded task",
+            &mut session,
+            &memory,
+            Arc::new(NeverStopsDriver::talking("STREAM-PARTIAL-{n}")),
+            &system_time_tools(),
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("the streaming loop truncates a turn too; it does not fail one");
+
+        rx.close();
+        let mut streamed = String::new();
+        while let Some(ev) = rx.recv().await {
+            if let StreamEvent::TextDelta { text } = ev {
+                streamed.push_str(&text);
+            }
+        }
+
+        // FANG-47, streaming side: the accounting survives the exit.
+        assert_eq!(result.calls.len(), 3);
+        assert_eq!(result.total_usage.input_tokens, 3 * 7919);
+
+        // The notice reached the client exactly once — a streaming caller is
+        // told why the turn ended.
+        assert_eq!(
+            streamed.matches("Max iterations exceeded (3)").count(),
+            1,
+            "streamed transcript: {streamed}"
+        );
+        assert_eq!(
+            streamed
+                .matches("Tool calls that ran and succeeded (3)")
+                .count(),
+            1,
+            "streamed transcript: {streamed}"
+        );
+
+        // And each chunk of partial text reached it exactly once — not twice,
+        // which is what embedding the text in the final delta produced.
+        for n in 0..3 {
+            assert_eq!(
+                streamed.matches(&format!("STREAM-PARTIAL-{n}")).count(),
+                1,
+                "chunk {n} duplicated in the streamed transcript: {streamed}"
+            );
+        }
+
+        // The returned response says the same thing the deltas did, once each.
+        for n in 0..3 {
+            assert_eq!(
+                result.response.matches(&format!("STREAM-PARTIAL-{n}")).count(),
+                1,
+                "{}",
+                result.response
+            );
+        }
+        assert!(result.response.contains("Max iterations exceeded (3)"));
+    }
+
+    fn turn_call(n: u32, fate: ToolCallFate) -> TurnToolCall {
+        TurnToolCall::new("file_write", &serde_json::json!({ "n": n }), fate)
+    }
+
     #[test]
-    fn test_max_iterations_summary_elides_a_long_tool_list_without_losing_the_count() {
-        let uses: Vec<(String, String)> = (0..50)
-            .map(|n| ("file_write".to_string(), format!("{{\"n\":{n}}}")))
+    fn test_max_iterations_notice_elides_a_long_tool_list_without_losing_the_count() {
+        let calls: Vec<TurnToolCall> = (0..50)
+            .map(|n| turn_call(n, ToolCallFate::Completed))
             .collect();
-        let s = max_iterations_summary(50, "partial answer so far", &uses);
+        let s = max_iterations_summary("partial answer so far", &max_iterations_notice(50, &calls));
         assert!(s.contains("Max iterations exceeded (50)"));
         assert!(s.contains("partial answer so far"));
-        assert!(s.contains("Tool calls executed (50)"));
+        assert!(s.contains("Tool calls that ran and succeeded (50)"), "{s}");
         assert!(s.contains("… and 30 more"), "{s}");
         assert!(
             s.contains("{\"n\":0}") && !s.contains("{\"n\":49}"),
@@ -6251,9 +6608,90 @@ mod tests {
     }
 
     #[test]
-    fn test_max_iterations_summary_says_so_when_nothing_ran() {
-        let s = max_iterations_summary(2, "", &[]);
+    fn test_max_iterations_notice_says_so_when_nothing_ran() {
+        let s = max_iterations_notice(2, &[]);
         assert!(s.contains("No tool calls were executed in this turn."));
+    }
+
+    /// The notice must not count a call that never reached a tool among the
+    /// calls that ran: that is exactly the claim FANG-9 is open for.
+    #[test]
+    fn test_max_iterations_notice_counts_blocked_calls_apart_from_calls_that_ran() {
+        let calls = vec![
+            turn_call(0, ToolCallFate::Completed),
+            turn_call(1, ToolCallFate::Errored),
+            turn_call(2, ToolCallFate::Blocked("stopped by the loop guard")),
+            turn_call(3, ToolCallFate::Blocked("stopped by the loop guard")),
+            turn_call(4, ToolCallFate::Blocked("stopped by a BeforeToolCall hook")),
+        ];
+        let s = max_iterations_notice(5, &calls);
+        assert!(s.contains("Tool calls that ran and succeeded (1)"), "{s}");
+        assert!(s.contains("Tool calls that returned an error (1)"), "{s}");
+        assert!(s.contains("Tool calls stopped before they ran (3)"), "{s}");
+        assert!(s.contains("file_write — stopped by the loop guard"), "{s}");
+        assert!(
+            s.contains("file_write — stopped by a BeforeToolCall hook"),
+            "{s}"
+        );
+        // The three blocked calls appear once each, under the stopped heading —
+        // never under a heading that says they ran.
+        let ran_section = s.split("Tool calls stopped before they ran").next().unwrap();
+        for n in [2, 3, 4] {
+            assert!(
+                !ran_section.contains(&format!("{{\"n\":{n}}}")),
+                "blocked call {n} listed as having run: {s}"
+            );
+        }
+    }
+
+    /// `fate_counts` is what the max-iterations log line and the AgentLoopEnd
+    /// hook report, so a blocked call landing in the "ran" number would put the
+    /// same false claim into the operator's logs as into the response body.
+    #[test]
+    fn test_fate_counts_keeps_the_three_groups_apart() {
+        let calls = vec![
+            turn_call(0, ToolCallFate::Completed),
+            turn_call(1, ToolCallFate::Completed),
+            turn_call(2, ToolCallFate::Errored),
+            turn_call(3, ToolCallFate::Blocked("stopped by the loop guard")),
+            turn_call(4, ToolCallFate::Blocked("stopped by a BeforeToolCall hook")),
+            turn_call(5, ToolCallFate::Blocked("stopped by the loop guard")),
+        ];
+        assert_eq!(fate_counts(&calls), (2, 1, 3));
+        assert_eq!(fate_counts(&[]), (0, 0, 0));
+    }
+
+    /// A section with no members prints nothing at all — the notice never says
+    /// "(0)" about a fate no call had.
+    #[test]
+    fn test_max_iterations_notice_omits_the_sections_it_has_no_calls_for() {
+        let s = max_iterations_notice(4, &[turn_call(0, ToolCallFate::Blocked("stopped by the loop guard"))]);
+        assert!(s.contains("Tool calls stopped before they ran (1)"), "{s}");
+        assert!(!s.contains("ran and succeeded"), "{s}");
+        assert!(!s.contains("returned an error"), "{s}");
+        assert!(!s.contains("No tool calls were executed"), "{s}");
+    }
+
+    /// The streaming loop sends only the notice as a delta because the caller
+    /// already received `accumulated_text` chunk by chunk. Delta-stream and
+    /// returned `response` therefore have to be the same string — if they drift,
+    /// a streaming caller sees the partial text twice.
+    #[test]
+    fn test_streaming_delta_plus_streamed_text_equals_the_returned_response() {
+        let notice = max_iterations_notice(3, &[turn_call(0, ToolCallFate::Completed)]);
+        let streamed = "partial answer so far";
+        let response = max_iterations_summary(streamed, &notice);
+        let delta = format!("\n\n{notice}");
+        assert_eq!(format!("{streamed}{delta}"), response);
+        assert_eq!(
+            response.matches(streamed).count(),
+            1,
+            "the partial text appears once, not twice: {response}"
+        );
+
+        // And with nothing streamed, the delta is the whole response.
+        let response = max_iterations_summary("", &notice);
+        assert_eq!(response, notice);
     }
 
     /// A retry inside `call_with_retry` is the same call, not a new one.
