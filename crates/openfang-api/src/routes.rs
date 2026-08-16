@@ -6514,12 +6514,40 @@ pub async fn run_migrate(Json(req): Json<MigrateRequest>) -> impl IntoResponse {
 
 // ── Model Catalog Endpoints ─────────────────────────────────────────
 
-/// GET /api/models — List all models in the catalog.
+/// Providers kept in the focused dashboard catalog. Explicitly configured
+/// providers are also shown, so arbitrary OpenAI-compatible endpoints added
+/// through Settings remain available without expanding this list.
+const CURATED_PROVIDER_IDS: &[&str] = &[
+    "y7router",
+    "hyperfusion",
+    "openrouter",
+    "anthropic",
+    "claude-code",
+    "openai",
+    "codex",
+    "gemini",
+    "opencode",
+];
+
+fn provider_is_visible(p: &openfang_types::model_catalog::ProviderInfo) -> bool {
+    CURATED_PROVIDER_IDS.contains(&p.id.as_str())
+        || p.auth_status == openfang_types::model_catalog::AuthStatus::Configured
+}
+
+fn show_full_catalog(params: &HashMap<String, String>) -> bool {
+    params
+        .get("all")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
+/// GET /api/models — List models in the focused catalog.
 ///
 /// Query parameters:
 /// - `provider` — filter by provider (e.g. `?provider=anthropic`)
 /// - `tier` — filter by tier (e.g. `?tier=smart`)
 /// - `available` — only show models from configured providers (`?available=true`)
+/// - `all` — include the full built-in catalog for diagnostics (`?all=true`)
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -6535,11 +6563,21 @@ pub async fn list_models(
         .get("available")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
+    let include_all = show_full_catalog(&params);
 
     let models: Vec<serde_json::Value> = catalog
         .list_models()
         .iter()
         .filter(|m| {
+            if !include_all {
+                let visible = catalog
+                    .get_provider(&m.provider)
+                    .map(provider_is_visible)
+                    .unwrap_or(false);
+                if !visible {
+                    return false;
+                }
+            }
             if let Some(ref p) = provider_filter {
                 if m.provider.to_lowercase() != *p {
                     return false;
@@ -6583,14 +6621,19 @@ pub async fn list_models(
         })
         .collect();
 
-    let total = catalog.list_models().len();
-    let available_count = catalog.available_models().len();
+    let total = models.len();
+    let catalog_total = catalog.list_models().len();
+    let available_count = models
+        .iter()
+        .filter(|m| m.get("available").and_then(|v| v.as_bool()) == Some(true))
+        .count();
 
     (
         StatusCode::OK,
         Json(serde_json::json!({
             "models": models,
             "total": total,
+            "catalog_total": catalog_total,
             "available": available_count,
         })),
     )
@@ -6666,7 +6709,7 @@ pub async fn get_model(
     }
 }
 
-/// GET /api/providers — List all providers with auth status.
+/// GET /api/providers — List focused providers with auth status.
 ///
 /// For local providers (ollama, vllm, lmstudio), also probes reachability and
 /// discovers available models via their health endpoints.
@@ -6674,14 +6717,32 @@ pub async fn get_model(
 /// Probes run **concurrently** and results are **cached for 60 seconds** so the
 /// endpoint responds instantly on repeated dashboard loads even when local
 /// providers are unreachable (fixes #474).
-pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// Pass `?all=true` to include the full built-in catalog for diagnostics.
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let include_all = show_full_catalog(&params);
     let provider_list: Vec<openfang_types::model_catalog::ProviderInfo> = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        catalog.list_providers().to_vec()
+        catalog
+            .list_providers()
+            .iter()
+            .filter(|p| include_all || provider_is_visible(p))
+            .cloned()
+            .collect()
+    };
+    let catalog_total = {
+        let catalog = state
+            .kernel
+            .model_catalog
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        catalog.list_providers().len()
     };
 
     // Collect local providers that need probing
@@ -6751,6 +6812,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         Json(serde_json::json!({
             "providers": providers,
             "total": total,
+            "catalog_total": catalog_total,
         })),
     )
 }
@@ -13171,5 +13233,31 @@ mod tests {
             a["openfang_llm_fallback_calls_total{agent=\"test-adv-mixed\",requested=\"adv-primary\",served=\"adv-fallback\"}"],
             1.0
         );
+    }
+
+    #[test]
+    fn focused_catalog_keeps_curated_and_configured_custom_providers() {
+        let provider = |id: &str, auth_status| openfang_types::model_catalog::ProviderInfo {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            api_key_env: String::new(),
+            base_url: String::new(),
+            key_required: true,
+            auth_status,
+            model_count: 0,
+        };
+
+        assert!(provider_is_visible(&provider(
+            "hyperfusion",
+            openfang_types::model_catalog::AuthStatus::Missing,
+        )));
+        assert!(provider_is_visible(&provider(
+            "my-openai-compatible",
+            openfang_types::model_catalog::AuthStatus::Configured,
+        )));
+        assert!(!provider_is_visible(&provider(
+            "unused-builtin",
+            openfang_types::model_catalog::AuthStatus::Missing,
+        )));
     }
 }
