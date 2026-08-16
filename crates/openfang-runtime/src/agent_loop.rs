@@ -6234,7 +6234,11 @@ mod tests {
         }]
     }
 
-    fn system_time_response(n: u32, input: serde_json::Value, text: Option<String>) -> CompletionResponse {
+    fn system_time_response(
+        n: u32,
+        input: serde_json::Value,
+        text: Option<String>,
+    ) -> CompletionResponse {
         let mut content = Vec::new();
         if let Some(t) = &text {
             content.push(ContentBlock::Text {
@@ -6578,7 +6582,10 @@ mod tests {
         // The returned response says the same thing the deltas did, once each.
         for n in 0..3 {
             assert_eq!(
-                result.response.matches(&format!("STREAM-PARTIAL-{n}")).count(),
+                result
+                    .response
+                    .matches(&format!("STREAM-PARTIAL-{n}"))
+                    .count(),
                 1,
                 "{}",
                 result.response
@@ -6635,7 +6642,10 @@ mod tests {
         );
         // The three blocked calls appear once each, under the stopped heading —
         // never under a heading that says they ran.
-        let ran_section = s.split("Tool calls stopped before they ran").next().unwrap();
+        let ran_section = s
+            .split("Tool calls stopped before they ran")
+            .next()
+            .unwrap();
         for n in [2, 3, 4] {
             assert!(
                 !ran_section.contains(&format!("{{\"n\":{n}}}")),
@@ -6665,7 +6675,13 @@ mod tests {
     /// "(0)" about a fate no call had.
     #[test]
     fn test_max_iterations_notice_omits_the_sections_it_has_no_calls_for() {
-        let s = max_iterations_notice(4, &[turn_call(0, ToolCallFate::Blocked("stopped by the loop guard"))]);
+        let s = max_iterations_notice(
+            4,
+            &[turn_call(
+                0,
+                ToolCallFate::Blocked("stopped by the loop guard"),
+            )],
+        );
         assert!(s.contains("Tool calls stopped before they ran (1)"), "{s}");
         assert!(!s.contains("ran and succeeded"), "{s}");
         assert!(!s.contains("returned an error"), "{s}");
