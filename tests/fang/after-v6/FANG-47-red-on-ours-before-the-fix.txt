@@ -6,12 +6,13 @@
 #            FANG-47.sh             sha256 fed92c584372da9af8b09418a9496e3c…
 # image    : openfang:ours-7606210
 #            (sha256:2536fe57929d3c37a55e82de4a8e349a548734d4f90052068a14240691e3c8de)
-#            The build this branch was cut from, WITHOUT the fix. What this
-#            run establishes about that image is one thing: its max-iterations
-#            exit still answers 500 and books nothing — the measurements below
-#            are the whole of the claim. It is the pairing run, so the green beside it
-#            is a statement about the patch and not about the older sprint-3
-#            image the baselines were captured on.
+#            Tagged on this box as the ours @ 7606210 build. This run does not
+#            verify that tag and does not have to: what it establishes about the
+#            image is that the image does not carry the fix — the turn ends 500
+#            and neither usage_events nor /api/usage/by-model moves. That is
+#            what makes it the pairing run: the green beside it is a statement
+#            about the patch, and not about the older sprint-3 image the
+#            baselines were captured on.
 # stand    : of-fang1047, container port 4200 published on 127.0.0.1:4247,
 #            on a volume created fresh for the run. Nothing else on this box
 #            was touched; production (:4200) was never addressed.
