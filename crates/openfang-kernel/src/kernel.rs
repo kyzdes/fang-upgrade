@@ -3005,13 +3005,19 @@ impl OpenFangKernel {
         )
         .await;
 
-        // FANG-13. The two session stores are mirrored on BOTH exits, not just
-        // the successful one. Every failing exit of the agent loop saves the
-        // per-session store on its way out (`memory.save_session_async`), so
-        // leaving the canonical append and the JSONL mirror on the `Ok` side of
-        // a `?` meant the per-session history had the turn's messages and the
-        // cross-channel one did not — for every max-iterations failure, and now
-        // for every turn that produced no text as well.
+        // FANG-13. The canonical append and the JSONL mirror used to sit on the
+        // `Ok` side of a `?`, so a failing turn left the per-session history
+        // holding the turn's messages while the cross-channel one did not.
+        // Mirroring both exits closes that for the failures that DO save the
+        // per-session store on their way out — max-iterations, and now a turn
+        // that produced no text.
+        //
+        // Not every failing exit does: an earlier version of this comment said
+        // "every failing exit ... saves the per-session store", and that is not
+        // true. On an exit that saves neither, the two stores still agree; the
+        // ones to watch are exits that save one and not the other. This mirrors
+        // whatever the per-session store did, so it does not create that case —
+        // but nothing here proves no such exit exists.
         if session.messages.len() > messages_before {
             let new_messages = session.messages[messages_before..].to_vec();
             if let Err(e) = self.memory.append_canonical(agent_id, &new_messages, None) {

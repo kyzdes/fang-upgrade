@@ -356,21 +356,30 @@ fn no_text_failure(
     let stream = if streaming { " streamed" } else { "" };
     // No guesses about *why* in this text. The sentence it replaces offered
     // three ("overloaded, the context is too large, or the API key lacks
-    // credits") and the runtime knew none of them to be true; worse, the word
-    // "overloaded" is one of the patterns `llm_errors::classify_error` matches
-    // on, so the guess came back out of the WebSocket classifier as a
-    // confident "Provider overloaded". State what was observed, nothing else —
-    // and keep the observation out of that classifier's pattern tables:
-    // "token limit", for one, is read there as a context-window overflow.
+    // credits") and the runtime knew none of them to be true.
+    //
+    // There is a second reason to keep the wording clear of those words, and it
+    // is a hazard rather than something already observed: "overloaded" is one of
+    // the patterns `llm_errors::classify_error` matches on, so a guess phrased
+    // that way is liable to be re-read downstream as a confident "Provider
+    // overloaded". The old sentence was never seen doing that — it did not reach
+    // a WebSocket client at all — so this is a trap avoided, not a bug fixed.
+    // "token limit" carries the same risk: that table reads it as a
+    // context-window overflow.
     let what = match cause {
         NoText::EmptyFinalMessage => format!(
             "after {iterations} iteration(s) the final{stream} message carried no text, \
              no tool calls and no content"
         ),
+        // Says what the caller counted, and stops there. An earlier wording
+        // added "and none of those responses carried any text" — which nothing
+        // here observes: the loop counts length-stops, it does not record
+        // whether each truncated response was empty. That was a new unverified
+        // sentence inside the very change that removes unverified sentences.
         NoText::TruncatedWithNoText { continuations } => format!(
             "the provider stopped at finish_reason=length {continuations} times in a row \
-             across {iterations} iteration(s) and none of those{stream} responses carried \
-             any text"
+             across {iterations} iteration(s), and the turn ended with no{stream} text to \
+             return"
         ),
     };
     let tools_note = if any_tools_executed {
