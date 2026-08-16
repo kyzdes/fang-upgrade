@@ -1,0 +1,1121 @@
+#!/usr/bin/env bash
+# ofrelease — promote and roll back an OpenFang deployment with one command.
+#
+# FANG-2. A promote on this box used to be seven manual steps in a row: build
+# the image, tag it, snapshot the volume, stop the container, swap the image,
+# start, check. Four promotes were done that way, and the interesting part is
+# not the tedium — it is that the snapshot was the step most likely to be
+# skipped, and the rollback existed only as a plan in somebody's head.
+#
+# WHAT THIS DOES, AND IN WHICH ORDER
+#
+#   promote   resolve the target FROM ITS OWN CONTAINER, refuse if it is
+#             production, capture the pre-state, snapshot the volume, stop,
+#             rename the old container aside (it IS the rollback artefact),
+#             start the new image, wait for /api/health, verify.
+#   rollback  put the previous container object back — the same container, by
+#             rename, not a lookalike rebuilt from a remembered image id — and
+#             optionally restore the volume from the snapshot promote took.
+#             Then PROVE the return: image id, /api/health, PRAGMA
+#             user_version and the agent count are compared against the values
+#             recorded before the promote, field by field.
+#   status    what is deployed, what the guards say, what the ledger holds.
+#   history   the ledger.
+#   fingerprint  a hash of the control-plane state; --dry-run is proved by
+#             taking it before and after and showing it did not move.
+#
+# THREE THINGS LEARNED THE HARD WAY, ENCODED HERE
+#
+#   1. The target is read out of the container that is about to be replaced,
+#      never out of a flag or an environment variable that "should" describe
+#      it. Volume, published ports, restart policy and the explicitly-set
+#      environment all come from `docker inspect` of that exact container.
+#
+#   2. Every destructive step proves its target immediately before acting, by
+#      the same identity it is about to act on. Sprint 4 produced three
+#      findings in a row of the shape "the guard checked the container name
+#      and the code deleted a volume named in an environment variable". So:
+#      before `docker stop`, the container id is re-read and compared; before
+#      the volume is written, the mount source is re-read from the container
+#      and compared with the path handed to the restore.
+#
+#   3. Production is refused, not warned about. openfang-openfang-1, volume
+#      openfang_openfang-data and host port 4200 are three SEPARATE checks —
+#      a target trips whichever ones apply — and there is no flag that turns
+#      them off. Enabling production is a deliberate edit of the three
+#      constants below, made by a human who has read this file.
+#
+# POSIX-ish bash; needs docker, curl, python3, and ofbackup for the snapshot.
+set -uo pipefail
+
+# ---------------------------------------------------------------- refusals --
+# Not configurable on purpose. See note 3 above.
+PROD_CONTAINER=openfang-openfang-1
+PROD_VOLUME=openfang_openfang-data
+PROD_PORT=4200
+
+# ------------------------------------------------------------------ config --
+STATE_DIR="${OFRELEASE_STATE_DIR:-/var/lib/ofrelease}"
+BACKUP_ROOT="${OFRELEASE_BACKUP_ROOT:-/srv/backups/ofrelease}"
+OFBACKUP="${OFBACKUP:-/root/.claude/skills/openfang/scripts/ofbackup}"
+HEALTH_TIMEOUT="${OFRELEASE_HEALTH_TIMEOUT:-90}"
+STOP_TIMEOUT="${OFRELEASE_STOP_TIMEOUT:-30}"
+MIN_FREE_GB="${OFRELEASE_MIN_FREE_GB:-1}"
+MIN_FREE_GB_BUILD="${OFRELEASE_MIN_FREE_GB_BUILD:-5}"
+
+log()  { printf '%s\n' "$*" >&2; }
+step() { printf '\n== %s\n' "$*" >&2; }
+die()  { printf 'ofrelease: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+usage() {
+  cat <<'EOF'
+ofrelease — promote and roll back an OpenFang deployment (FANG-2)
+
+USAGE
+  ofrelease status      --container NAME [--json]
+  ofrelease promote     --container NAME --image REF [options]
+  ofrelease rollback    --container NAME [--with-volume] [--to ID] [--dry-run]
+  ofrelease history     --container NAME
+  ofrelease fingerprint --container NAME
+  ofrelease prune       --container NAME [--keep N] [--dry-run]
+
+  --container may also be given as $OFRELEASE_CONTAINER. There is no default:
+  a release tool that guesses its target is the bug it is meant to prevent.
+
+PROMOTE OPTIONS
+  --image REF        image to deploy. Must already exist locally unless --build
+                     is given; ofrelease never pulls and never guesses.
+  --build CONTEXT    docker build -t REF CONTEXT first, then promote it.
+  --dry-run          print the plan and change nothing. Prove it with
+                     `ofrelease fingerprint` before and after.
+  --force            redeploy even when REF is already what the target runs.
+                     Without it a repeat promote of the same image is a no-op
+                     that exits 0 — promoting twice must not cost an outage.
+  --auto-rollback    if the new image does not reach /api/health, roll back
+                     immediately instead of leaving the target down.
+  --keep-prev N      keep at most N previous container objects (default 3).
+
+ROLLBACK OPTIONS
+  --with-volume      also restore the volume from the snapshot the promote
+                     took. Without it only the image moves back, and the
+                     proof block says so rather than pretending otherwise.
+  --to ID            roll back to a specific ledger release id (see history).
+  --no-safety-snapshot  skip the snapshot of the CURRENT state. The escape
+                     hatch for "the box is broken and the snapshot is what is
+                     failing"; it is loud, and it throws away the only copy of
+                     what you are rolling back from.
+  --dry-run          print the plan and change nothing.
+
+WHAT PROMOTE DOES, IN ORDER
+  1. resolve the target from `docker inspect` of the container itself
+  2. refuse production: name, volume and host port, checked separately
+  3. refuse compose-managed containers (recreating one by hand desynchronises
+     compose; production is exactly such a container)
+  4. no-op if the image is already deployed (unless --force)
+  5. capture the pre-state: image id, /api/health, PRAGMA user_version, agents
+  6. SNAPSHOT THE VOLUME — WAL-safe, integrity_check'd — and abort if it does
+     not verify. Nothing destructive has run yet. Via ofbackup when the target
+     is a running daemon that can execute python3; otherwise offline, by
+     stopping it and copying the quiesced files from the host, so that a
+     rollback away from a broken image is still possible.
+  7. stop (id re-checked), rename the old container to NAME--prev-STAMP
+  8. start NAME from the new image with the same volume, ports, env, policy
+  9. wait for /api/health, capture the post-state, write the ledger
+
+ENVIRONMENT
+  OFRELEASE_CONTAINER     target container
+  OFRELEASE_STATE_DIR     ledger directory   (default /var/lib/ofrelease)
+  OFRELEASE_BACKUP_ROOT   snapshot root      (default /srv/backups/ofrelease)
+  OFBACKUP                path to ofbackup
+  OFRELEASE_HEALTH_TIMEOUT  seconds to wait for /api/health (default 90)
+
+EXIT
+  0 ok    1 failure    2 refused by a guard    3 environment    4 not found
+EOF
+}
+
+# ------------------------------------------------------------- small utils --
+have() { command -v "$1" >/dev/null 2>&1; }
+
+require_env() {
+  have docker  || die "docker not found on PATH" 3
+  docker info >/dev/null 2>&1 || die "cannot talk to the docker daemon" 3
+  have python3 || die "python3 not found on PATH" 3
+  have curl    || die "curl not found on PATH" 3
+}
+
+free_gb() { df -BG --output=avail / | tail -1 | tr -dc '0-9'; }
+
+require_disk() { # $1 = gigabytes, $2 = what for
+  local free; free="$(free_gb)"
+  [ -n "$free" ] || return 0
+  if [ "$free" -lt "$1" ]; then
+    die "only ${free}G free on /, $2 wants at least ${1}G. Free space or lower OFRELEASE_MIN_FREE_GB." 3
+  fi
+  log "disk: ${free}G free on /"
+}
+
+exists_container() { docker inspect "$1" >/dev/null 2>&1; }
+exists_volume()    { docker volume inspect "$1" >/dev/null 2>&1; }
+
+sha256_of_file() { [ -f "$1" ] && sha256sum "$1" | cut -d' ' -f1 || printf '%s' '-'; }
+
+# Build a JSON object from KEY VALUE pairs passed as ARGV. Not from a heredoc:
+# the first version of this file assembled the ledger record inside
+# `python3 - <<PY` with $(...) substitutions in the body, nested inside a $( )
+# of its own, and bash fed python a program truncated after line 2. It failed
+# loudly enough to notice (a SyntaxError on stderr) but the promote carried on
+# and wrote an unrollbackable release. Values now travel as arguments, where
+# nothing quotes, expands or truncates them.
+#   mkjson event promote id rel-1 pre.agents 14   ->  dotted keys nest
+#   values \1true / \1false become JSON booleans
+mkjson() {
+  python3 -c '
+import json, sys
+d = {}
+a = sys.argv[1:]
+for k, v in zip(a[0::2], a[1::2]):
+    cur, parts = d, k.split(".")
+    for p in parts[:-1]:
+        cur = cur.setdefault(p, {})
+    cur[parts[-1]] = True if v == "\x01true" else False if v == "\x01false" else v
+sys.stdout.write(json.dumps(d))' "$@"
+}
+jbool() { [ -n "$1" ] && printf '\1true' || printf '\1false'; }
+
+# ------------------------------------------------------- target resolution --
+# Everything about the deployment is read out of the container that is about
+# to be replaced. Nothing here comes from a flag: a wrong flag is how you
+# stop one container and overwrite another one's volume.
+#
+# Sets: T_ID T_IMAGE_REF T_IMAGE_ID T_STATUS T_VOLUME T_VOLSRC T_HOME
+#       T_PORTS_HUMAN T_HOSTPORTS T_RUNARGS T_COMPOSE
+resolve_target() {
+  local name="$1" cjson ijson out
+  exists_container "$name" || die "no container named '$name'" 4
+  cjson="$(docker inspect "$name" 2>/dev/null)" || die "docker inspect $name failed" 3
+  local imgid
+  imgid="$(printf '%s' "$cjson" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["Image"])')" \
+    || die "cannot read image id of $name" 3
+  ijson="$(docker image inspect "$imgid" 2>/dev/null)" || ijson='[{"Config":{"Env":[]}}]'
+
+  # The two JSON blobs go through the environment, not stdin: `python3 -` reads
+  # its program from stdin, so a heredoc and a pipe cannot both feed it.
+  out="$(OFR_CJSON="$cjson" OFR_IJSON="$ijson" python3 -c '
+import json, os, shlex
+c = json.loads(os.environ["OFR_CJSON"])[0]
+try:
+    img = json.loads(os.environ["OFR_IJSON"])[0]
+except Exception:
+    img = {"Config": {"Env": []}}
+
+cfg, hc = c.get("Config") or {}, c.get("HostConfig") or {}
+env = list(cfg.get("Env") or [])
+img_env = set((img.get("Config") or {}).get("Env") or [])
+# Explicitly-set env = what the container has that the image does not supply.
+explicit = [e for e in env if e not in img_env]
+
+home = "/data"
+for e in env:
+    if e.startswith("OPENFANG_HOME="):
+        home = e.split("=", 1)[1]
+
+vols = [m for m in (c.get("Mounts") or [])
+        if m.get("Type") == "volume" and m.get("Destination") == home]
+if len(vols) != 1:
+    print("ERROR|expected exactly one volume mounted at %s, found %d" % (home, len(vols)))
+    raise SystemExit(0)
+vol = vols[0]
+
+pb = hc.get("PortBindings") or {}
+runargs, human, hostports = [], [], []
+for cport in sorted(pb):
+    for b in (pb[cport] or []):
+        hip, hp = b.get("HostIp") or "", b.get("HostPort") or ""
+        hostports.append(hp)
+        spec = ("%s:%s:%s" % (hip, hp, cport.split("/")[0])) if hip else ("%s:%s" % (hp, cport.split("/")[0]))
+        runargs += ["-p", spec]
+        human.append(spec)
+
+rp = (hc.get("RestartPolicy") or {}).get("Name") or ""
+if rp and rp != "no":
+    mrc = (hc.get("RestartPolicy") or {}).get("MaximumRetryCount") or 0
+    runargs += ["--restart", rp + (":%d" % mrc if rp == "on-failure" and mrc else "")]
+
+for e in explicit:
+    runargs += ["-e", e]
+runargs += ["-v", "%s:%s" % (vol.get("Name"), home)]
+
+# Compose-managed is NOT "has com.docker.compose.* labels": an image built by
+# `docker compose build` carries com.docker.compose.{project,service,version}
+# and every container started from it inherits them, production or not. Only
+# labels the CONTAINER has beyond its image count, and among those only the
+# ones compose stamps when it creates a container.
+clabels = cfg.get("Labels") or {}
+ilabels = (img.get("Config") or {}).get("Labels") or {}
+own = {k: v for k, v in clabels.items() if ilabels.get(k) != v}
+MANAGED = ("com.docker.compose.config-hash", "com.docker.compose.container-number",
+           "com.docker.compose.oneoff", "com.docker.compose.project.working_dir",
+           "com.docker.compose.project.config_files")
+compose = "1" if any(k in own for k in MANAGED) else "0"
+
+fields = {
+    "ID": c["Id"],
+    "IMAGE_REF": cfg.get("Image") or "",
+    "IMAGE_ID": c["Image"],
+    "STATUS": (c.get("State") or {}).get("Status") or "",
+    "STARTED": (c.get("State") or {}).get("StartedAt") or "",
+    "VOLUME": vol.get("Name") or "",
+    "VOLSRC": vol.get("Source") or "",
+    "HOME": home,
+    "PORTS_HUMAN": " ".join(human),
+    "HOSTPORTS": " ".join(hostports),
+    "RUNARGS": " ".join(shlex.quote(a) for a in runargs),
+    "COMPOSE": compose,
+}
+for k, v in fields.items():
+    print("%s|%s" % (k, v))
+')" || die "could not parse docker inspect output for $name" 3
+
+  case "$out" in
+    ERROR\|*) die "${out#ERROR|}" 1 ;;
+  esac
+
+  T_ID=''; T_IMAGE_REF=''; T_IMAGE_ID=''; T_STATUS=''; T_STARTED=''
+  T_VOLUME=''; T_VOLSRC=''; T_HOME=''; T_PORTS_HUMAN=''; T_HOSTPORTS=''
+  T_RUNARGS=''; T_COMPOSE=''
+  local line k v
+  while IFS= read -r line; do
+    k="${line%%|*}"; v="${line#*|}"
+    case "$k" in
+      ID) T_ID="$v" ;; IMAGE_REF) T_IMAGE_REF="$v" ;; IMAGE_ID) T_IMAGE_ID="$v" ;;
+      STATUS) T_STATUS="$v" ;; STARTED) T_STARTED="$v" ;;
+      VOLUME) T_VOLUME="$v" ;; VOLSRC) T_VOLSRC="$v" ;; HOME) T_HOME="$v" ;;
+      PORTS_HUMAN) T_PORTS_HUMAN="$v" ;; HOSTPORTS) T_HOSTPORTS="$v" ;;
+      RUNARGS) T_RUNARGS="$v" ;; COMPOSE) T_COMPOSE="$v" ;;
+    esac
+  done <<<"$out"
+  [ -n "$T_ID" ] && [ -n "$T_VOLUME" ] || die "could not resolve the target from $name" 3
+  T_NAME="$name"
+}
+
+# ------------------------------------------------------------------ guards --
+# Three separate checks, so that a target trips exactly the ones that apply
+# and the diagnostic names which one. They run against the values RESOLVED
+# FROM THE CONTAINER, not against what the caller said the target was.
+guard_production() {
+  local hit=0 p
+  if [ "$T_NAME" = "$PROD_CONTAINER" ]; then
+    log "REFUSING [guard: container] '$T_NAME' is production."; hit=1
+  fi
+  if [ "$T_VOLUME" = "$PROD_VOLUME" ]; then
+    log "REFUSING [guard: volume] container '$T_NAME' mounts the production volume '$PROD_VOLUME' at $T_HOME."; hit=1
+  fi
+  local portseen=0
+  for p in $T_HOSTPORTS; do
+    if [ "$p" = "$PROD_PORT" ] && [ "$portseen" -eq 0 ]; then
+      log "REFUSING [guard: port] container '$T_NAME' publishes host port $PROD_PORT (production)."
+      hit=1; portseen=1
+    fi
+  done
+  [ "$hit" -eq 0 ] || die "production is not a target for this tool. Nothing was touched." 2
+  return 0
+}
+
+guard_compose() {
+  [ "$T_COMPOSE" = "1" ] &&
+    die "'$T_NAME' is compose-managed (com.docker.compose.* labels). Recreating it by hand desynchronises compose; deploy it through compose instead. Nothing was touched." 2
+  return 0
+}
+
+guard_all() { guard_production; guard_compose; }
+
+# -------------------------------------------------------------- observing --
+api_key_of() { # $1 = volume source dir on host
+  [ -r "$1/config.toml" ] || { printf ''; return 0; }
+  # Top-level api_key only: stop at the first [table] so api_key_env under
+  # [default_model] can never be concatenated onto it (an empty HTTP 400).
+  awk '
+    /^[[:space:]]*\[/ { exit }
+    /^[[:space:]]*api_key[[:space:]]*=/ {
+      sub(/^[^=]*=[[:space:]]*/, "")
+      gsub(/^["'"'"']|["'"'"'][[:space:]]*$/, "")
+      print; exit
+    }' "$1/config.toml"
+}
+
+base_url_of() { # first published binding, loopback when docker says 0.0.0.0
+  local spec ip port
+  spec="${T_PORTS_HUMAN%% *}"
+  case "$spec" in
+    *:*:*) ip="${spec%%:*}"; port="${spec#*:}"; port="${port%%:*}" ;;
+    *:*)   ip=127.0.0.1;     port="${spec%%:*}" ;;
+    *)     printf ''; return 0 ;;
+  esac
+  case "$ip" in ''|0.0.0.0|'::') ip=127.0.0.1 ;; esac
+  printf 'http://%s:%s' "$ip" "$port"
+}
+
+obs_health() { local u; u="$(base_url_of)"; [ -n "$u" ] || { echo '<no published port>'; return 0; }
+  curl -sS -m 5 "$u/api/health" 2>/dev/null || echo '<no answer>'; }
+
+obs_version() {
+  obs_health | python3 -c 'import json,sys
+try: print(json.load(sys.stdin).get("version","?"))
+except Exception: print("?")'
+}
+
+UV_PY='
+import sqlite3, sys
+try:
+    print(sqlite3.connect(sys.argv[1], uri=True).execute("PRAGMA user_version").fetchone()[0])
+except Exception:
+    print("?")'
+
+obs_user_version() {
+  local db="$T_VOLSRC/data/openfang.db"
+  if [ "$(docker inspect -f '{{.State.Running}}' "$T_NAME" 2>/dev/null)" = "true" ]; then
+    # read-only URI while the daemon holds the DB: never write to a live file
+    docker exec "$T_NAME" python3 -c "$UV_PY" "file:$T_HOME/data/openfang.db?mode=ro" 2>/dev/null || echo '?'
+  elif [ -f "$db" ]; then
+    python3 -c "$UV_PY" "$db"
+  else
+    echo '?'
+  fi
+}
+
+obs_agents() {
+  local u k; u="$(base_url_of)"; k="$(api_key_of "$T_VOLSRC")"
+  [ -n "$u" ] && [ -n "$k" ] || { echo '?'; return 0; }
+  curl -sS -m 10 -H "Authorization: Bearer $k" "$u/api/agents" 2>/dev/null | python3 -c '
+import json,sys
+try:
+    d = json.load(sys.stdin)
+    print(len(d) if isinstance(d, list) else len(d.get("agents", [])))
+except Exception:
+    print("?")'
+}
+
+# Fills O_IMAGE_ID O_HEALTH O_VERSION O_UV O_AGENTS for the current target.
+observe() {
+  O_IMAGE_ID="$(docker inspect -f '{{.Image}}' "$T_NAME" 2>/dev/null || echo '?')"
+  O_HEALTH="$(obs_health)"
+  O_VERSION="$(obs_version)"
+  O_UV="$(obs_user_version)"
+  O_AGENTS="$(obs_agents)"
+}
+
+print_observation() { # $1 = label
+  printf '%s\n' "$1"
+  printf '  image id     : %s\n' "$O_IMAGE_ID"
+  printf '  /api/health  : %s\n' "$O_HEALTH"
+  printf '  version      : %s\n' "$O_VERSION"
+  printf '  user_version : %s\n' "$O_UV"
+  printf '  agents       : %s\n' "$O_AGENTS"
+}
+
+wait_healthy() { # $1 = seconds
+  local i h
+  for i in $(seq 1 "$1"); do
+    h="$(obs_health)"
+    case "$h" in *'"status":"ok"'*) printf '%s' "$h"; return 0 ;; esac
+    sleep 1
+  done
+  return 1
+}
+
+# ------------------------------------------------------------ fingerprint --
+# A hash of the CONTROL-PLANE state only. Deliberately excludes anything a
+# running daemon rewrites on its own (the WAL, logs, session rows): a
+# fingerprint that drifts while nothing happens proves nothing about a
+# --dry-run. What it does cover: the container object, the image it runs, the
+# published ports, the volume identity, config.toml, the schema version, the
+# set of snapshots, the ledger, and every sibling NAME--prev-* container.
+fingerprint_blob() {
+  local name="$1"
+  printf 'container %s\n' "$name"
+  if exists_container "$name"; then
+    docker inspect "$name" --format \
+      'id={{.Id}} image={{.Image}} ref={{.Config.Image}} status={{.State.Status}} started={{.State.StartedAt}} ports={{json .HostConfig.PortBindings}} mounts={{range .Mounts}}{{.Type}}:{{.Name}}:{{.Destination}};{{end}}'
+  else
+    printf 'absent\n'
+  fi
+  printf 'siblings\n'
+  docker ps -a --format '{{.Names}} {{.ID}} {{.Image}}' | grep -E "^${name}--prev-" | sort || true
+  printf 'volume\n'
+  if [ -n "${T_VOLSRC:-}" ]; then
+    printf 'name=%s src=%s config=%s uv=%s\n' \
+      "$T_VOLUME" "$T_VOLSRC" "$(sha256_of_file "$T_VOLSRC/config.toml")" "$(obs_user_version)"
+  else
+    printf 'unresolved\n'
+  fi
+  printf 'snapshots\n'
+  ls -1 "$BACKUP_ROOT/$name" 2>/dev/null | sort || printf 'none\n'
+  printf 'ledger %s\n' "$(sha256_of_file "$(ledger_path "$name")")"
+}
+
+cmd_fingerprint() {
+  local name="$1"
+  require_env
+  exists_container "$name" && resolve_target "$name" || T_NAME="$name"
+  fingerprint_blob "$name" | sha256sum | cut -d' ' -f1
+}
+
+# ---------------------------------------------------------------- ledger ---
+ledger_path() { printf '%s/%s.jsonl' "$STATE_DIR" "$1"; }
+
+ledger_append() { # $1 = json line
+  mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR" || die "cannot create $STATE_DIR" 3
+  printf '%s\n' "$1" >> "$(ledger_path "$T_NAME")" || die "cannot write the ledger" 3
+  chmod 600 "$(ledger_path "$T_NAME")" 2>/dev/null || true
+}
+
+# Newest promote record that finished ok and has not been rolled back yet.
+# --to ID overrides the search. Prints the JSON object, or nothing.
+ledger_last_promote() { # $1 = container, $2 = optional id
+  local f; f="$(ledger_path "$1")"
+  [ -f "$f" ] || return 1
+  python3 - "$f" "${2:-}" <<'PY'
+import json, sys
+recs = []
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if line:
+        try: recs.append(json.loads(line))
+        except Exception: pass
+want = sys.argv[2] or None
+results = {r["id"]: r for r in recs if r.get("event") == "promote-result"}
+rolled = {r.get("of") for r in recs if r.get("event") == "rollback-result" and r.get("status") == "ok"}
+promotes = [r for r in recs if r.get("event") == "promote"]
+for r in reversed(promotes):
+    rid = r.get("id")
+    if want:
+        if rid == want:
+            r["_status"] = results.get(rid, {}).get("status", "unknown")
+            r["_rolled_back"] = rid in rolled
+            print(json.dumps(r)); raise SystemExit(0)
+        continue
+    if results.get(rid, {}).get("status") != "ok":
+        continue
+    if rid in rolled:
+        continue
+    print(json.dumps(r)); raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+jget() { # $1 = json, $2 = key
+  printf '%s' "$1" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+for p in sys.argv[1].split("."):
+    d = d.get(p) if isinstance(d, dict) else None
+    if d is None: break
+sys.stdout.write("" if d is None else str(d))' "$2"
+}
+
+# --------------------------------------------------------------- snapshot --
+# ofbackup owns the snapshot: it uses SQLite's backup API (no torn WAL, no
+# downtime) and integrity_check's the result. Reimplementing that here would
+# be a second, less-tested copy of the one thing that must not be wrong.
+verify_mount() { # the path we are about to read or write must be THIS container's
+  local live_src
+  live_src="$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$T_HOME\"}}{{.Source}}{{end}}{{end}}" "$T_NAME" 2>/dev/null)"
+  [ "$live_src" = "$T_VOLSRC" ] ||
+    die "refusing: $T_NAME mounts '$live_src' at $T_HOME, resolution said '$T_VOLSRC'" 2
+}
+
+# ofbackup's snapshot runs `docker exec CONTAINER python3` — SQLite's backup
+# API from inside the running daemon, which is the right way to copy a live WAL
+# database. It also means the snapshot only works if the container is running a
+# working OpenFang image.
+#
+# That is fine for a promote and WRONG for a rollback, and the acceptance test
+# is what said so: promoting an image that has no python3 and never answers
+# /api/health left the target down, and then the rollback's own safety snapshot
+# died on `exec: "python3": executable file not found`. The rollback refused at
+# exactly the moment it was the only thing that could help.
+#
+# So there are two snapshot paths and the container decides which one applies:
+#   live     the daemon is up and can run python3 -> ofbackup, no downtime
+#   offline  it cannot -> stop the container (nothing is serving anyway) and
+#            copy the quiesced files on the host, replaying any -wal into a
+#            clean db with the same backup API, from the host's python3.
+# Both produce the same layout, so `ofbackup restore` reads either.
+snapshot_mode() {
+  [ "$(docker inspect -f '{{.State.Running}}' "$T_NAME" 2>/dev/null)" = "true" ] || { printf offline; return; }
+  docker exec "$T_NAME" python3 -c 'pass' >/dev/null 2>&1 && printf live || printf offline
+}
+
+take_snapshot() { # echoes the snapshot directory on stdout
+  local dest="$BACKUP_ROOT/$T_NAME" mode
+  mkdir -p "$dest" && chmod 700 "$dest" || die "cannot create $dest" 3
+  verify_mount
+  mode="$(snapshot_mode)"
+  if [ "$mode" = live ]; then take_snapshot_live "$dest"; else take_snapshot_offline "$dest"; fi
+}
+
+take_snapshot_live() {
+  local dest="$1" out rc snap
+  [ -x "$OFBACKUP" ] || die "ofbackup not executable at $OFBACKUP (set \$OFBACKUP)" 3
+  out="$(OPENFANG_CONTAINER="$T_NAME" OPENFANG_HOME_HOST="$T_VOLSRC" OPENFANG_HOME_CTR="$T_HOME" \
+         "$OFBACKUP" create "$dest" 2>&1)"; rc=$?
+  printf '%s\n' "$out" >&2
+  [ $rc -eq 0 ] || die "ofbackup create failed (exit $rc) — no snapshot was taken" 1
+  snap="$(printf '%s' "$out" | sed -n 's/^-> //p' | tail -1)"
+  [ -n "$snap" ] && [ -d "$snap" ] || die "ofbackup did not report a snapshot directory" 1
+  # Trust the check, not the exit status of the thing that ran it.
+  grep -q '^integrity_check : ok$' "$snap/MANIFEST.txt" ||
+    die "snapshot $snap does not pass integrity_check — refusing to go further" 1
+  log "snapshot verified (live, via ofbackup): $snap"
+  printf '%s' "$snap"
+}
+
+# Same output layout as ofbackup create, produced without the container's help.
+STATE_ITEMS="config.toml secrets.env cron_jobs.json custom_models.json hand_state.json daemon.json hands workspaces workflows agents"
+
+take_snapshot_offline() {
+  local dest="$1" snap tmp items i
+  snap="$dest/openfang-$(date -u +%Y%m%d-%H%M%SZ)-offline"
+
+  if [ "$(docker inspect -f '{{.State.Running}}' "$T_NAME" 2>/dev/null)" = "true" ]; then
+    log "the target cannot run python3, so the snapshot has to be taken offline."
+    log "stopping $T_NAME first — a file copy of a live SQLite WAL is a torn file."
+    verify_mount
+    docker stop -t "$STOP_TIMEOUT" "$T_NAME" >/dev/null || die "could not stop $T_NAME to snapshot it" 1
+  fi
+  [ -d "$T_VOLSRC" ] || die "volume directory $T_VOLSRC is not readable from the host" 3
+
+  mkdir -p "$snap" && chmod 700 "$snap" || die "cannot create $snap" 3
+  tmp="$(mktemp -d)" || die "cannot make a temporary directory" 3
+  # db + its siblings together: the committed tail lives in -wal, and dropping
+  # it here would silently snapshot a database missing its last transactions.
+  for i in openfang.db openfang.db-wal openfang.db-shm; do
+    [ -f "$T_VOLSRC/data/$i" ] && cp -a "$T_VOLSRC/data/$i" "$tmp/"
+  done
+  [ -f "$tmp/openfang.db" ] || { rm -rf "$tmp"; die "no openfang.db under $T_VOLSRC/data" 4; }
+
+  python3 -c '
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1])          # opening replays the -wal
+dst = sqlite3.connect(sys.argv[2])
+src.backup(dst); dst.close(); src.close()' "$tmp/openfang.db" "$snap/openfang.db" ||
+    { rm -rf "$tmp"; die "could not take a consistent copy of $T_VOLSRC/data/openfang.db" 1; }
+  rm -rf "$tmp"
+  chmod 600 "$snap/openfang.db"
+
+  items=''
+  for i in $STATE_ITEMS; do [ -e "$T_VOLSRC/$i" ] && items="$items $i"; done
+  # shellcheck disable=SC2086
+  tar czf "$snap/state.tgz" -C "$T_VOLSRC" $items || die "could not archive the state files" 1
+  chmod 600 "$snap/state.tgz"
+
+  {
+    echo "OpenFang backup $(basename "$snap") (offline copy taken by ofrelease)"
+    echo "source     : $T_NAME  $T_VOLSRC"
+    echo "openfang.db: $(wc -c < "$snap/openfang.db") bytes"
+    echo "state.tgz  :$items"
+    python3 -c '
+import sqlite3, sys
+c = sqlite3.connect(sys.argv[1])
+print("integrity_check : %s" % c.execute("PRAGMA integrity_check").fetchone()[0])
+print("user_version    : %s" % c.execute("PRAGMA user_version").fetchone()[0])
+print("tables          : %d" % len(c.execute(
+    "SELECT name FROM sqlite_master WHERE type=\"table\"").fetchall()))' "$snap/openfang.db"
+    echo
+    echo "NOT captured (memory-only, never restorable): triggers, workflow runs."
+    echo "Contains secrets.env and config.toml in clear - keep this directory at 0700."
+  } > "$snap/MANIFEST.txt"
+  chmod 600 "$snap/MANIFEST.txt"
+  cat "$snap/MANIFEST.txt" >&2
+
+  grep -q '^integrity_check : ok$' "$snap/MANIFEST.txt" ||
+    die "offline snapshot $snap does not pass integrity_check — refusing to go further" 1
+  log "snapshot verified (offline, host-side copy): $snap"
+  printf '%s' "$snap"
+}
+
+# ----------------------------------------------------------------- status --
+cmd_status() {
+  local name="$1" json="${2:-}"
+  require_env
+  resolve_target "$name"
+  observe
+
+  local guards='pass' g=''
+  [ "$T_NAME" = "$PROD_CONTAINER" ] && { guards='REFUSE'; g="$g container"; }
+  [ "$T_VOLUME" = "$PROD_VOLUME" ]  && { guards='REFUSE'; g="$g volume"; }
+  local p; for p in $T_HOSTPORTS; do
+    [ "$p" = "$PROD_PORT" ] && { guards='REFUSE'; case "$g" in *' port'*) ;; *) g="$g port" ;; esac; }
+  done
+  [ "$T_COMPOSE" = "1" ] && { guards='REFUSE'; g="$g compose"; }
+
+  if [ -n "$json" ]; then
+    mkjson container "$T_NAME" id "$T_ID" image_ref "$T_IMAGE_REF" image_id "$T_IMAGE_ID" \
+      status "$T_STATUS" volume "$T_VOLUME" volume_src "$T_VOLSRC" ports "$T_PORTS_HUMAN" \
+      health "$O_HEALTH" version "$O_VERSION" user_version "$O_UV" agents "$O_AGENTS" \
+      guards "$guards" guards_tripped "${g# }"
+    echo
+    return 0
+  fi
+
+  printf 'target       : %s (%s)\n' "$T_NAME" "$T_STATUS"
+  printf 'image        : %s\n' "$T_IMAGE_REF"
+  printf 'image id     : %s\n' "$T_IMAGE_ID"
+  printf 'volume       : %s -> %s\n' "$T_VOLUME" "$T_VOLSRC"
+  printf 'published    : %s\n' "${T_PORTS_HUMAN:-<none>}"
+  printf 'url          : %s\n' "$(base_url_of)"
+  printf 'health       : %s\n' "$O_HEALTH"
+  printf 'version      : %s\n' "$O_VERSION"
+  printf 'user_version : %s\n' "$O_UV"
+  printf 'agents       : %s\n' "$O_AGENTS"
+  printf 'guards       : %s%s\n' "$guards" "$([ -n "$g" ] && printf ' (%s)' "${g# }")"
+  printf 'ledger       : %s\n' "$(ledger_path "$T_NAME")"
+  local last
+  if last="$(ledger_last_promote "$T_NAME")"; then
+    printf 'rollback to  : %s  (%s, snapshot %s)\n' \
+      "$(jget "$last" id)" "$(jget "$last" from_image_ref)" "$(jget "$last" snapshot)"
+  else
+    printf 'rollback to  : <nothing to roll back to>\n'
+  fi
+  printf 'prev objects : %s\n' \
+    "$(docker ps -a --format '{{.Names}}' | grep -c "^${T_NAME}--prev-" || true)"
+}
+
+cmd_history() {
+  local f; f="$(ledger_path "$1")"
+  [ -f "$f" ] || { echo "no ledger for $1 ($f)"; return 0; }
+  python3 - "$f" <<'PY'
+import json, sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line: continue
+    r = json.loads(line)
+    ev = r.get("event")
+    if ev == "promote":
+        print("%s  %s  promote   %s -> %s" % (r.get("ts",""), r["id"], r.get("from_image_ref"), r.get("to_image_ref")))
+        print("%s    snapshot %s" % (" " * 20, r.get("snapshot")))
+        pre = r.get("pre") or {}
+        print("%s    pre: image=%s uv=%s agents=%s version=%s"
+              % (" " * 20, (pre.get("image_id") or "")[:19], pre.get("user_version"), pre.get("agents"), pre.get("version")))
+    elif ev == "promote-result":
+        print("%s  %s    -> %s" % (r.get("ts",""), r["id"], r.get("status")))
+    elif ev == "rollback":
+        print("%s  %s  rollback of %s  with_volume=%s" % (r.get("ts",""), r["id"], r.get("of"), r.get("with_volume")))
+    elif ev == "rollback-result":
+        print("%s  %s    -> %s  %s" % (r.get("ts",""), r["id"], r.get("status"), r.get("proof", "")))
+PY
+}
+
+# ---------------------------------------------------------------- promote --
+cmd_promote() {
+  local name="$1" image="$2" build_ctx="$3" dry="$4" force="$5" autorb="$6" keep="$7"
+  require_env
+  [ -n "$image" ] || die "promote needs --image REF" 64
+
+  resolve_target "$name"
+  guard_all
+  require_disk "$([ -n "$build_ctx" ] && echo "$MIN_FREE_GB_BUILD" || echo "$MIN_FREE_GB")" \
+               "$([ -n "$build_ctx" ] && echo 'a build' || echo 'a promote')"
+
+  if [ -n "$build_ctx" ]; then
+    [ -d "$build_ctx" ] || die "build context '$build_ctx' is not a directory" 4
+    if [ -n "$dry" ]; then
+      log "DRY RUN: would run: docker build -t $image $build_ctx"
+    else
+      step "build $image from $build_ctx"
+      docker build -t "$image" "$build_ctx" >&2 || die "docker build failed" 1
+    fi
+  fi
+
+  local new_id
+  new_id="$(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null)"
+  if [ -z "$new_id" ]; then
+    [ -n "$dry" ] && [ -n "$build_ctx" ] && new_id='<built by --build>' ||
+      die "image '$image' is not present locally. ofrelease never pulls: tag or build it first." 4
+  fi
+
+  # Idempotence. A second promote of the image that is already running is a
+  # no-op, not an outage: nothing is stopped, no snapshot is taken.
+  if [ "$new_id" = "$T_IMAGE_ID" ] && [ "$T_STATUS" = "running" ] && [ -z "$force" ]; then
+    log "$name already runs $image ($new_id)."
+    log "nothing to do — promote is idempotent. Use --force to redeploy anyway."
+    return 0
+  fi
+
+  step "pre-state of $name"
+  observe
+  print_observation "before promote:" >&2
+  local pre_image="$O_IMAGE_ID" pre_health="$O_HEALTH" pre_ver="$O_VERSION" pre_uv="$O_UV" pre_agents="$O_AGENTS"
+
+  local stamp rel_id old_ref old_id
+  stamp="$(date -u +%Y%m%d-%H%M%SZ)"; rel_id="rel-$stamp"
+  # resolve_target is called again after the swap and overwrites T_*; keep the
+  # pre-swap identity in locals so later messages name the OLD image.
+  old_ref="$T_IMAGE_REF"; old_id="$T_IMAGE_ID"
+
+  if [ -n "$dry" ]; then
+    cat >&2 <<EOF
+
+DRY RUN — plan for $name, nothing below has been executed
+
+  target resolved from the container itself:
+    container   $T_NAME ($T_ID)
+    image now   $T_IMAGE_REF ($T_IMAGE_ID)
+    volume      $T_VOLUME -> $T_VOLSRC (mounted at $T_HOME)
+    published   ${T_PORTS_HUMAN:-<none>}
+    recreate as docker run -d --name $T_NAME $T_RUNARGS $image
+
+  guards      : container != $PROD_CONTAINER, volume != $PROD_VOLUME, no host port $PROD_PORT, not compose-managed — all pass
+
+  1. snapshot $T_VOLUME with $OFBACKUP into $BACKUP_ROOT/$T_NAME/ and abort unless integrity_check says ok
+  2. docker stop -t $STOP_TIMEOUT $T_NAME        (after re-reading its id and comparing with $T_ID)
+  3. docker rename $T_NAME $T_NAME--prev-$stamp  (this object is what rollback puts back)
+  4. docker run -d --name $T_NAME $T_RUNARGS $image
+  5. wait up to ${HEALTH_TIMEOUT}s for $(base_url_of)/api/health
+  6. record $rel_id in $(ledger_path "$T_NAME")
+
+  rollback would then be: ofrelease rollback --container $T_NAME [--with-volume]
+EOF
+    return 0
+  fi
+
+  # --- last read-only step. Everything after this line changes the box. ---
+  step "snapshot $T_VOLUME before anything else"
+  local snap; snap="$(take_snapshot)" || exit 1
+
+  local rec
+  rec="$(mkjson \
+    event promote id "$rel_id" ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    container "$T_NAME" volume "$T_VOLUME" volume_src "$T_VOLSRC" home "$T_HOME" \
+    ports "$T_PORTS_HUMAN" \
+    from_image_ref "$T_IMAGE_REF" from_image_id "$T_IMAGE_ID" \
+    to_image_ref "$image" to_image_id "$new_id" \
+    snapshot "$snap" prev_container "$T_NAME--prev-$stamp" runargs "$T_RUNARGS" \
+    pre.image_id "$pre_image" pre.health "$pre_health" pre.version "$pre_ver" \
+    pre.user_version "$pre_uv" pre.agents "$pre_agents")" ||
+    die "could not build the ledger record — refusing to promote without one" 1
+  # A release that cannot be recorded cannot be rolled back, so this is a hard
+  # stop, before anything is stopped or renamed.
+  printf '%s' "$rec" | python3 -c 'import json,sys; json.load(sys.stdin)' ||
+    die "ledger record is not valid JSON — refusing to promote" 1
+  ledger_append "$rec"
+
+  step "stop $T_NAME"
+  # Prove the target immediately before acting on it, by the identity being
+  # acted on. If someone recreated the container between resolution and now,
+  # the ids differ and we stop nothing.
+  local live_id; live_id="$(docker inspect -f '{{.Id}}' "$T_NAME" 2>/dev/null)"
+  [ "$live_id" = "$T_ID" ] ||
+    die "refusing to stop: '$T_NAME' is now id $live_id, resolution saw $T_ID. Snapshot $snap is kept." 2
+  docker stop -t "$STOP_TIMEOUT" "$T_NAME" >/dev/null || die "could not stop $T_NAME (snapshot $snap is kept)" 1
+
+  step "set the old container aside as $T_NAME--prev-$stamp"
+  live_id="$(docker inspect -f '{{.Id}}' "$T_NAME" 2>/dev/null)"
+  [ "$live_id" = "$T_ID" ] || die "refusing to rename: id changed under us ($live_id != $T_ID)" 2
+  docker rename "$T_NAME" "$T_NAME--prev-$stamp" || die "could not rename $T_NAME" 1
+
+  step "start $T_NAME from $image"
+  local runrc=0
+  eval "docker run -d --name '$T_NAME' $T_RUNARGS '$image'" >/dev/null || runrc=$?
+  if [ "$runrc" -ne 0 ]; then
+    log "docker run failed; putting $T_NAME--prev-$stamp back"
+    docker rename "$T_NAME--prev-$stamp" "$T_NAME" && docker start "$T_NAME" >/dev/null
+    ledger_append "$(mkjson event promote-result id "$rel_id" \
+      ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" status failed-create)"
+    die "could not create the new container; the previous one has been restored. Snapshot $snap kept." 1
+  fi
+
+  step "wait for /api/health"
+  resolve_target "$T_NAME"
+  local health
+  if ! health="$(wait_healthy "$HEALTH_TIMEOUT")"; then
+    log "no healthy answer from $(base_url_of)/api/health in ${HEALTH_TIMEOUT}s. Last log lines:"
+    docker logs --tail 20 "$T_NAME" 2>&1 | sed 's/\x1b\[[0-9;]*m//g' >&2
+    ledger_append "$(mkjson event promote-result id "$rel_id" \
+      ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" status failed-health)"
+    if [ -n "$autorb" ]; then
+      log "--auto-rollback: rolling $T_NAME back to $old_ref"
+      cmd_rollback "$T_NAME" '' '' "$rel_id" && die "promote failed; rolled back to the previous release." 1
+      die "promote failed AND the automatic rollback failed. Snapshot: $snap" 1
+    fi
+    die "promote failed. Roll back with: ofrelease rollback --container $T_NAME    (snapshot $snap)" 1
+  fi
+
+  observe
+  ledger_append "$(mkjson event promote-result id "$rel_id" \
+    ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" status ok \
+    post.image_id "$O_IMAGE_ID" post.health "$O_HEALTH" post.version "$O_VERSION" \
+    post.user_version "$O_UV" post.agents "$O_AGENTS")"
+
+  step "promoted"
+  print_observation "after promote:" >&2
+  log ""
+  log "release id : $rel_id"
+  log "snapshot   : $snap"
+  log "previous   : container $T_NAME--prev-$stamp (image $old_ref, $old_id)"
+  log "rollback   : ofrelease rollback --container $T_NAME [--with-volume]"
+
+  prune_prev "$T_NAME" "$keep" ''
+  return 0
+}
+
+# --------------------------------------------------------------- rollback --
+cmd_rollback() {
+  local name="$1" with_volume="$2" dry="$3" want_id="$4" no_safety="${5:-}"
+  require_env
+  resolve_target "$name"
+  guard_all
+
+  local rec
+  rec="$(ledger_last_promote "$name" "$want_id")" ||
+    die "nothing to roll back: no completed promote in $(ledger_path "$name") $( [ -n "$want_id" ] && printf 'with id %s' "$want_id")" 4
+
+  local rel_id from_ref from_id snap prev_ct pre_image pre_uv pre_agents pre_ver runargs vol volsrc
+  rel_id="$(jget "$rec" id)";            from_ref="$(jget "$rec" from_image_ref)"
+  from_id="$(jget "$rec" from_image_id)"; snap="$(jget "$rec" snapshot)"
+  prev_ct="$(jget "$rec" prev_container)"; runargs="$(jget "$rec" runargs)"
+  vol="$(jget "$rec" volume)";            volsrc="$(jget "$rec" volume_src)"
+  pre_image="$(jget "$rec" pre.image_id)"; pre_uv="$(jget "$rec" pre.user_version)"
+  pre_agents="$(jget "$rec" pre.agents)";  pre_ver="$(jget "$rec" pre.version)"
+
+  # The ledger describes a target; the live container is the target. If they
+  # disagree, the ledger is about something else and must not drive a
+  # destructive step.
+  [ "$vol" = "$T_VOLUME" ] ||
+    die "ledger record $rel_id is about volume '$vol', but $name mounts '$T_VOLUME'. Refusing." 2
+  [ "$volsrc" = "$T_VOLSRC" ] ||
+    die "ledger record $rel_id is about '$volsrc', but $name mounts '$T_VOLSRC'. Refusing." 2
+
+  # --with-volume used to check for the snapshot AFTER stop+rm+rename, and the
+  # `docker start` that revives the target lives only in the no-volume branch.
+  # A missing snapshot therefore took the service down and left it down — the
+  # one command whose entire job is to end an outage, causing one. Nothing here
+  # is destructive yet, so the check belongs here.
+  if [ -n "$with_volume" ]; then
+    [ -n "$snap" ] ||
+      die "release $rel_id recorded no snapshot, so --with-volume has nothing to restore" 4
+    [ -d "$snap" ] ||
+      die "snapshot $snap is gone; --with-volume cannot restore the data.
+  Roll back the image alone by dropping --with-volume, or point --to at a
+  release whose snapshot still exists. Nothing has been touched." 4
+    [ -f "$snap/openfang.db" ] ||
+      die "snapshot $snap has no openfang.db — it is not a usable restore point. Nothing has been touched." 4
+  fi
+
+  local restore_mode
+  if exists_container "$prev_ct"; then
+    local prev_img; prev_img="$(docker inspect -f '{{.Image}}' "$prev_ct" 2>/dev/null)"
+    if [ "$prev_img" = "$from_id" ]; then restore_mode=rename
+    else
+      log "warning: $prev_ct runs image $prev_img, ledger recorded $from_id — will recreate instead"
+      restore_mode=recreate
+    fi
+  else
+    restore_mode=recreate
+  fi
+  [ "$restore_mode" = recreate ] && ! docker image inspect "$from_id" >/dev/null 2>&1 &&
+    die "cannot roll back: previous container $prev_ct is gone and image $from_id is not on this box" 4
+
+  if [ -n "$dry" ]; then
+    cat >&2 <<EOF
+
+DRY RUN — rollback plan for $name, nothing below has been executed
+
+  release      $rel_id
+  back to      $from_ref ($from_id)
+  method       $restore_mode $( [ "$restore_mode" = rename ] && printf 'the original container object %s' "$prev_ct" || printf 'a new container from the recorded image' )
+  volume       $( [ -n "$with_volume" ] && printf 'restore %s into %s (%s)' "$snap" "$T_VOLUME" "$T_VOLSRC" || printf 'left as it is (pass --with-volume to restore %s)' "$snap" )
+
+  1. snapshot the CURRENT volume first, so the rollback is itself reversible
+  2. docker stop -t $STOP_TIMEOUT $name; docker rm $name
+  3. $( [ "$restore_mode" = rename ] && printf 'docker rename %s %s' "$prev_ct" "$name" || printf "docker run -d --name %s %s %s" "$name" "$runargs" "$from_id" )
+  4. $( [ -n "$with_volume" ] && printf '%s restore %s --yes  (stops, untars state, drops the db back, removes stale -wal/-shm, starts)' "$OFBACKUP" "$snap" || printf 'docker start %s' "$name" )
+  5. prove the return: image id, /api/health, user_version and agents compared
+     with what was recorded before $rel_id:
+       image id     $pre_image
+       version      $pre_ver
+       user_version $pre_uv
+       agents       $pre_agents
+EOF
+    return 0
+  fi
+
+  local safety='(none)'
+  if [ -n "$no_safety" ]; then
+    log "WARNING: --no-safety-snapshot — the promoted state is NOT being kept."
+    log "         If this rollback is the wrong call, there is nothing to go back to."
+  else
+    step "snapshot the current volume before rolling back"
+    safety="$(take_snapshot)" || exit 1
+  fi
+
+  local rb_id; rb_id="rb-$(date -u +%Y%m%d-%H%M%SZ)"
+  ledger_append "$(mkjson event rollback id "$rb_id" \
+    ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" of "$rel_id" container "$name" \
+    with_volume "$(jbool "$with_volume")" method "$restore_mode" \
+    safety_snapshot "$safety")"
+
+  step "remove the promoted container"
+  local live_id; live_id="$(docker inspect -f '{{.Id}}' "$name" 2>/dev/null)"
+  [ "$live_id" = "$T_ID" ] || die "refusing: '$name' is now $live_id, resolution saw $T_ID" 2
+  docker stop -t "$STOP_TIMEOUT" "$name" >/dev/null || die "could not stop $name" 1
+  docker rm "$name" >/dev/null || die "could not remove $name" 1
+
+  step "put $from_ref back ($restore_mode)"
+  if [ "$restore_mode" = rename ]; then
+    docker rename "$prev_ct" "$name" || die "could not rename $prev_ct back to $name" 1
+  else
+    # `create`, not `run -d`: the container must exist stopped so that a
+    # volume restore can drop files in before the daemon ever opens them.
+    eval "docker create --name '$name' $runargs '$from_id'" >/dev/null ||
+      die "could not recreate $name from $from_id" 1
+  fi
+
+  # Past this point the target exists but is NOT running, and every remaining
+  # failure would leave it that way. `die` is therefore the wrong exit: bring
+  # the container up first, so a failed restore costs the data, not the service.
+  revive_or_die() { # revive_or_die MESSAGE [CODE]
+    local msg="$1" code="${2:-1}"
+    if docker start "$name" >/dev/null 2>&1; then
+      log "the target was started again after the failure below — it is serving $from_ref"
+    else
+      log "the target could NOT be started after the failure below — it is DOWN"
+    fi
+    die "$msg" "$code"
+  }
+
+  if [ -n "$with_volume" ]; then
+    step "restore the volume from $snap"
+    # Checked before anything destructive ran, re-checked here in case it went
+    # away in between. Now it costs a message, not an outage.
+    [ -d "$snap" ] || revive_or_die "snapshot $snap disappeared during the rollback; the image is back, the data is not" 1
+    # Prove the write target by the identity being written: the path handed to
+    # ofbackup must be the mount source of THIS container, read live.
+    local live_src
+    live_src="$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$T_HOME\"}}{{.Source}}{{end}}{{end}}" "$name" 2>/dev/null)"
+    [ "$live_src" = "$T_VOLSRC" ] ||
+      revive_or_die "refusing to restore: $name mounts '$live_src', ledger and resolution say '$T_VOLSRC'" 2
+    [ "$T_VOLUME" != "$PROD_VOLUME" ] || revive_or_die "refusing to restore into the production volume" 2
+    OPENFANG_CONTAINER="$name" OPENFANG_HOME_HOST="$T_VOLSRC" OPENFANG_HOME_CTR="$T_HOME" \
+      "$OFBACKUP" restore "$snap" --yes >&2 || revive_or_die "ofbackup restore failed" 1
+  else
+    docker start "$name" >/dev/null || die "could not start $name" 1
+  fi
+
+  step "prove the return"
+  resolve_target "$name"
+  wait_healthy "$HEALTH_TIMEOUT" >/dev/null
+  observe
+
+  # The comparison IS the proof: every field is the value observed before the
+  # promote, read back out of the ledger, against what the box says now.
+  # Counters are incremented in this shell, never inside a $( ) subshell —
+  # that is how a failing check silently becomes a passing one.
+  ROLLBACK_FAILS=0
+  printf '\n  %-13s %-26s %-26s %s\n' field 'expected (before promote)' observed match
+  check_field() { # label expected observed enforce|report
+    local ok
+    if [ "$2" = "$3" ]; then ok=yes; else
+      ok=NO
+      [ "$4" = enforce ] && ROLLBACK_FAILS=$((ROLLBACK_FAILS + 1))
+    fi
+    [ "$4" = enforce ] || ok="$ok (not asserted)"
+    printf '  %-13s %-26s %-26s %s\n' "$1" "${2:0:26}" "${3:0:26}" "$ok"
+  }
+  check_field image_id "$pre_image" "$O_IMAGE_ID" enforce
+  check_field version "$pre_ver" "$O_VERSION" enforce
+  case "$O_HEALTH" in
+    *'"status":"ok"'*) check_field health ok ok enforce ;;
+    *) check_field health ok "$O_HEALTH" enforce ;;
+  esac
+  if [ -n "$with_volume" ]; then
+    check_field user_version "$pre_uv" "$O_UV" enforce
+    check_field agents "$pre_agents" "$O_AGENTS" enforce
+  else
+    check_field user_version "$pre_uv" "$O_UV" report
+    check_field agents "$pre_agents" "$O_AGENTS" report
+    printf '\n  the volume was NOT restored (--with-volume was not given), so schema and\n  data are whatever the promoted image left behind. Said, not hidden.\n'
+  fi
+  local fails="$ROLLBACK_FAILS"
+
+  local st=ok
+  [ "$fails" -eq 0 ] || st=failed
+  ledger_append "$(mkjson event rollback-result id "$rb_id" \
+    ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" of "$rel_id" status "$st" \
+    proof "image=$O_IMAGE_ID uv=$O_UV agents=$O_AGENTS health=$O_HEALTH")"
+
+  if [ "$fails" -ne 0 ]; then
+    die "rollback did NOT restore the recorded state ($fails field(s) differ). Safety snapshot: $safety" 1
+  fi
+  log ""
+  log "rolled back to $from_ref, verified. Safety snapshot of the promoted state: $safety"
+  return 0
+}
+
+# ------------------------------------------------------------------ prune --
+prune_prev() { # container, keep, dry
+  local name="$1" keep="${2:-3}" dry="${3:-}" list n
+  list="$(docker ps -a --format '{{.Names}}' | grep "^${name}--prev-" | sort)"
+  [ -n "$list" ] || return 0
+  n="$(printf '%s\n' "$list" | wc -l)"
+  [ "$n" -gt "$keep" ] || return 0
+  printf '%s\n' "$list" | head -n "$((n - keep))" | while IFS= read -r c; do
+    # Only ever remove containers whose name starts with the target's own
+    # prefix, and never the target itself.
+    case "$c" in
+      "$name"--prev-*) ;;
+      *) log "prune: skipping '$c' — not a $name--prev-* object"; continue ;;
+    esac
+    [ "$c" = "$name" ] && continue
+    if [ -n "$dry" ]; then
+      log "DRY RUN: would docker rm $c"
+    else
+      docker rm "$c" >/dev/null && log "pruned old container $c"
+    fi
+  done
+  return 0
+}
+
+cmd_prune() { require_env; prune_prev "$1" "$2" "$3"; }
+
+# ------------------------------------------------------------------- main --
+CMD="${1:-}"; [ $# -gt 0 ] && shift
+NAME="${OFRELEASE_CONTAINER:-}"
+IMAGE=''; BUILD=''; DRY=''; FORCE=''; AUTORB=''; WITHVOL=''; TO=''; KEEP=3; JSON=''; NOSAFETY=''
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --container)   NAME="${2:?--container needs a name}"; shift 2 ;;
+    --container=*) NAME="${1#--container=}"; shift ;;
+    --image)       IMAGE="${2:?--image needs a ref}"; shift 2 ;;
+    --image=*)     IMAGE="${1#--image=}"; shift ;;
+    --build)       BUILD="${2:?--build needs a context}"; shift 2 ;;
+    --build=*)     BUILD="${1#--build=}"; shift ;;
+    --to)          TO="${2:?--to needs a release id}"; shift 2 ;;
+    --to=*)        TO="${1#--to=}"; shift ;;
+    --keep|--keep-prev) KEEP="${2:?--keep needs a number}"; shift 2 ;;
+    --keep=*)      KEEP="${1#--keep=}"; shift ;;
+    --keep-prev=*) KEEP="${1#--keep-prev=}"; shift ;;
+    --dry-run)     DRY=1; shift ;;
+    --force)       FORCE=1; shift ;;
+    --auto-rollback) AUTORB=1; shift ;;
+    --with-volume) WITHVOL=1; shift ;;
+    --no-safety-snapshot) NOSAFETY=1; shift ;;
+    --json)        JSON=1; shift ;;
+    -h|--help)     usage; exit 0 ;;
+    *) die "unknown argument '$1' (try --help)" 64 ;;
+  esac
+done
+
+case "$CMD" in
+  -h|--help|help|'') usage; [ -z "$CMD" ] && exit 64 || exit 0 ;;
+  status)      [ -n "$NAME" ] || die "status needs --container NAME" 64; cmd_status "$NAME" "$JSON" ;;
+  history)     [ -n "$NAME" ] || die "history needs --container NAME" 64; cmd_history "$NAME" ;;
+  fingerprint) [ -n "$NAME" ] || die "fingerprint needs --container NAME" 64; cmd_fingerprint "$NAME" ;;
+  promote)     [ -n "$NAME" ] || die "promote needs --container NAME" 64
+               cmd_promote "$NAME" "$IMAGE" "$BUILD" "$DRY" "$FORCE" "$AUTORB" "$KEEP" ;;
+  rollback)    [ -n "$NAME" ] || die "rollback needs --container NAME" 64
+               cmd_rollback "$NAME" "$WITHVOL" "$DRY" "$TO" "$NOSAFETY" ;;
+  prune)       [ -n "$NAME" ] || die "prune needs --container NAME" 64; cmd_prune "$NAME" "$KEEP" "$DRY" ;;
+  *) die "unknown command '$CMD' (try --help)" 64 ;;
+esac
