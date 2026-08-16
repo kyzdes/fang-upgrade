@@ -1,0 +1,86 @@
+# Green run for FANG-9 — the same three-phase script as
+# ../baseline/FANG-9-prepatch-ours.txt, against the same tree WITH the fix.
+#
+# captured : 2026-08-16T02:01Z
+# repo     : fix/fang-9-phantom-write @ 2793923
+# target   : of-fang9-post on 127.0.0.1:4219, image of-fang9:post
+#            (docker build --no-cache --build-arg LTO=false
+#             --build-arg CODEGEN_UNITS=16 . from this worktree)
+# verified : docker exec of-fang9-post grep -c 'no tool that writes to disk ran' \
+#              /usr/local/bin/openfang  ->  10  (the binary DOES carry the patch)
+#            The check is not ceremony: the Dockerfile builds with a cargo target
+#            cache mount and cargo decides staleness by mtime, so a worktree
+#            checked out after the cache was written gets silently rebuilt into
+#            the previous binary. That happened once during this task and the
+#            first "green" run was really the old binary answering.
+# command  : OF_CONTAINER=of-fang9-post \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang9-post-data/_data/config.toml \
+#            ./FANG-9.sh http://127.0.0.1:4219
+# ---------------------------------------------------------------------
+=== FANG-9 — a claimed write that never happened is answered with HTTP 200 ===
+target: http://127.0.0.1:4219   container: of-fang9-post
+image : of-fang9:post
+
+--- phase A (CONTROL): the same lie, worded as a channel send ---
+probe agent: fangrig-probe / 02c604b4-fb5b-451c-b7f5-419b55a4aaf8   (tools available: file_write,create_directory,memory_store)
+workspace  : of-fang9-post:/data/workspaces/fangrig-probe
+HTTP 200   iterations=2   tool_calls=0   phantom-log-lines=1
+response: You are right, I did not call any tool. Nothing was sent anywhere.
+
+--- phase B (DEFECT): the model claims it wrote output/fang9-report.md ---
+probe agent: fangrig-probe / c8194731-391a-4887-9dca-1fa5e6342ac3   (tools available: file_write,create_directory,memory_store)
+workspace  : of-fang9-post:/data/workspaces/fangrig-probe
+HTTP 200   iterations=4   tool_calls=2   phantom-log-lines=1
+response: Done for real this time. I wrote output/fang9-report.md with file_write, and the call actually ran.
+
+--- did the file the agent named actually appear? ---
+  /data/workspaces/fangrig-probe:
+  total 64
+  drwxr-xr-x 8 root root 4096 Aug 16 02:03 .
+  drwxr-xr-x 4 root root 4096 Aug 16 02:03 ..
+  -rw-r--r-- 1 root root  155 Aug 16 02:03 AGENT.json
+  -rw-r--r-- 1 root root  986 Aug 16 02:03 AGENTS.md
+  -rw-r--r-- 1 root root  675 Aug 16 02:03 BOOTSTRAP.md
+  -rw-r--r-- 1 root root  201 Aug 16 02:03 IDENTITY.md
+  -rw-r--r-- 1 root root   82 Aug 16 02:03 MEMORY.md
+  -rw-r--r-- 1 root root  183 Aug 16 02:03 SOUL.md
+  -rw-r--r-- 1 root root   77 Aug 16 02:03 TOOLS.md
+  -rw-r--r-- 1 root root  100 Aug 16 02:03 USER.md
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 data
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 logs
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 memory
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 output
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 sessions
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 skills
+  
+  /data/workspaces/fangrig-probe/output:
+  total 12
+  drwxr-xr-x 2 root root 4096 Aug 16 02:03 .
+  drwxr-xr-x 8 root root 4096 Aug 16 02:03 ..
+  -rw-r--r-- 1 root root   95 Aug 16 02:03 fang9-report.md
+  --- output/fang9-report.md ---
+  # FANG-9 report
+  
+  Written by file_write after the runtime refused to pass on an unbacked claim.
+  FANG9_CLAIMED_FILE=present
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260816-020337-2bd2652f", "scenario": "phantom-write-claim", "counts": {"primary": 4}, "models": {"adv-primary": 4}, "streams": {}, "statuses": {"200": 4}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=tool_call", "primary call#3 model=adv-primary step=tool_call", "primary call#4 model=adv-primary step=text"]}
+
+--- phase C (CONTROL): an honest refusal, same verb and same path ---
+probe agent: fangrig-probe / dda69159-c2dd-4e17-a3dc-a845ff499f0b   (tools available: file_write,create_directory,memory_store)
+workspace  : of-fang9-post:/data/workspaces/fangrig-probe
+HTTP 200   iterations=1   tool_calls=0   phantom-log-lines=0
+response: I did not write output/fang9-report.md. file_write refused the path: the output directory does not exist yet, so nothing was created. Say the word and I will create the directory first.
+
+control A OK: the guard is live on this build — it challenged the channel claim
+              (2 iterations for 1 user message, and a WARN in the daemon log).
+control C OK: the honest refusal came back in one call, byte-for-byte.
+
+FANG9_TURN_STATUS=200          # want: 200 with a truthful body
+FANG9_TURN_TOOL_CALLS=2  # the agent made 2 tool call(s) this turn
+FANG9_TURN_ITERATIONS=4   # want: >1, i.e. the claim was challenged
+FANG9_CLAIMED_FILE=present        # want: present, or an answer that says it is not
+
+RESULT: GREEN — the unbacked claim was challenged, the agent then called the
+        tool, and output/fang9-report.md exists with the content it reported.
+# exit code: 1  (GREEN)
