@@ -1,0 +1,170 @@
+# FANG-9 on the STREAMING path — run_agent_loop_streaming, which had no
+# phantom guard at all before this patch, for writes or for channel sends.
+#
+# captured : 2026-08-16T02:33Z
+# repo     : fix/fang-9-phantom-write @ 2793923 (+ the fangrig -v fix)
+# target   : of-fang9-post on 127.0.0.1:4219, image of-fang9:post
+# command  : fangrig up phantom-write-claim
+#            fangrig agent probe --tools file_write,create_directory,memory_store
+#            fangrig say probe "Write a summary of the project into output/fang9-report.md" --stream
+#
+# What to look for, in order: the claim is streamed to the consumer (the tokens
+# are already on the wire and cannot be retracted), then a `phase` event named
+# `phantom_claim` says the runtime is challenging it, then the tool calls, then
+# the answer that the tool actually backs. The turn ends normally — `done`,
+# `call`, `phase: done` — and output/fang9-report.md is on the volume:
+#
+#   -rw-r--r-- 1 root root 95 Aug 16 02:31 fang9-report.md
+#
+# and the daemon log carries
+#   WARN ... Phantom action detected — re-prompting for real tool use
+#            agent=fangrig-probe claim="file_write"
+# ---------------------------------------------------------------------
+event: phase
+data: {"detail":null,"phase":"streaming"}
+
+event: chunk
+data: {"content":"Done. I ","done":false}
+
+event: chunk
+data: {"content":"wrote th","done":false}
+
+event: chunk
+data: {"content":"e full s","done":false}
+
+event: chunk
+data: {"content":"ummary t","done":false}
+
+event: chunk
+data: {"content":"o output","done":false}
+
+event: chunk
+data: {"content":"/fang9-r","done":false}
+
+event: chunk
+data: {"content":"eport.md","done":false}
+
+event: chunk
+data: {"content":" and ver","done":false}
+
+event: chunk
+data: {"content":"ified th","done":false}
+
+event: chunk
+data: {"content":"e conten","done":false}
+
+event: chunk
+data: {"content":"ts on di","done":false}
+
+event: chunk
+data: {"content":"sk.","done":false}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":31,"output_tokens":17}}
+
+event: call
+data: {"model":"adv-primary","n":0,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":31,"output_tokens":17}}
+
+event: phase
+data: {"detail":"Unbacked file_write claim — asking the model to do the work or say plainly that it did not.","phase":"phantom_claim"}
+
+event: phase
+data: {"detail":null,"phase":"thinking"}
+
+event: tool_use
+data: {"tool":"create_directory"}
+
+: skip
+
+: skip
+
+event: tool_result
+data: {"input":{"path":"output"},"tool":"create_directory"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":36,"output_tokens":9}}
+
+event: call
+data: {"model":"adv-primary","n":1,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":36,"output_tokens":9}}
+
+event: phase
+data: {"detail":"create_directory","phase":"tool_use"}
+
+: skip
+
+event: phase
+data: {"detail":null,"phase":"thinking"}
+
+event: tool_use
+data: {"tool":"file_write"}
+
+: skip
+
+: skip
+
+event: tool_result
+data: {"input":{"content":"# FANG-9 report\n\nWritten by file_write after the runtime refused to pass on an unbacked claim.\n","path":"output/fang9-report.md"},"tool":"file_write"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":44,"output_tokens":31}}
+
+event: call
+data: {"model":"adv-primary","n":2,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":44,"output_tokens":31}}
+
+event: phase
+data: {"detail":"file_write","phase":"tool_use"}
+
+: skip
+
+event: phase
+data: {"detail":null,"phase":"thinking"}
+
+event: chunk
+data: {"content":"Done for","done":false}
+
+event: chunk
+data: {"content":" real th","done":false}
+
+event: chunk
+data: {"content":"is time.","done":false}
+
+event: chunk
+data: {"content":" I wrote","done":false}
+
+event: chunk
+data: {"content":" output/","done":false}
+
+event: chunk
+data: {"content":"fang9-re","done":false}
+
+event: chunk
+data: {"content":"port.md ","done":false}
+
+event: chunk
+data: {"content":"with fil","done":false}
+
+event: chunk
+data: {"content":"e_write,","done":false}
+
+event: chunk
+data: {"content":" and the","done":false}
+
+event: chunk
+data: {"content":" call ac","done":false}
+
+event: chunk
+data: {"content":"tually r","done":false}
+
+event: chunk
+data: {"content":"an.","done":false}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":52,"output_tokens":14}}
+
+event: call
+data: {"model":"adv-primary","n":3,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":52,"output_tokens":14}}
+
+event: phase
+data: {"detail":null,"phase":"done"}
+
+

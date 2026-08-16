@@ -338,7 +338,13 @@ for c in d.get('stub_containers', []):
     docker ps -aq --filter "name=^/fangrig-llm-" --filter "name=^/fangrig-tg-" 2>/dev/null
   } | sort -u | while read -r c; do
     [ -n "$c" ] || continue
-    removed="$(docker rm -f "$c" 2>/dev/null)"
+    # -v, because the stubs run from the OpenFang image and that image declares
+    # VOLUME /data: every stub container docker starts gets an anonymous volume,
+    # and `docker rm` without -v leaves it behind. One `up` leaks one or two of
+    # them, forever, on a box where `scripts/ofcheck-rs` refuses to build below
+    # 12G free. -v removes only volumes anonymous to THIS container — a named
+    # volume (openfang-staging-data, of-*-data) is never touched by it.
+    removed="$(docker rm -f -v "$c" 2>/dev/null)"
     [ -n "$removed" ] && log "fangrig: removed container $removed"
   done
 
