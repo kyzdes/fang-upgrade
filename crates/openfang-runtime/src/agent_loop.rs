@@ -2724,10 +2724,18 @@ pub async fn run_agent_loop_streaming(
     // the `response` event). Without a delta here, a streaming caller would see
     // a turn that ends with nothing said about why it ended.
     //
-    // Only the notice is sent. `accumulated_text` reached the client as deltas
-    // already, and `max_iterations_summary` puts the notice after it, so
-    // delta-stream and returned `response` end up as the same string — emitting
-    // the whole summary here would print the partial text to the client twice.
+    // Only the notice is sent, because `accumulated_text` already reached the
+    // client as deltas — emitting the whole summary here would print the partial
+    // text to the client twice.
+    //
+    // The two are NOT the same string, and nothing here should claim they are.
+    // `accumulated_text` is the iterations' texts joined with "\n\n" and trimmed
+    // (see the accumulation site below); the deltas went out one per iteration
+    // with no separator between them. Any turn that spoke in more than one
+    // iteration therefore ends with a client transcript shorter than the
+    // returned `response` — measured at 2 910 against 3 008 characters over 50
+    // talkative iterations. What IS guaranteed here is only that the partial
+    // text is not duplicated.
     let delta = if accumulated_text.trim().is_empty() {
         notice.clone()
     } else {
@@ -6688,12 +6696,21 @@ mod tests {
         assert!(!s.contains("No tool calls were executed"), "{s}");
     }
 
-    /// The streaming loop sends only the notice as a delta because the caller
-    /// already received `accumulated_text` chunk by chunk. Delta-stream and
-    /// returned `response` therefore have to be the same string — if they drift,
-    /// a streaming caller sees the partial text twice.
+    /// `max_iterations_summary` appends the notice to the partial text exactly
+    /// once. That is the property the streaming path depends on: the caller has
+    /// already received `accumulated_text` chunk by chunk, so the loop sends only
+    /// the notice as a delta, and a summary that repeated the partial text would
+    /// show it to a streaming caller twice.
+    ///
+    /// This asserts the no-duplication property and nothing wider. It does NOT
+    /// assert that the client's concatenated deltas equal the returned
+    /// `response` — they do not, and an earlier version of this test claimed so
+    /// in its name while checking only what is below. The deltas go out one per
+    /// iteration with no separator; `accumulated_text` joins the same texts with
+    /// "\n\n" and trims. Over 50 talkative iterations that measured 2 910
+    /// characters at the client against 3 008 returned.
     #[test]
-    fn test_streaming_delta_plus_streamed_text_equals_the_returned_response() {
+    fn test_summary_appends_the_notice_once_and_never_repeats_the_partial_text() {
         let notice = max_iterations_notice(3, &[turn_call(0, ToolCallFate::Completed)]);
         let streamed = "partial answer so far";
         let response = max_iterations_summary(streamed, &notice);
