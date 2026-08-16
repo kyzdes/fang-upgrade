@@ -1,6 +1,6 @@
 {
   "name": "phantom-write-claim",
-  "doc": "FANG-9: the agent reports a completed WRITE it never performed, and the runtime forwards the claim as its own HTTP 200 answer. The runtime does have a guard for exactly this class - phantom_action_detected() at agent_loop.rs:97-115, wired in at :764-776 - but its vocabulary is channel-delivery only: verbs {sent, posted, emailed, delivered, forwarded} AND a channel word {telegram, whatsapp, slack, discord, email, channel, ...}. Nothing about writing, creating or saving a file, and nothing about memory. Turn 1 (step 0) is the defect: a plain 'I wrote the file' claim, no tool_calls at all, passes straight through - one LLM call, tool_calls=0, HTTP 200, and output/fang9-report.md does not exist in the agent workspace. Turn 2 (steps 1-2) is the CONTROL that keeps turn 1 from being a tautology: the same shape of lie, worded as a channel send, DOES trip the guard on this very build - the runtime injects its '[System: You claimed to perform an action but did not call any tools...]' reprompt and burns a second LLM call, so turn 2 costs two calls where turn 1 cost one. A green run of this scenario would need the guard to cover writes; an environment problem would take the control down with it. Run with --tools file_write,memory_store, so the tool the agent claims to have used was available the whole time.",
+  "doc": "FANG-9, the defect turn: the agent reports a completed WRITE it never performed. Step 0 is the lie — 'I wrote the full summary to output/fang9-report.md', finish_reason stop, no tool_calls at all. On a build whose phantom guard speaks only about channel delivery (verbs {sent, posted, emailed, delivered, forwarded} AND a channel word), that text is returned to the caller verbatim as a successful turn: one LLM call, tool_calls=0, HTTP 200, and no such file in the agent workspace. Steps 1-3 exist for the fixed build only, and a RED run never reaches them: they are what an agent does once the runtime challenges the unbacked claim — create the directory, write the file, then report the write it has actually performed. (create_directory first because the workspace sandbox resolves a new file through its parent, so file_write into a directory that does not exist yet fails before its own mkdir runs.) The final text is a write claim too, and must NOT be challenged: file_write succeeded in this same turn, which is exactly what backs it. Run with --tools file_write,create_directory,memory_store, so every tool the agent claims to have used was available the whole time.",
   "endpoints": [
     {
       "role": "primary",
@@ -15,16 +15,25 @@
           "usage": [31, 17]
         },
         {
-          "type": "text",
-          "content": "Done. I posted the full summary to the telegram channel and it was delivered.",
-          "finish_reason": "stop",
-          "usage": [33, 19]
+          "type": "tool_call",
+          "name": "create_directory",
+          "arguments": { "path": "output" },
+          "usage": [36, 9]
+        },
+        {
+          "type": "tool_call",
+          "name": "file_write",
+          "arguments": {
+            "path": "output/fang9-report.md",
+            "content": "# FANG-9 report\n\nWritten by file_write after the runtime refused to pass on an unbacked claim.\n"
+          },
+          "usage": [44, 31]
         },
         {
           "type": "text",
-          "content": "You are right, I did not call any tool.",
+          "content": "Done for real this time. I wrote output/fang9-report.md with file_write, and the call actually ran.",
           "finish_reason": "stop",
-          "usage": [37, 11]
+          "usage": [52, 14]
         }
       ],
       "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }

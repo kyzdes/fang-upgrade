@@ -92,8 +92,341 @@ const MAX_CONTINUATIONS: u32 = 5;
 #[allow(dead_code)]
 const MAX_HISTORY_MESSAGES: usize = openfang_types::agent::DEFAULT_MAX_HISTORY_MESSAGES;
 
-/// Detect when the LLM claims to have performed an action (sent, posted, emailed)
-/// without actually calling any tools. Prevents hallucinated completions.
+/// A claim, in the turn's final text, that a side effect has *already*
+/// happened — the class of sentence that is a lie unless a tool actually ran.
+///
+/// FANG-9. The guard this replaces knew one class of claim, channel delivery,
+/// and inspected it under two narrowings: only on iteration 0, and only when
+/// the turn had executed no tool at all. So "I wrote the summary to
+/// output/report.md", with no tool call anywhere in the turn, came back to the
+/// caller verbatim as a successful answer — and so did a delivery claim made
+/// after any one unrelated tool call. Each variant below carries its own
+/// vocabulary and, more to the point, its own set of tools that would make the
+/// claim true: an unrelated tool call is no longer accepted as backing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhantomClaim {
+    /// "I sent it to Telegram", "posted it to the channel", "emailed you".
+    Delivery,
+    /// "I wrote the summary to output/report.md", "saved the file on disk".
+    FileWrite,
+    /// "I stored that in memory", "I remembered it for next time".
+    MemoryWrite,
+}
+
+/// Tools that can produce any side effect at all, and therefore back every
+/// class of claim: a shell command writes files, curls a webhook and updates a
+/// store; a delegated agent or Hand does all three out of sight; an MCP server
+/// tool has semantics this process cannot know.
+///
+/// Matched as substrings of the lowercased tool name. Deliberately generous in
+/// both lists: a wrong "backed" only means this guard stays quiet, while a
+/// wrong "unbacked" would challenge — and eventually stamp `[Unverified]` on —
+/// an answer that told the truth.
+const UNIVERSAL_ACTION_TOOL_FRAGMENTS: &[&str] = &[
+    "shell",
+    "exec",
+    "bash",
+    "command",
+    "process",
+    "python",
+    "node",
+    "script",
+    "agent_send",
+    "agent_spawn",
+    "hand",
+    "workflow",
+    "mcp",
+    "skill",
+];
+
+impl PhantomClaim {
+    fn label(self) -> &'static str {
+        match self {
+            PhantomClaim::Delivery => "delivery",
+            PhantomClaim::FileWrite => "file_write",
+            PhantomClaim::MemoryWrite => "memory_write",
+        }
+    }
+
+    /// Tool-name fragments that make a claim of this class credible. Substring
+    /// matching, so prefixed tools (`mcp__notes__file_write`,
+    /// `slack_post_message`, `hand_telegram_send`) count too.
+    fn backing_tool_fragments(self) -> &'static [&'static str] {
+        match self {
+            PhantomClaim::Delivery => &[
+                "send",
+                "post",
+                "mail",
+                "notify",
+                "message",
+                "msg",
+                "channel",
+                "telegram",
+                "slack",
+                "discord",
+                "whatsapp",
+                "sms",
+                "webhook",
+                "publish",
+                "tweet",
+                "broadcast",
+                "reply",
+            ],
+            PhantomClaim::FileWrite => &[
+                "write", "edit", "save", "create", "append", "patch", "mkdir", "copy", "move",
+                "rename", "upload", "export", "touch", "git", "apply", "notebook", "canvas",
+                "artifact",
+            ],
+            PhantomClaim::MemoryWrite => &[
+                "memory",
+                "remember",
+                "store",
+                "recall",
+                "note",
+                "insert",
+                "sql",
+                "index",
+                "embed",
+                "learn",
+                "knowledge",
+            ],
+        }
+    }
+
+    /// The re-prompt injected on the first unbacked claim of this class.
+    fn reprompt(self) -> &'static str {
+        match self {
+            PhantomClaim::Delivery => "[System: You reported a delivery as done, but no tool that sends anything ran in this turn. Nothing was sent. Either call the sending tool now (e.g. channel_send) and report what it returned, or tell the user plainly that you did not send it and why. Do not restate a completed delivery you did not perform.]",
+            PhantomClaim::FileWrite => "[System: You reported a file as written, but no tool that writes to disk ran in this turn. Nothing was written and the path you named does not exist. Either call the writing tool now (e.g. file_write, with the full content) and report what it returned, or tell the user plainly that you did not write it and why. Do not restate a completed write you did not perform.]",
+            PhantomClaim::MemoryWrite => "[System: You reported something as stored, but no tool that writes to memory ran in this turn. Nothing was stored. Either call the storing tool now (e.g. memory_store) and report what it returned, or tell the user plainly that you did not store it and why. Do not restate a completed store you did not perform.]",
+        }
+    }
+
+    /// Appended to the answer when the model repeats the unbacked claim after
+    /// being challenged. The turn still succeeds — but it stops travelling as
+    /// an unqualified report of work that never happened.
+    fn unverified_note(self) -> &'static str {
+        match self {
+            PhantomClaim::Delivery => "\n\n[Unverified — nothing was sent in this turn: the agent reported a delivery, was challenged, and still called no sending tool. Treat the delivery as NOT performed.]",
+            PhantomClaim::FileWrite => "\n\n[Unverified — nothing was written in this turn: the agent reported a completed write, was challenged, and still called no writing tool. Treat the file as NOT written and check the path before relying on it.]",
+            PhantomClaim::MemoryWrite => "\n\n[Unverified — nothing was stored in this turn: the agent reported a completed store, was challenged, and still called no storing tool. Treat the store as NOT performed.]",
+        }
+    }
+}
+
+/// True when any tool that *succeeded* this turn could have performed `claim`.
+/// `succeeded` holds lowercased names of tools whose result came back without
+/// `is_error` — a write that failed backs nothing, which is the case the old
+/// guard could not see at all.
+fn claim_is_backed(claim: PhantomClaim, succeeded: &std::collections::HashSet<String>) -> bool {
+    succeeded.iter().any(|name| {
+        UNIVERSAL_ACTION_TOOL_FRAGMENTS
+            .iter()
+            .any(|f| name.contains(f))
+            || claim
+                .backing_tool_fragments()
+                .iter()
+                .any(|f| name.contains(f))
+    })
+}
+
+/// Collect the names of tools whose results say they succeeded.
+fn record_successful_tools(
+    blocks: &[ContentBlock],
+    succeeded: &mut std::collections::HashSet<String>,
+) {
+    for block in blocks {
+        if let ContentBlock::ToolResult {
+            tool_name,
+            is_error: false,
+            ..
+        } = block
+        {
+            succeeded.insert(tool_name.to_lowercase());
+        }
+    }
+}
+
+/// Split text into sentence-sized spans.
+///
+/// A `.` ends a sentence only when whitespace or the end of the text follows
+/// it. Splitting on every `.` would cut `output/fang9-report.md` in half and
+/// destroy the file reference in "I wrote it to report.md" — exactly the
+/// sentence this guard exists to read.
+fn sentences(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for (i, ch) in text.char_indices() {
+        let terminates = match ch {
+            '\n' | '\r' => true,
+            '.' | '!' | '?' | ';' | ':' => text[i + ch.len_utf8()..]
+                .chars()
+                .next()
+                .map(|c| c.is_whitespace())
+                .unwrap_or(true),
+            _ => false,
+        };
+        if terminates {
+            let end = i + ch.len_utf8();
+            if start < end {
+                out.push(&text[start..end]);
+            }
+            start = end;
+        }
+    }
+    if start < text.len() {
+        out.push(&text[start..]);
+    }
+    out
+}
+
+/// True when `needle` occurs in `hay` as a whole word. Substring matching would
+/// let "note" answer for "not" and "recreated" answer for "created".
+fn contains_word(hay: &str, needle: &str) -> bool {
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '\'';
+    let mut from = 0usize;
+    while let Some(pos) = hay[from..].find(needle) {
+        let s = from + pos;
+        let e = s + needle.len();
+        let before_ok = hay[..s]
+            .chars()
+            .next_back()
+            .map(|c| !is_word_char(c))
+            .unwrap_or(true);
+        let after_ok = hay[e..]
+            .chars()
+            .next()
+            .map(|c| !is_word_char(c))
+            .unwrap_or(true);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = e;
+    }
+    false
+}
+
+fn contains_any_word(hay: &str, words: &[&str]) -> bool {
+    words.iter().any(|w| contains_word(hay, w))
+}
+
+/// Markers that stop a sentence from being a claim of completed work: a
+/// refusal, a failure report, a plan, a question, or a statement about what
+/// somebody else did.
+///
+/// This is the half of the guard that protects honest answers. "I could not
+/// write output/report.md — the directory is read-only" contains the verb and
+/// the path, and must still reach the user as the refusal it is, unchallenged
+/// and unstamped.
+fn is_completion_claim(sentence_lower: &str) -> bool {
+    const NOT_DONE: &[&str] = &[
+        "not",
+        "cannot",
+        "can't",
+        "couldn't",
+        "didn't",
+        "doesn't",
+        "don't",
+        "won't",
+        "wasn't",
+        "isn't",
+        "never",
+        "unable",
+        "fail",
+        "fails",
+        "failed",
+        "failing",
+        "failure",
+        "denied",
+        "refuse",
+        "refused",
+        "nothing",
+        "none",
+        "without",
+        "unfortunately",
+        "sorry",
+    ];
+    const NOT_YET: &[&str] = &[
+        "will",
+        "i'll",
+        "we'll",
+        "shall",
+        "going",
+        "let",
+        "need",
+        "should",
+        "would",
+        "could",
+        "plan",
+        "planning",
+        "try",
+        "trying",
+        "attempt",
+        "attempting",
+        "want",
+    ];
+    const FIRST_PERSON: &[&str] = &["i", "i've", "we", "we've", "my", "our"];
+
+    if sentence_lower.contains('?') {
+        return false;
+    }
+    if contains_any_word(sentence_lower, NOT_DONE) || contains_any_word(sentence_lower, NOT_YET) {
+        return false;
+    }
+    // "you saved it to notes.txt" reports the user's work, not the agent's.
+    if contains_any_word(sentence_lower, &["you", "your"])
+        && !contains_any_word(sentence_lower, FIRST_PERSON)
+    {
+        return false;
+    }
+    true
+}
+
+/// True when the sentence names something that lives on a filesystem: a
+/// path-shaped token (`output/report.md`, `./notes.txt`) or a file extension.
+fn mentions_file_path(sentence_lower: &str) -> bool {
+    const EXTENSIONS: &[&str] = &[
+        ".md", ".txt", ".json", ".csv", ".yaml", ".yml", ".toml", ".log", ".html", ".xml", ".ini",
+        ".conf", ".cfg", ".py", ".rs", ".sh", ".js", ".ts", ".pdf", ".sql", ".env", ".tsv", ".zip",
+    ];
+    if sentence_lower.split_whitespace().any(|tok| {
+        let t = tok.trim_matches(|c: char| c == '(' || c == ')' || c == '"' || c == '\'');
+        t.len() > 2 && t.contains('/') && !t.starts_with("http")
+    }) {
+        return true;
+    }
+    EXTENSIONS.iter().any(|ext| {
+        let mut from = 0usize;
+        while let Some(pos) = sentence_lower[from..].find(ext) {
+            let s = from + pos;
+            let e = s + ext.len();
+            // ".md" is an extension only with a filename in front of it and a
+            // word boundary behind it: "report.md," yes, "a. mdash" no.
+            let named = sentence_lower[..s]
+                .chars()
+                .next_back()
+                .map(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                .unwrap_or(false);
+            let closed = sentence_lower[e..]
+                .chars()
+                .next()
+                .map(|c| !c.is_alphanumeric())
+                .unwrap_or(true);
+            if named && closed {
+                return true;
+            }
+            from = e;
+        }
+        false
+    })
+}
+
+/// The pre-FANG-9 rule, kept as a fallback so the delivery guard's reach never
+/// shrinks: verbs and channel words anywhere in the text, in any order, in
+/// different sentences. The only new condition is the refusal filter — the old
+/// rule challenged "I could not send it to Telegram" too, and now that a
+/// repeated unbacked claim gets an `[Unverified]` stamp, challenging a refusal
+/// would put that stamp on an honest answer.
 fn phantom_action_detected(text: &str) -> bool {
     let lower = text.to_lowercase();
     let action_verbs = ["sent ", "posted ", "emailed ", "delivered ", "forwarded "];
@@ -111,6 +444,98 @@ fn phantom_action_detected(text: &str) -> bool {
     let has_action = action_verbs.iter().any(|v| lower.contains(v));
     let has_channel = channel_refs.iter().any(|c| lower.contains(c));
     has_action && has_channel
+}
+
+/// Classify every completed-action claim the text makes, most-severe-first in
+/// the order the guard should challenge them.
+fn classify_phantom_claims(text: &str) -> Vec<PhantomClaim> {
+    const DELIVERY_VERBS: &[&str] = &[
+        "sent",
+        "posted",
+        "emailed",
+        "delivered",
+        "forwarded",
+        "notified",
+        "messaged",
+        "published",
+    ];
+    const DELIVERY_REFS: &[&str] = &[
+        "telegram", "whatsapp", "slack", "discord", "email", "channel", "message", "chat", "dm",
+        "sms", "webhook", "inbox",
+    ];
+    const WRITE_VERBS: &[&str] = &[
+        "wrote",
+        "written",
+        "saved",
+        "created",
+        "generated",
+        "updated",
+        "appended",
+        "overwrote",
+        "overwritten",
+        "exported",
+        "persisted",
+    ];
+    const WRITE_REFS: &[&str] = &[
+        "file",
+        "files",
+        "disk",
+        "path",
+        "directory",
+        "folder",
+        "filesystem",
+        "workspace",
+    ];
+    const MEMORY_VERBS: &[&str] = &[
+        "stored",
+        "saved",
+        "remembered",
+        "memorized",
+        "recorded",
+        "noted",
+    ];
+    const MEMORY_REFS: &[&str] = &["memory", "memories", "knowledge"];
+
+    // Curly apostrophes are what most models actually emit; normalise so
+    // "couldn’t" reads as the refusal it is.
+    let normalized = text.to_lowercase().replace('\u{2019}', "'");
+    let mut found: Vec<PhantomClaim> = Vec::new();
+
+    for sentence in sentences(&normalized) {
+        if !is_completion_claim(sentence) {
+            continue;
+        }
+        let claims = [
+            (
+                PhantomClaim::Delivery,
+                contains_any_word(sentence, DELIVERY_VERBS)
+                    && contains_any_word(sentence, DELIVERY_REFS),
+            ),
+            (
+                PhantomClaim::FileWrite,
+                contains_any_word(sentence, WRITE_VERBS)
+                    && (contains_any_word(sentence, WRITE_REFS) || mentions_file_path(sentence)),
+            ),
+            (
+                PhantomClaim::MemoryWrite,
+                contains_any_word(sentence, MEMORY_VERBS)
+                    && contains_any_word(sentence, MEMORY_REFS),
+            ),
+        ];
+        for (claim, hit) in claims {
+            if hit && !found.contains(&claim) {
+                found.push(claim);
+            }
+        }
+    }
+
+    if !found.contains(&PhantomClaim::Delivery)
+        && phantom_action_detected(&normalized)
+        && is_completion_claim(&normalized)
+    {
+        found.push(PhantomClaim::Delivery);
+    }
+    found
 }
 
 /// Returns true when the agent response text indicates an intentional silent completion.
@@ -567,6 +992,10 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // FANG-9: names of the tools that ran *and succeeded* in this turn, and
+    // whether the phantom-completion guard has already spent its one challenge.
+    let mut succeeded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut phantom_challenged = false;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -757,24 +1186,40 @@ pub async fn run_agent_loop(
                 } else {
                     text
                 };
-                // Phantom action detection: if the LLM claims it performed a
-                // channel action (send, post, email, etc.) but never actually
-                // called the corresponding tool, re-prompt once to force real
-                // tool usage instead of hallucinated completion.
-                let text = if !any_tools_executed
-                    && iteration == 0
-                    && phantom_action_detected(&text)
-                {
-                    warn!(agent = %manifest.name, "Phantom action detected — re-prompting for real tool use");
-                    messages.push(Message::assistant(text));
-                    messages.push(Message::user(
-                        "[System: You claimed to perform an action but did not call any tools. \
-                         You must use the appropriate tool (e.g., channel_send, web_fetch, file_write) \
-                         to actually perform the action. Do not claim completion without executing tools.]"
-                    ));
-                    continue;
-                } else {
-                    text
+                // FANG-9 — phantom completion guard. A turn that reports work
+                // as done must have a *successful* tool call of the matching
+                // kind behind it: a delivery needs a sending tool, a written
+                // file needs a writing tool, a stored memory needs a storing
+                // tool. An unrelated tool call does not count as backing, and
+                // neither does a tool that came back an error.
+                //
+                // First unbacked claim of a turn: challenge it and spend one
+                // more LLM call, which is where a model that merely skipped
+                // the tool goes and calls it. If the claim comes back
+                // unbacked a second time the turn still succeeds — but the
+                // answer carries the note saying the work did not happen,
+                // instead of travelling as a report that it did.
+                //
+                // The challenge is skipped on the last iteration on purpose:
+                // `continue` there drops out of the loop into
+                // MaxIterationsExceeded, turning a (mendacious) 200 into a 500
+                // that discards the entire turn's work and accounting.
+                let unbacked_claim = classify_phantom_claims(&text)
+                    .into_iter()
+                    .find(|claim| !claim_is_backed(*claim, &succeeded_tools));
+                let text = match unbacked_claim {
+                    Some(claim) if !phantom_challenged && iteration + 1 < max_iterations => {
+                        phantom_challenged = true;
+                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — re-prompting for real tool use");
+                        messages.push(Message::assistant(text.clone()));
+                        messages.push(Message::user(claim.reprompt()));
+                        continue;
+                    }
+                    Some(claim) => {
+                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — still unbacked after the challenge, answering as unverified");
+                        format!("{}{}", text.trim_end(), claim.unverified_note())
+                    }
+                    None => text,
                 };
 
                 final_response = text.clone();
@@ -1079,6 +1524,9 @@ pub async fn run_agent_loop(
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
+                // FANG-9: remember what actually worked, so a completion claim
+                // later in this turn can be checked against it.
+                record_successful_tools(&tool_result_blocks, &mut succeeded_tools);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
@@ -1825,6 +2273,11 @@ pub async fn run_agent_loop_streaming(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
+    // FANG-9: same bookkeeping as the non-streaming loop. This path had no
+    // phantom guard at all — a claim streamed to a TUI or an SSE consumer was
+    // never examined, for writes or for channel sends.
+    let mut succeeded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut phantom_challenged = false;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -2052,6 +2505,60 @@ pub async fn run_agent_loop_streaming(
                 } else {
                     text
                 };
+
+                // FANG-9 — phantom completion guard, streaming path (which had
+                // none at all, for writes or for channel sends). Same rule as
+                // the non-streaming loop: a reported action needs a successful
+                // tool call of the matching kind behind it.
+                //
+                // Two things are different here because the tokens are already
+                // on the wire. The challenge is announced as a phase change,
+                // so a client can label the second answer; and the
+                // `[Unverified]` note is also pushed as a text delta, because
+                // a consumer that renders the stream and never reads
+                // `AgentLoopResult` would otherwise see only the claim.
+                let unbacked_claim = classify_phantom_claims(&text)
+                    .into_iter()
+                    .find(|claim| !claim_is_backed(*claim, &succeeded_tools));
+                let text = match unbacked_claim {
+                    Some(claim) if !phantom_challenged && iteration + 1 < max_iterations => {
+                        phantom_challenged = true;
+                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — re-prompting for real tool use");
+                        if stream_tx
+                            .send(StreamEvent::PhaseChange {
+                                phase: "phantom_claim".to_string(),
+                                detail: Some(format!(
+                                    "Unbacked {} claim — asking the model to do the work or say plainly that it did not.",
+                                    claim.label()
+                                )),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            warn!("Stream consumer disconnected while sending phantom-claim warning");
+                        }
+                        messages.push(Message::assistant(text.clone()));
+                        messages.push(Message::user(claim.reprompt()));
+                        continue;
+                    }
+                    Some(claim) => {
+                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — still unbacked after the challenge, answering as unverified");
+                        if stream_tx
+                            .send(StreamEvent::TextDelta {
+                                text: claim.unverified_note().to_string(),
+                            })
+                            .await
+                            .is_err()
+                        {
+                            warn!(
+                                "Stream consumer disconnected while sending unverified-claim note"
+                            );
+                        }
+                        format!("{}{}", text.trim_end(), claim.unverified_note())
+                    }
+                    None => text,
+                };
+
                 final_response = text.clone();
                 // Issue #1098: preserve Thinking blocks (with Anthropic
                 // signatures / Gemini thought signatures / inline-think /
@@ -2358,6 +2865,9 @@ pub async fn run_agent_loop_streaming(
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
+                // FANG-9: remember what actually worked, so a completion claim
+                // later in this turn can be checked against it.
+                record_successful_tools(&tool_result_blocks, &mut succeeded_tools);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
@@ -6105,5 +6615,318 @@ mod tests {
         );
         assert_eq!(report.provider.as_deref(), Some("y7router"));
         assert!(report.reason.is_some(), "the disclosure names the failure");
+    }
+
+    // ------------------------------------------------------------- FANG-9 --
+    // The agent reports a write it never performed. The guard that existed
+    // spoke only about channel delivery, only on iteration 0, and only when
+    // the turn had run no tool at all.
+
+    fn tool_set(names: &[&str]) -> std::collections::HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The defect, at the unit that decides it.
+    #[test]
+    fn test_write_claim_is_classified() {
+        assert_eq!(
+            classify_phantom_claims(
+                "Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk."
+            ),
+            vec![PhantomClaim::FileWrite]
+        );
+        assert_eq!(
+            classify_phantom_claims("Saved the file in the workspace."),
+            vec![PhantomClaim::FileWrite]
+        );
+        assert_eq!(
+            classify_phantom_claims("I stored that in memory for next time."),
+            vec![PhantomClaim::MemoryWrite]
+        );
+    }
+
+    /// The control the FANG-9 script leans on: the delivery guard's reach must
+    /// not shrink, including the cross-sentence shape only the legacy
+    /// whole-text rule catches.
+    #[test]
+    fn test_delivery_claim_still_classified() {
+        assert!(classify_phantom_claims(
+            "Done. I posted the full summary to the telegram channel and it was delivered."
+        )
+        .contains(&PhantomClaim::Delivery));
+        assert!(
+            classify_phantom_claims("The report is on Slack. Delivered a few seconds ago.")
+                .contains(&PhantomClaim::Delivery),
+            "the pre-FANG-9 whole-text rule stays as a fallback"
+        );
+    }
+
+    /// The half of the guard that protects honest answers. A refusal carries
+    /// the same verb and the same path as the lie; it must reach the user
+    /// unchallenged, and must never be stamped [Unverified].
+    #[test]
+    fn test_honest_refusal_is_not_a_claim() {
+        for text in [
+            "I could not write output/fang9-report.md — the workspace is read-only.",
+            "I did not write the file: no content was provided.",
+            "Writing failed: permission denied on output/fang9-report.md.",
+            "I was unable to send it to Telegram — no channel is configured.",
+            "Nothing was stored in memory.",
+        ] {
+            assert!(
+                classify_phantom_claims(text).is_empty(),
+                "a refusal must stay a refusal: {text}"
+            );
+        }
+    }
+
+    /// Intent, questions and other people's work are not completions either.
+    #[test]
+    fn test_intent_and_third_party_work_are_not_claims() {
+        for text in [
+            "I will write the summary to output/report.md next.",
+            "Should I save it to notes.txt?",
+            "Let me create the file first.",
+            "You saved the config to config.toml earlier.",
+            "I created a short summary for you: three bullet points.",
+        ] {
+            assert!(
+                classify_phantom_claims(text).is_empty(),
+                "not a completed action: {text}"
+            );
+        }
+    }
+
+    /// `output/fang9-report.md` must survive sentence splitting — cutting on
+    /// every `.` would throw away the file reference that makes the claim a
+    /// claim.
+    #[test]
+    fn test_a_filename_survives_sentence_splitting() {
+        assert_eq!(
+            classify_phantom_claims("I saved report.md."),
+            vec![PhantomClaim::FileWrite]
+        );
+        assert_eq!(sentences("Done. I wrote report.md.").len(), 2);
+    }
+
+    /// Backing is per class: an unrelated tool call is not evidence, which is
+    /// the second narrowing the old guard had (`!any_tools_executed`).
+    #[test]
+    fn test_only_a_matching_successful_tool_backs_a_claim() {
+        assert!(!claim_is_backed(
+            PhantomClaim::FileWrite,
+            &tool_set(&["file_read"])
+        ));
+        assert!(!claim_is_backed(
+            PhantomClaim::FileWrite,
+            &tool_set(&["web_search", "memory_recall"])
+        ));
+        assert!(claim_is_backed(
+            PhantomClaim::FileWrite,
+            &tool_set(&["file_read", "file_write"])
+        ));
+        assert!(
+            claim_is_backed(PhantomClaim::FileWrite, &tool_set(&["shell_exec"])),
+            "a shell command can write a file"
+        );
+        assert!(
+            claim_is_backed(
+                PhantomClaim::FileWrite,
+                &tool_set(&["mcp__notes__put_page"])
+            ),
+            "MCP tools have semantics this process cannot know — stay quiet"
+        );
+        assert!(!claim_is_backed(
+            PhantomClaim::Delivery,
+            &tool_set(&["file_write"])
+        ));
+        assert!(claim_is_backed(
+            PhantomClaim::Delivery,
+            &tool_set(&["channel_send"])
+        ));
+        assert!(claim_is_backed(
+            PhantomClaim::MemoryWrite,
+            &tool_set(&["memory_store"])
+        ));
+    }
+
+    /// A write that came back an error backs nothing — the case the old guard
+    /// could not see at all, since it only ever asked "did any tool run".
+    #[test]
+    fn test_failed_tools_do_not_back_a_claim() {
+        let blocks = vec![
+            ContentBlock::ToolResult {
+                tool_use_id: "1".to_string(),
+                tool_name: "file_write".to_string(),
+                content: "Permission denied".to_string(),
+                is_error: true,
+            },
+            ContentBlock::ToolResult {
+                tool_use_id: "2".to_string(),
+                tool_name: "file_read".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+            },
+        ];
+        let mut succeeded = std::collections::HashSet::new();
+        record_successful_tools(&blocks, &mut succeeded);
+        assert_eq!(succeeded, tool_set(&["file_read"]));
+        assert!(!claim_is_backed(PhantomClaim::FileWrite, &succeeded));
+    }
+
+    /// Claims a write, calls nothing. `admit` decides what it does once the
+    /// runtime challenges it — the challenge is recognised by its own text, so
+    /// these tests also prove the re-prompt actually reached the model.
+    struct PhantomWriteDriver {
+        admit_after_challenge: bool,
+    }
+
+    #[async_trait]
+    impl LlmDriver for PhantomWriteDriver {
+        async fn complete(
+            &self,
+            request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            let challenged = request.messages.iter().any(|m| match &m.content {
+                MessageContent::Text(t) => {
+                    t.contains("no tool that writes to disk ran in this turn")
+                }
+                _ => false,
+            });
+            let text = if challenged && self.admit_after_challenge {
+                "You are right — I did not write it, and output/fang9-report.md does not exist."
+            } else {
+                "Done. I wrote the full summary to output/fang9-report.md and verified it on disk."
+            };
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: text.to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 12,
+                    output_tokens: 6,
+                },
+            })
+        }
+    }
+
+    /// Answers with a refusal that names the same verb and the same path as
+    /// the lie does.
+    struct HonestRefusalDriver;
+
+    #[async_trait]
+    impl LlmDriver for HonestRefusalDriver {
+        async fn complete(
+            &self,
+            _request: CompletionRequest,
+        ) -> Result<CompletionResponse, LlmError> {
+            Ok(CompletionResponse {
+                content: vec![ContentBlock::Text {
+                    text: "I could not write output/fang9-report.md — file_write is not among my tools.".to_string(),
+                    provider_metadata: None,
+                }],
+                stop_reason: StopReason::EndTurn,
+                tool_calls: vec![],
+                usage: TokenUsage {
+                    input_tokens: 12,
+                    output_tokens: 6,
+                },
+            })
+        }
+    }
+
+    async fn run_loop_with(driver: Arc<dyn LlmDriver>) -> AgentLoopResult {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        run_agent_loop(
+            &manifest,
+            "Write a summary of the project into output/fang9-report.md",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("the turn completes")
+    }
+
+    /// RED before this patch: one LLM call, the claim returned verbatim as the
+    /// turn's answer. GREEN: the claim is challenged, and the model's
+    /// admission is what the caller gets.
+    #[tokio::test]
+    async fn test_unbacked_write_claim_is_challenged() {
+        let result = run_loop_with(Arc::new(PhantomWriteDriver {
+            admit_after_challenge: true,
+        }))
+        .await;
+        assert_eq!(
+            result.iterations, 2,
+            "the unbacked write claim must cost a challenge"
+        );
+        assert!(
+            result.response.contains("did not write"),
+            "the admission is the answer, got: {:?}",
+            result.response
+        );
+        assert!(
+            !result.response.contains("[Unverified"),
+            "an admission is not an unverified claim: {:?}",
+            result.response
+        );
+    }
+
+    /// A model that repeats the lie does not get to keep it: the turn still
+    /// succeeds, but the answer says the write did not happen.
+    #[tokio::test]
+    async fn test_repeated_write_claim_is_answered_as_unverified() {
+        let result = run_loop_with(Arc::new(PhantomWriteDriver {
+            admit_after_challenge: false,
+        }))
+        .await;
+        assert_eq!(result.iterations, 2, "challenged once, not in a loop");
+        assert!(
+            result.response.contains("[Unverified")
+                && result.response.contains("Treat the file as NOT written"),
+            "the answer must disclose that nothing was written: {:?}",
+            result.response
+        );
+    }
+
+    /// The other half of the acceptance: an honest refusal is returned as it
+    /// stands, in one call, with nothing appended.
+    #[tokio::test]
+    async fn test_honest_refusal_passes_through_untouched() {
+        let result = run_loop_with(Arc::new(HonestRefusalDriver)).await;
+        assert_eq!(result.iterations, 1, "a refusal is not challenged");
+        assert_eq!(
+            result.response,
+            "I could not write output/fang9-report.md — file_write is not among my tools."
+        );
     }
 }

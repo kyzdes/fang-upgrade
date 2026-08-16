@@ -1,0 +1,21 @@
+{
+  "name": "honest-write-refusal",
+  "doc": "FANG-9's second control, and the one that watches the fix rather than the defect. The model reports that it did NOT write the file, and says why. The text carries the same verb and the same path as the lie in phantom-write-claim — the only difference is the negation — so a guard that reads 'wrote' and a filename without reading the rest of the sentence would challenge this turn, spend a second LLM call on a refusal that was already honest, and eventually stamp it as unverified. Either would be a new defect wearing the old one's clothes. The invariant holds on both builds: one LLM call, and the answer comes back byte-for-byte as served.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        {
+          "type": "text",
+          "content": "I did not write output/fang9-report.md. file_write refused the path: the output directory does not exist yet, so nothing was created. Say the word and I will create the directory first.",
+          "finish_reason": "stop",
+          "usage": [30, 21]
+        }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}
