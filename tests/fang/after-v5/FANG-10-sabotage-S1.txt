@@ -1,0 +1,57 @@
+# SABOTAGE S1 for FANG-10 — the fix's Ok(AgentLoopResult) put back to Err(MaxIterationsExceeded), nothing else changed.
+# captured : 2026-08-16T00:15:17Z
+# repo     : fix/fang-10-47-maxiter @ 2c69ebe (branched from ours @ 7606210)
+# target   : of-fang1047 on 127.0.0.1:4247, image openfang:fang1047-s1 (2c69ebe with the exit line reverted)
+# command  : OF_CONTAINER=of-fang1047 \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang1047-data/_data/config.toml \
+#            ./FANG-10.sh http://127.0.0.1:4247
+# ---------------------------------------------------------------------
+=== FANG-10 — max_iterations exceeded returns HTTP 500 with no partial result ===
+target: http://127.0.0.1:4247   container: of-fang1047
+image : openfang:fang1047-s1
+
+probe agent: fangrig-probe / 268ebca2-b2eb-44f7-af90-d40fb62b126a   workspace: of-fang1047:/data/workspaces/fangrig-probe
+pre-check: output/fang10-partial.txt absent before any turn
+
+--- turn 1 (CONTROL): an ordinary tool_call-then-text turn ---
+HTTP 200
+{"calls":[{"cost_usd":0.000062,"input_tokens":23,"model":"adv-primary","n":0,"output_tokens":13,"provider":"fangrig","tool_calls":1},{"cost_usd":0.000062,"input_tokens":29,"model":"adv-primary","n":1,"output_tokens":11,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000124,"input_tokens":52,"iterations":2,"model_used":"adv-primary","output_tokens":24,"provider_used":"fangrig","response":"Control turn: wrote output/fang10-control.txt."}
+
+--- turn 2 (defect): the provider never stops asking for tools ---
+HTTP 500   (turn took 3s)
+{"error":"Message delivery failed: Max iterations exceeded (50). Configure a higher limit in agent.toml under [autonomous] max_iterations"}
+
+--- the partial result the caller was not told about ---
+  total 16
+  drwxr-xr-x 2 root root 4096 Aug 15 23:54 .
+  drwxr-xr-x 8 root root 4096 Aug 15 23:54 ..
+  -rw-r--r-- 1 root root   23 Aug 15 23:54 fang10-control.txt
+  -rw-r--r-- 1 root root   87 Aug 15 23:54 fang10-partial.txt
+  content of output/fang10-partial.txt:
+    FANG10-PARTIAL-RESULT-CANARY: written during a turn the caller was told failed with 500
+  FANG10_PARTIAL_FILE=present
+
+--- and the session the runtime deliberately saved before failing ---
+  messages in the saved session after the 500: 98
+
+--- what the provider actually served (stub journal rollup) ---
+  scenario : max-iterations-500
+  counts   : {'primary': 52}
+  statuses : {'200': 52}
+  step mix : {'tool_call': 51, 'text': 1}
+
+control OK: turn 1 answered 200, and the stub served exactly 52 calls —
+            2 for the control and one per iteration for the 50 that followed.
+
+FANG10_STATUS=500                    # want: a status the caller can act on
+FANG10_EXIT_DOOR=yes        # yes = max_iterations, not the circuit breaker
+FANG10_BODY_HAS_RESPONSE=no  # want: yes — some partial answer
+FANG10_BODY_HAS_CANARY=no   # want: yes — the work is named
+FANG10_PARTIAL_FILE=present    # the work really happened
+FANG10_SESSION_MESSAGES=98   # ...and the runtime kept it, for itself
+
+RESULT: RED — 50 iterations ran, a real file was written to the workspace,
+        the session was saved on the way out, and the caller got a 500
+        containing none of it.
+
+# exit code: 0   (run.sh mode=exit4: 0=RED defect reproduced, 1=GREEN, 3=SKIPPED, 4=INCONCLUSIVE)

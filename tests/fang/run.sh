@@ -260,9 +260,9 @@ REPROS=(
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
   "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
-  "FANG-10|FANG-10.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
+  "FANG-10|FANG-10.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (fix 2c69ebe)"
   "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
-  "FANG-47|FANG-47.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (NO FIX)"
+  "FANG-47|FANG-47.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (fix 2c69ebe)"
 )
 
 # Signatures of a probe that never got into the stand. Deliberately narrow:
@@ -273,8 +273,10 @@ REPROS=(
 # must not disqualify anything.
 #
 # Product-level 4xx/5xx are NOT here on purpose: A-1 expects HTTP 501 from
-# PUT /update, FANG-10 expects HTTP 500 from the max-iterations exit. Those
-# are the findings, not failures to reach the system.
+# PUT /update, and FANG-10 expected HTTP 500 from the max-iterations exit
+# until 2c69ebe made that exit answer 200 with the partial turn. Those are
+# findings, not failures to reach the system, and the line stays because the
+# next repro to report a product-level 5xx must not be disqualified for it.
 DISQUALIFY_RE='Invalid API key|Missing Authorization|ofctl: HTTP 40[13] |ofctl: no response from|ofctl: cannot read|^HTTP 40[13]([^0-9]|$)|^ *HTTP 40[13]([^0-9]|$)|curl: \([0-9]+\)|Connection refused|Failed to connect to|Could not resolve host'
 
 field() { printf '%s' "$1" | cut -d'|' -f"$2"; }
@@ -905,7 +907,9 @@ for r in "${REPROS[@]}"; do
   wid="$(field "$r" 1)"; wpat="$(field "$r" 6)"
   [ "$wpat" = "-" ] && continue
   seen=0
-  for f in "$HERE/baseline/$wid.txt" "$HERE/after/$wid.txt" "$HERE/after-v2/$wid.txt" \
+  # after*/ is a glob on purpose: after-v3/ and after-v4/ were already on disk
+  # and named explicitly nowhere, so runs recorded there confirmed nothing.
+  for f in "$HERE/baseline/$wid.txt" "$HERE"/after*/"$wid".txt \
            "$HERE"/evidence-run*/live-"$wid".log; do
     [ -f "$f" ] || continue
     all=1; wrest="$wpat"
@@ -1065,15 +1069,23 @@ else
 fi
 
 # ------------------------------------------------------- coverage of fixes --
-# 14 fix commits on `ours` that are not on `main`:
+# The fix commits on `ours` that are not on `main`:
 #   git log --format='%h %s' ours ^main | grep '^[0-9a-f]* fix'
+# The count is printed from the array below rather than written here, because
+# a number in a comment is wrong the first time someone adds a row.
 # The mapping fix -> repro is declared here (nothing on disk records it); the
 # baseline/after columns are READ OFF THE FILESYSTEM, so a missing evidence
 # file shows up as a hole instead of quietly vanishing from the table.
-echo
-echo "======================================================================"
-echo "COVERAGE — 14 fix commits on 'ours', and what reproduces them"
-echo "======================================================================"
+# Is there an after-the-fix run on disk for this repro? Any after*/ directory
+# counts — the sprints kept adding after-v2, after-v3, after-v4, and naming two
+# of them by hand meant a green run recorded in the others read as "no green
+# recorded".
+have_after_glob() {
+  local f
+  for f in "$HERE"/after*/"$1".txt; do [ -f "$f" ] && return 0; done
+  return 1
+}
+
 COVERAGE=(
   "5891b2b|direct|A-2|fix(runtime): recount provider model_count on custom model removal"
   "366d62f|direct|A-7|fix(kernel): resolve fallback base_url per provider, not from default_model"
@@ -1088,8 +1100,13 @@ COVERAGE=(
   "acc85d7|direct|FANG-43|fix(channels): stop token/secret leaks in Telegram file content and 6 adapters"
   "8b502f9|direct|FANG-45|fix(tools): make file_read disclose truncation and support offset/limit paging"
   "8a2f8d4|bundle|A-1,A-2,A-6,A-7|fix: four defects the adversarial review found in the sprint-2 patches"
+  "2c69ebe|direct|FANG-10,FANG-47|fix(fang-10,fang-47): hand back the partial turn when iterations run out"
   "d83abbf|bundle|FANG-43,FANG-45|fix: three defects the adversarial review found in the sprint-3 patches"
 )
+echo
+echo "======================================================================"
+echo "COVERAGE — ${#COVERAGE[@]} fix commits on 'ours', and what reproduces them"
+echo "======================================================================"
 printf '%-9s %-7s %-18s %-10s %s\n' COMMIT KIND REPRO EVIDENCE SUBJECT
 NO_REPRO=0; NO_GREEN=0; FULL=0; N_BUNDLE=0
 for c in "${COVERAGE[@]}"; do
@@ -1103,7 +1120,7 @@ for c in "${COVERAGE[@]}"; do
   IFS=',' read -ra rs <<<"$repros"
   for one in "${rs[@]}"; do
     [ -f "$HERE/baseline/$one.txt" ] && have_base=1
-    { [ -f "$HERE/after/$one.txt" ] || [ -f "$HERE/after-v2/$one.txt" ]; } && have_after=1
+    have_after_glob "$one" && have_after=1
   done
   if [ "$have_base" = 1 ] && [ "$have_after" = 1 ]; then ev="base+after"
   elif [ "$have_base" = 1 ]; then ev="base only"
@@ -1118,7 +1135,7 @@ for c in "${COVERAGE[@]}"; do
   else NO_REPRO=$((NO_REPRO + 1)); fi
 done
 echo
-echo "Counted by fix commit (12 direct + 2 adversarial round-ups = 14):"
+echo "Counted by fix commit ($((FULL + NO_GREEN + NO_REPRO)) direct + $N_BUNDLE adversarial round-ups = ${#COVERAGE[@]}):"
 echo "  direct fixes with a baseline AND an after-the-fix run : $FULL"
 echo "  direct fixes with a baseline but no green recorded    : $NO_GREEN"
 echo "  direct fixes with no reproduction at all              : $NO_REPRO"
@@ -1131,7 +1148,7 @@ for s in A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG
   [ -f "$HERE/$s.sh" ] || continue
   b=0; a=0
   [ -f "$HERE/baseline/$s.txt" ] && b=1
-  { [ -f "$HERE/after/$s.txt" ] || [ -f "$HERE/after-v2/$s.txt" ]; } && a=1
+  have_after_glob "$s" && a=1
   if   [ "$b" = 1 ] && [ "$a" = 1 ]; then BR_FULL="$BR_FULL $s"
   elif [ "$b" = 1 ];                 then BR_BASE="$BR_BASE $s"
   else                                    BR_NONE="$BR_NONE $s"; fi
