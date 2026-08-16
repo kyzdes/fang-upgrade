@@ -6529,9 +6529,18 @@ const CURATED_PROVIDER_IDS: &[&str] = &[
     "opencode",
 ];
 
+/// The operational model catalog is intentionally stricter than the provider
+/// hub: Denis can keep connection options for other providers without showing
+/// their built-in models until they are routed through Y7 or Hyperfusion.
+const ROUTER_MODEL_PROVIDER_IDS: &[&str] = &["y7router", "hyperfusion"];
+
 fn provider_is_visible(p: &openfang_types::model_catalog::ProviderInfo) -> bool {
     CURATED_PROVIDER_IDS.contains(&p.id.as_str())
         || p.auth_status == openfang_types::model_catalog::AuthStatus::Configured
+}
+
+fn model_provider_is_visible(provider: &str) -> bool {
+    ROUTER_MODEL_PROVIDER_IDS.contains(&provider)
 }
 
 fn show_full_catalog(params: &HashMap<String, String>) -> bool {
@@ -6544,7 +6553,7 @@ fn show_full_catalog(params: &HashMap<String, String>) -> bool {
 /// GET /api/models — List models in the focused catalog.
 ///
 /// Query parameters:
-/// - `provider` — filter by provider (e.g. `?provider=anthropic`)
+/// - `provider` — filter by router provider (e.g. `?provider=y7router`)
 /// - `tier` — filter by tier (e.g. `?tier=smart`)
 /// - `available` — only show models from configured providers (`?available=true`)
 /// - `all` — include the full built-in catalog for diagnostics (`?all=true`)
@@ -6569,14 +6578,8 @@ pub async fn list_models(
         .list_models()
         .iter()
         .filter(|m| {
-            if !include_all {
-                let visible = catalog
-                    .get_provider(&m.provider)
-                    .map(provider_is_visible)
-                    .unwrap_or(false);
-                if !visible {
-                    return false;
-                }
+            if !include_all && !model_provider_is_visible(&m.provider) {
+                return false;
             }
             if let Some(ref p) = provider_filter {
                 if m.provider.to_lowercase() != *p {
@@ -13259,5 +13262,14 @@ mod tests {
             "unused-builtin",
             openfang_types::model_catalog::AuthStatus::Missing,
         )));
+    }
+
+    #[test]
+    fn focused_model_catalog_only_keeps_router_models() {
+        assert!(model_provider_is_visible("y7router"));
+        assert!(model_provider_is_visible("hyperfusion"));
+        assert!(!model_provider_is_visible("anthropic"));
+        assert!(!model_provider_is_visible("openai"));
+        assert!(!model_provider_is_visible("openrouter"));
     }
 }
