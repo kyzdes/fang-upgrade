@@ -886,6 +886,22 @@ cmd_rollback() {
   [ "$volsrc" = "$T_VOLSRC" ] ||
     die "ledger record $rel_id is about '$volsrc', but $name mounts '$T_VOLSRC'. Refusing." 2
 
+  # --with-volume used to check for the snapshot AFTER stop+rm+rename, and the
+  # `docker start` that revives the target lives only in the no-volume branch.
+  # A missing snapshot therefore took the service down and left it down — the
+  # one command whose entire job is to end an outage, causing one. Nothing here
+  # is destructive yet, so the check belongs here.
+  if [ -n "$with_volume" ]; then
+    [ -n "$snap" ] ||
+      die "release $rel_id recorded no snapshot, so --with-volume has nothing to restore" 4
+    [ -d "$snap" ] ||
+      die "snapshot $snap is gone; --with-volume cannot restore the data.
+  Roll back the image alone by dropping --with-volume, or point --to at a
+  release whose snapshot still exists. Nothing has been touched." 4
+    [ -f "$snap/openfang.db" ] ||
+      die "snapshot $snap has no openfang.db — it is not a usable restore point. Nothing has been touched." 4
+  fi
+
   local restore_mode
   if exists_container "$prev_ct"; then
     local prev_img; prev_img="$(docker inspect -f '{{.Image}}' "$prev_ct" 2>/dev/null)"
@@ -955,18 +971,33 @@ EOF
       die "could not recreate $name from $from_id" 1
   fi
 
+  # Past this point the target exists but is NOT running, and every remaining
+  # failure would leave it that way. `die` is therefore the wrong exit: bring
+  # the container up first, so a failed restore costs the data, not the service.
+  revive_or_die() { # revive_or_die MESSAGE [CODE]
+    local msg="$1" code="${2:-1}"
+    if docker start "$name" >/dev/null 2>&1; then
+      log "the target was started again after the failure below — it is serving $from_ref"
+    else
+      log "the target could NOT be started after the failure below — it is DOWN"
+    fi
+    die "$msg" "$code"
+  }
+
   if [ -n "$with_volume" ]; then
     step "restore the volume from $snap"
-    [ -d "$snap" ] || die "snapshot $snap is gone; the image is back but the data is not" 1
+    # Checked before anything destructive ran, re-checked here in case it went
+    # away in between. Now it costs a message, not an outage.
+    [ -d "$snap" ] || revive_or_die "snapshot $snap disappeared during the rollback; the image is back, the data is not" 1
     # Prove the write target by the identity being written: the path handed to
     # ofbackup must be the mount source of THIS container, read live.
     local live_src
     live_src="$(docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$T_HOME\"}}{{.Source}}{{end}}{{end}}" "$name" 2>/dev/null)"
     [ "$live_src" = "$T_VOLSRC" ] ||
-      die "refusing to restore: $name mounts '$live_src', ledger and resolution say '$T_VOLSRC'" 2
-    [ "$T_VOLUME" != "$PROD_VOLUME" ] || die "refusing to restore into the production volume" 2
+      revive_or_die "refusing to restore: $name mounts '$live_src', ledger and resolution say '$T_VOLSRC'" 2
+    [ "$T_VOLUME" != "$PROD_VOLUME" ] || revive_or_die "refusing to restore into the production volume" 2
     OPENFANG_CONTAINER="$name" OPENFANG_HOME_HOST="$T_VOLSRC" OPENFANG_HOME_CTR="$T_HOME" \
-      "$OFBACKUP" restore "$snap" --yes >&2 || die "ofbackup restore failed" 1
+      "$OFBACKUP" restore "$snap" --yes >&2 || revive_or_die "ofbackup restore failed" 1
   else
     docker start "$name" >/dev/null || die "could not start $name" 1
   fi
