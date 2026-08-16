@@ -260,9 +260,9 @@ REPROS=(
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
   "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
-  "FANG-10|FANG-10.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
+  "FANG-10|FANG-10.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (fix 2c69ebe, 07b5d67)"
   "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
-  "FANG-47|FANG-47.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (NO FIX)"
+  "FANG-47|FANG-47.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (fix 2c69ebe, 07b5d67)"
 )
 
 # Signatures of a probe that never got into the stand. Deliberately narrow:
@@ -273,8 +273,10 @@ REPROS=(
 # must not disqualify anything.
 #
 # Product-level 4xx/5xx are NOT here on purpose: A-1 expects HTTP 501 from
-# PUT /update, FANG-10 expects HTTP 500 from the max-iterations exit. Those
-# are the findings, not failures to reach the system.
+# PUT /update, and FANG-10 expected HTTP 500 from the max-iterations exit
+# until 2c69ebe made that exit answer 200 with the partial turn. Those are
+# findings, not failures to reach the system, and the line stays because the
+# next repro to report a product-level 5xx must not be disqualified for it.
 DISQUALIFY_RE='Invalid API key|Missing Authorization|ofctl: HTTP 40[13] |ofctl: no response from|ofctl: cannot read|^HTTP 40[13]([^0-9]|$)|^ *HTTP 40[13]([^0-9]|$)|curl: \([0-9]+\)|Connection refused|Failed to connect to|Could not resolve host'
 
 field() { printf '%s' "$1" | cut -d'|' -f"$2"; }
@@ -905,7 +907,9 @@ for r in "${REPROS[@]}"; do
   wid="$(field "$r" 1)"; wpat="$(field "$r" 6)"
   [ "$wpat" = "-" ] && continue
   seen=0
-  for f in "$HERE/baseline/$wid.txt" "$HERE/after/$wid.txt" "$HERE/after-v2/$wid.txt" \
+  # after*/ is a glob on purpose: after-v3/ and after-v4/ were already on disk
+  # and named explicitly nowhere, so runs recorded there confirmed nothing.
+  for f in "$HERE/baseline/$wid.txt" "$HERE"/after*/"$wid".txt \
            "$HERE"/evidence-run*/live-"$wid".log; do
     [ -f "$f" ] || continue
     all=1; wrest="$wpat"
@@ -1065,15 +1069,23 @@ else
 fi
 
 # ------------------------------------------------------- coverage of fixes --
-# 14 fix commits on `ours` that are not on `main`:
+# The fix commits on `ours` that are not on `main`:
 #   git log --format='%h %s' ours ^main | grep '^[0-9a-f]* fix'
+# The count is printed from the array below rather than written here, because
+# a number in a comment is wrong the first time someone adds a row.
 # The mapping fix -> repro is declared here (nothing on disk records it); the
 # baseline/after columns are READ OFF THE FILESYSTEM, so a missing evidence
 # file shows up as a hole instead of quietly vanishing from the table.
-echo
-echo "======================================================================"
-echo "COVERAGE — 14 fix commits on 'ours', and what reproduces them"
-echo "======================================================================"
+# Is there an after-the-fix run on disk for this repro? Any after*/ directory
+# counts — the sprints kept adding after-v2, after-v3, after-v4, and naming two
+# of them by hand meant a green run recorded in the others read as "no green
+# recorded".
+have_after_glob() {
+  local f
+  for f in "$HERE"/after*/"$1".txt; do [ -f "$f" ] && return 0; done
+  return 1
+}
+
 COVERAGE=(
   "5891b2b|direct|A-2|fix(runtime): recount provider model_count on custom model removal"
   "366d62f|direct|A-7|fix(kernel): resolve fallback base_url per provider, not from default_model"
@@ -1088,14 +1100,46 @@ COVERAGE=(
   "acc85d7|direct|FANG-43|fix(channels): stop token/secret leaks in Telegram file content and 6 adapters"
   "8b502f9|direct|FANG-45|fix(tools): make file_read disclose truncation and support offset/limit paging"
   "8a2f8d4|bundle|A-1,A-2,A-6,A-7|fix: four defects the adversarial review found in the sprint-2 patches"
+  "2c69ebe|direct|FANG-10,FANG-47|fix(fang-10,fang-47): hand back the partial turn when iterations run out"
+  "07b5d67|bundle|FANG-10,FANG-47|fix(fang-10,fang-47): build the max-iterations summary out of what happened"
   "d83abbf|bundle|FANG-43,FANG-45|fix: three defects the adversarial review found in the sprint-3 patches"
 )
-printf '%-9s %-7s %-18s %-10s %s\n' COMMIT KIND REPRO EVIDENCE SUBJECT
-NO_REPRO=0; NO_GREEN=0; FULL=0; N_BUNDLE=0
+# Where a fix commit actually lives. The table used to be headed "fix commits
+# on 'ours'", which stopped being true the moment a sprint recorded a fix that
+# was still on its own branch. Asking git is cheaper than remembering, and when
+# git cannot answer — no checkout, no 'ours' — the column says "?" and the
+# report makes no claim either way.
+REPO_ROOT="$(cd "$HERE/../.." && pwd)"
+where_commit() {
+  git -C "$REPO_ROOT" rev-parse --verify -q ours >/dev/null 2>&1 || { echo '?'; return; }
+  git -C "$REPO_ROOT" cat-file -e "$1^{commit}" 2>/dev/null || { echo '?'; return; }
+  if git -C "$REPO_ROOT" merge-base --is-ancestor "$1" ours 2>/dev/null
+  then echo ours; else echo branch; fi
+}
+
+# Which fix commits name this repro. Read off COVERAGE, so the notes below
+# cannot disagree with the table above them.
+covering_shas() {
+  local id="$1" c out=""
+  for c in "${COVERAGE[@]}"; do
+    case ",$(field "$c" 3)," in *",$id,"*) out="$out $(field "$c" 1)" ;; esac
+  done
+  printf '%s' "$out"
+}
+
+echo
+echo "======================================================================"
+echo "COVERAGE — ${#COVERAGE[@]} fix commits behind this tree, and what reproduces them"
+echo "======================================================================"
+echo "WHERE is asked of git: 'ours' = merged, 'branch' = on this branch only."
+printf '%-9s %-7s %-7s %-18s %-10s %s\n' COMMIT KIND WHERE REPRO EVIDENCE SUBJECT
+NO_REPRO=0; NO_GREEN=0; FULL=0; N_BUNDLE=0; N_BRANCH_ONLY=0
 for c in "${COVERAGE[@]}"; do
   sha="$(field "$c" 1)"; kind="$(field "$c" 2)"; repros="$(field "$c" 3)"; subj="$(field "$c" 4)"
+  wh="$(where_commit "$sha")"
+  [ "$wh" = branch ] && N_BRANCH_ONLY=$((N_BRANCH_ONLY + 1))
   if [ "$repros" = "-" ]; then
-    printf '%-9s %-7s %-18s %-10s %s\n' "$sha" "$kind" "none" "none" "$subj"
+    printf '%-9s %-7s %-7s %-18s %-10s %s\n' "$sha" "$kind" "$wh" "none" "none" "$subj"
     NO_REPRO=$((NO_REPRO + 1))
     continue
   fi
@@ -1103,14 +1147,15 @@ for c in "${COVERAGE[@]}"; do
   IFS=',' read -ra rs <<<"$repros"
   for one in "${rs[@]}"; do
     [ -f "$HERE/baseline/$one.txt" ] && have_base=1
-    { [ -f "$HERE/after/$one.txt" ] || [ -f "$HERE/after-v2/$one.txt" ]; } && have_after=1
+    have_after_glob "$one" && have_after=1
   done
   if [ "$have_base" = 1 ] && [ "$have_after" = 1 ]; then ev="base+after"
   elif [ "$have_base" = 1 ]; then ev="base only"
   else ev="NONE"; fi
-  printf '%-9s %-7s %-18s %-10s %s\n' "$sha" "$kind" "$repros" "$ev" "$subj"
-  # Bundle commits amend patches that already have their own row above. They
-  # inherit that coverage; counting them again would inflate the tally.
+  printf '%-9s %-7s %-7s %-18s %-10s %s\n' "$sha" "$kind" "$wh" "$repros" "$ev" "$subj"
+  # Bundle commits amend patches that already have their own row above — the
+  # adversarial round-ups, and any fix-of-a-fix like 07b5d67. They inherit that
+  # coverage; counting them again would inflate the tally.
   if [ "$kind" = bundle ]; then
     N_BUNDLE=$((N_BUNDLE + 1))
   elif [ "$ev" = "base+after" ]; then FULL=$((FULL + 1))
@@ -1118,11 +1163,12 @@ for c in "${COVERAGE[@]}"; do
   else NO_REPRO=$((NO_REPRO + 1)); fi
 done
 echo
-echo "Counted by fix commit (12 direct + 2 adversarial round-ups = 14):"
+echo "Counted by fix commit ($((FULL + NO_GREEN + NO_REPRO)) direct + $N_BUNDLE adversarial round-ups = ${#COVERAGE[@]}):"
 echo "  direct fixes with a baseline AND an after-the-fix run : $FULL"
 echo "  direct fixes with a baseline but no green recorded    : $NO_GREEN"
 echo "  direct fixes with no reproduction at all              : $NO_REPRO"
 echo "  round-up commits inheriting the rows above            : $N_BUNDLE"
+echo "  of all of the above, not on 'ours' yet                : $N_BRANCH_ONLY"
 echo
 echo "Counted by reproduction script (two commits can share one script, which"
 echo "is why these numbers are smaller than the ones above):"
@@ -1131,7 +1177,7 @@ for s in A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG
   [ -f "$HERE/$s.sh" ] || continue
   b=0; a=0
   [ -f "$HERE/baseline/$s.txt" ] && b=1
-  { [ -f "$HERE/after/$s.txt" ] || [ -f "$HERE/after-v2/$s.txt" ]; } && a=1
+  have_after_glob "$s" && a=1
   if   [ "$b" = 1 ] && [ "$a" = 1 ]; then BR_FULL="$BR_FULL $s"
   elif [ "$b" = 1 ];                 then BR_BASE="$BR_BASE $s"
   else                                    BR_NONE="$BR_NONE $s"; fi
@@ -1140,10 +1186,34 @@ echo "  baseline + after (a red run and a green run on record):$BR_FULL"
 echo "  baseline only (red on record, no green yet)           :$BR_BASE"
 echo "  no baseline on disk at all                            :$BR_NONE"
 echo
-echo "  Note on the 'baseline only' group: for FANG-43 and FANG-45 the missing"
-echo "  green is a gap in the evidence. For FANG-9/10/13/31/47 it is not — those"
-echo "  defects have no fix commit on 'ours', so red IS the current truth and"
-echo "  there is nothing green to record until sprint 5."
+echo "  Note on the 'baseline only' group. A missing green means two different"
+echo "  things, and which one is decided by whether a fix commit for that repro"
+echo "  exists at all — read off the COVERAGE table above, not asserted here,"
+echo "  because a sentence naming ids by hand goes stale the sprint they change:"
+for s in $BR_BASE; do
+  shas="$(covering_shas "$s")"
+  if [ -n "$shas" ]; then
+    printf '  %-8s fix%s on record, no green run on disk — a gap in the evidence\n' "$s" "$shas"
+  else
+    printf '  %-8s no fix commit in COVERAGE — red IS the current truth, and there\n' "$s"
+    printf '  %-8s is nothing green to record until one exists\n' ""
+  fi
+done
+[ -z "$BR_BASE" ] && echo "  (empty — every repro with a baseline also has a green run on record)"
+echo
+echo "  Note on the 'baseline + after' group. A green run is a statement about"
+echo "  the build it was captured on. Where the fix behind it is not on 'ours'"
+echo "  yet, the green belongs to a branch build and not to 'ours':"
+BR_NOTED=0
+for s in $BR_FULL; do
+  for sha in $(covering_shas "$s"); do
+    if [ "$(where_commit "$sha")" = branch ]; then
+      printf '  %-8s green is from %s, which is on this branch only\n' "$s" "$sha"
+      BR_NOTED=1
+    fi
+  done
+done
+[ "$BR_NOTED" = 0 ] && echo "  (none — every green on record comes from a commit on 'ours')"
 echo
 echo "Repros in this directory that are NOT tied to a fix commit — they"
 echo "reproduce defects that are still open on 'ours', which is why their"

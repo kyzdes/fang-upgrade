@@ -1,0 +1,52 @@
+# CONTROL for FANG-31 — not evidence about FANG-31, evidence about whose fault
+# its FAIL is. run.sh expects RED from FANG-31 and got GREEN on the patched
+# stand, which turns the whole run into `run.sh: FAIL`. This run is the same
+# probe, on the same stand, against the UNPATCHED image: it comes back GREEN
+# there too, so the FAIL is not something 07b5d67 or 2c69ebe did.
+#
+# Whether FANG-31's registered expectation is stale on 'ours' or the race
+# simply does not land on this stand is a question for whoever owns FANG-31.
+# Nothing here is a claim that the defect is fixed — OF31_409_COUNT=0 says one
+# reload produced no 409, and the script's own last two lines say that is not
+# the same as the channel still polling.
+# captured : 2026-08-16T12:57:31Z
+# repo     : the probe comes from fix/fang-10-47-maxiter; the runtime does not.
+# probes   : FANG-31.sh             sha256 66218dd7c376f0c666ad19ae91c5dab7…
+# image    : openfang:ours-7606210
+#            (sha256:2536fe57929d3c37a55e82de4a8e349a548734d4f90052068a14240691e3c8de)
+#            ours @ 7606210, unpatched.
+# stand    : of-fang1047, container port 4200 published on 127.0.0.1:4247,
+#            on a volume created fresh for the run.
+# command  : OF_CONTAINER=of-fang1047 \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang1047-data/_data/config.toml \
+#            ./FANG-31.sh http://127.0.0.1:4247
+# ---------------------------------------------------------------------
+=== FANG-31 · Telegram 409 on channel hot-reload ===
+date              : 2026-08-16T12:56:14Z
+target            : http://127.0.0.1:4247  (container of-fang1047)
+daemon version    : 0.6.9
+image             : sha256:2536fe57929d
+poller attached, long-poll in flight (timeout=30s)
+--- POST /api/channels/reload while the long-poll is in flight ---
+{"started":["telegram"],"status":"ok"}
+
+--- stub view (one line per getUpdates) ---
+1.960 getUpdates START peer=127.0.0.1:58376 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+1.960 getUpdates ACCEPTED
+32.010 getUpdates START peer=127.0.0.1:42024 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+32.010 getUpdates ACCEPTED
+63.055 getUpdates START peer=127.0.0.1:42024 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+63.055 getUpdates ACCEPTED
+
+--- daemon log ---
+2026-08-16T12:56:16.499680974Z 2026-08-16T12:56:16.499527Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T12:56:16.501574353Z 2026-08-16T12:56:16.501199Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-16T12:56:46.544599676Z 2026-08-16T12:56:46.544439Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-16T12:56:46.547992373Z 2026-08-16T12:56:46.547829Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T12:56:46.551283304Z 2026-08-16T12:56:46.551193Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+
+OF31_409_COUNT=0      # 409 WARNs caused by one reload (want 0)
+
+RESULT: GREEN — one reload, no 409 conflict. This says nothing about
+        whether the channel is still polling; see the stub view above.
+restored /var/lib/docker/volumes/of-fang1047-data/_data/config.toml

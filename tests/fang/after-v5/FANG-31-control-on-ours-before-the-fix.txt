@@ -1,0 +1,41 @@
+# CONTROL for FANG-31, not evidence about it: FANG-31 comes back GREEN against
+# `ours` @ 7606210 with NO patch applied, on the same stand, so the GREEN that
+# run.sh grades FAIL (it expects RED) is not something the FANG-10/FANG-47 fix
+# did. Whether FANG-31's registered expectation is stale on `ours` or the race
+# simply did not land this time is a question for whoever owns FANG-31.
+# captured : 2026-08-16T00:32:09Z
+# repo     : fix/fang-10-47-maxiter @ 2c69ebe (branched from ours @ 7606210)
+# target   : of-fang1047 on 127.0.0.1:4247, image openfang:fang1047-pre (ours @ 7606210, unpatched)
+# command  : OF_CONTAINER=of-fang1047 \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang1047-data/_data/config.toml \
+#            ./FANG-31.sh http://127.0.0.1:4247
+# ---------------------------------------------------------------------
+=== FANG-31 · Telegram 409 on channel hot-reload ===
+date              : 2026-08-16T00:11:53Z
+target            : http://127.0.0.1:4247  (container of-fang1047)
+daemon version    : 0.6.9
+image             : sha256:2e22c6b563e7
+poller attached, long-poll in flight (timeout=30s)
+--- POST /api/channels/reload while the long-poll is in flight ---
+{"started":["telegram"],"status":"ok"}
+
+--- stub view (one line per getUpdates) ---
+1.962 getUpdates START peer=127.0.0.1:51694 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+1.962 getUpdates ACCEPTED
+32.010 getUpdates START peer=127.0.0.1:47554 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+32.010 getUpdates ACCEPTED
+63.053 getUpdates START peer=127.0.0.1:47554 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+63.053 getUpdates ACCEPTED
+
+--- daemon log ---
+2026-08-16T00:11:55.390778696Z 2026-08-16T00:11:55.390480Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T00:11:55.393453559Z 2026-08-16T00:11:55.392969Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-16T00:12:25.436663286Z 2026-08-16T00:12:25.436371Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-16T00:12:25.439105733Z 2026-08-16T00:12:25.439026Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T00:12:25.440674998Z 2026-08-16T00:12:25.440563Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+
+OF31_409_COUNT=0      # 409 WARNs caused by one reload (want 0)
+
+RESULT: GREEN — one reload, no 409 conflict. This says nothing about
+        whether the channel is still polling; see the stub view above.
+restored /var/lib/docker/volumes/of-fang1047-data/_data/config.toml

@@ -1,0 +1,49 @@
+# RED for FANG-47 on ours @ 7606210 with NO patch — the pairing run for after-v5/FANG-47.txt.
+# captured : 2026-08-16T00:15:17Z
+# repo     : fix/fang-10-47-maxiter @ 2c69ebe (branched from ours @ 7606210)
+# target   : of-fang1047 on 127.0.0.1:4247, image openfang:fang1047-pre (ours @ 7606210, unpatched)
+# command  : OF_CONTAINER=of-fang1047 \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang1047-data/_data/config.toml \
+#            ./FANG-47.sh http://127.0.0.1:4247
+# ---------------------------------------------------------------------
+=== FANG-47 — the max-iterations exit loses the turn's accounting entirely ===
+target: http://127.0.0.1:4247   container: of-fang1047
+image : openfang:fang1047-pre
+meter : GET /api/usage/by-model, row model=adv-primary
+
+probe agent: fangrig-probe / 898c9cba-5fc8-4d49-ab7f-2b9b0b49223a
+
+meter BEFORE any turn : calls=2 input=52 output=24
+
+--- turn 1 (CONTROL): an ordinary 2-call turn, 7919/7907 per call ---
+HTTP 200
+{"calls":[{"cost_usd":0.03164,"input_tokens":7919,"model":"adv-primary","n":0,"output_tokens":7907,"provider":"fangrig","tool_calls":1},{"cost_usd":0.03164,"input_tokens":7919,"model":"adv-primary","n":1,"output_tokens":7907,"provider":"fangrig","tool_calls":0}],"cost_usd":0.06328,"input_tokens":15838,"iterations":2,"model_used":"adv-primary","output_tokens":15814,"provider_used":"fangrig","response":"Control turn done."}
+meter AFTER control   : calls=4 input=15890 output=15838
+delta                 : calls=2 input=15838 output=15814
+
+--- turn 2 (defect): the provider never stops asking for tools ---
+HTTP 500
+{"error":"Message delivery failed: Max iterations exceeded (50). Configure a higher limit in agent.toml under [autonomous] max_iterations"}
+meter AFTER defect    : calls=4 input=15890 output=15838
+delta                 : calls=0 input=0 output=0
+
+--- what the provider actually served and billed (stub journal) ---
+  scenario : max-iterations-usage-lost
+  counts   : {'primary': 52}
+  statuses : {'200': 52}
+  step mix : {'tool_call': 51, 'text': 1}
+
+control OK: the same meter, the same model and the same stub moved by exactly
+            +2 calls / +15838 input / +15814 output for turn 1.
+
+FANG47_SERVED_CALLS=50       # LLM calls the provider really answered
+FANG47_SERVED_INPUT=395950    # tokens the provider really billed
+FANG47_SERVED_OUTPUT=395350
+FANG47_BOOKED_CALLS=0          # what /api/usage/by-model recorded (want: 50)
+FANG47_BOOKED_INPUT=0
+FANG47_BOOKED_OUTPUT=0
+
+RESULT: RED — 50 LLM calls and 395950/395350 tokens were served
+        and billed, the turn ended 500, and the ledger moved by zero.
+
+# exit code: 0   (run.sh mode=exit4: 0=RED defect reproduced, 1=GREEN, 3=SKIPPED, 4=INCONCLUSIVE)
