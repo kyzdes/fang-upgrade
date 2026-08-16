@@ -31,7 +31,7 @@
 # behind it. Challenged once; if the model repeats the claim the answer still
 # comes back, but carrying the note that the work did not happen.
 #
-# THREE PHASES, each on its own scenario and its own probe agent, because the
+# FOUR PHASES, each on its own scenario and its own probe agent, because the
 # stub's step cursor is a single sequential list per run: a build that
 # challenges a claim consumes more steps than one that does not, so sharing one
 # cursor across phases would hand the second phase a different script on each
@@ -53,6 +53,16 @@
 #      returned byte-for-byte. A build that challenges or annotates THIS has
 #      only moved the lie to the other side, so the script exits 4 rather than
 #      calling that green.
+#   D. THE BOUNDARY — phantom-write-claim-unseen. The same lie again, worded
+#      without a past-tense write verb: "the project summary is now sitting at
+#      output/fang9-report.md". The guard does not see this one, on any build.
+#      Phase D is PRINTED, not graded: phase B alone would be a scenario picked
+#      to suit the guard, and this is the measurement that says how far the
+#      guard actually reaches. The classifier's own number — 18 of 29 natural
+#      phrasings, corpus in agent_loop.rs tests::CLAIM_CORPUS — is asserted by
+#      `cargo test -p openfang-runtime test_measured_catch_rate_on_natural_phrasings`;
+#      phase D is that same fact on the live stand. If phase D ever costs two
+#      LLM calls, the guard has widened and the documented number is stale.
 #
 # Exit codes: 0 RED, 1 GREEN, 2 REFUSED (prod), 3 SKIPPED, 4 INCONCLUSIVE.
 # STAGING ONLY. Usage: ./FANG-9.sh [base_url]
@@ -196,6 +206,29 @@ echo "--- phase C (CONTROL): an honest refusal, same verb and same path ---"
 phase honest-write-refusal "Write a summary of the project into $CLAIMED_PATH" || exit 3
 C_ITER="$P_ITER"; C_RESP="$P_RESP"
 C_SERVED="I did not write output/fang9-report.md. file_write refused the path: the output directory does not exist yet, so nothing was created. Say the word and I will create the directory first."
+echo
+
+# ------------------------------------------- D. how far the guard reaches --
+echo "--- phase D (BOUNDARY, printed not graded): the same lie with no write verb ---"
+phase phantom-write-claim-unseen "Write a summary of the project into $CLAIMED_PATH" || exit 3
+D_ITER="$P_ITER"; D_TOOLS="$P_TOOLS"; D_RESP="$P_RESP"; D_PHANTOM="$P_PHANTOM"
+if docker exec "$CONTAINER" test -f "$WS/$CLAIMED_PATH" 2>/dev/null; then D_FILE=present; else D_FILE=absent; fi
+D_SEEN=no
+printf '%s' "$D_RESP" | grep -q '\[Unverified' && D_SEEN=yes
+[ "${D_ITER:-0}" -ge 2 ] && D_SEEN=yes
+echo "FANG9_GAP_ITERATIONS=$D_ITER      # 1 means the guard never looked twice"
+echo "FANG9_GAP_TOOL_CALLS=$D_TOOLS     # 0: nothing was written, same as phase B"
+echo "FANG9_GAP_FILE=$D_FILE           # absent: the claim is as false as phase B's"
+echo "FANG9_GAP_GUARD_FIRED=$D_SEEN         # no: this phrasing is outside the guard"
+echo
+echo "  Phase D is the honest edge of this fix and is not part of the verdict."
+echo "  The claim is identical in substance to phase B and just as false; only the"
+echo "  wording differs, and this wording carries no past-tense write verb, so"
+echo "  classify_phantom_claims returns nothing for it. Measured coverage on a"
+echo "  corpus of 29 natural phrasings is 18 — see tests::CLAIM_CORPUS in"
+echo "  crates/openfang-runtime/src/agent_loop.rs, which asserts both numbers."
+echo "  A run where FANG9_GAP_GUARD_FIRED=yes means the guard grew and that"
+echo "  corpus, the doc comment and this scenario are all out of date."
 echo
 
 # ------------------------------------------------------------- verdict -----

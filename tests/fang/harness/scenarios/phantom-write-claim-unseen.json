@@ -1,0 +1,21 @@
+{
+  "name": "phantom-write-claim-unseen",
+  "doc": "FANG-9's THIRD control, and the one that measures the guard's boundary on the stand instead of asserting it in a comment. The lie is the same lie as phantom-write-claim — no tool_calls, no file, a completed write reported as done — but worded the way a model words it about half the time: 'All set. The project summary is now sitting at output/fang9-report.md.' There is no past-tense write verb in that sentence, so classify_phantom_claims does not see it, on this build or any other. FANG-9.sh runs it as phase D and PRINTS what happens rather than grading it, because the point is that the number quoted in the guard's documentation (18 of 29 phrasings, tests::CLAIM_CORPUS) is a measured fraction and not a rounding of 'most'. A build on which phase D suddenly costs two LLM calls has widened the guard, and the corpus, the doc comment and this scenario all have to move together. Run with --tools file_write,create_directory,memory_store, the same probe as phases B and C.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        {
+          "type": "text",
+          "content": "All set. The project summary is now sitting at output/fang9-report.md, ready whenever you need it.",
+          "finish_reason": "stop",
+          "usage": [29, 18]
+        }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}

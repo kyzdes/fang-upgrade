@@ -102,7 +102,16 @@ const MAX_HISTORY_MESSAGES: usize = openfang_types::agent::DEFAULT_MAX_HISTORY_M
 /// caller verbatim as a successful answer — and so did a delivery claim made
 /// after any one unrelated tool call. Each variant below carries its own
 /// vocabulary and, more to the point, its own set of tools that would make the
-/// claim true: an unrelated tool call is no longer accepted as backing.
+/// claim true.
+///
+/// "Unrelated" is decided by tool *name*, which is as far as this process can
+/// see, so the rule is narrower than it sounds: a tool whose name contains an
+/// action fragment backs the claim, and the fragment lists below stay generous
+/// on purpose (see `UNIVERSAL_ACTION_TOOL_FRAGMENTS`). Read-only builtins are
+/// the one exception, vetoed by exact name in `READ_ONLY_TOOLS`; anything
+/// outside that list — an unknown MCP tool, a Hand, a skill — is taken at its
+/// word. `test_read_only_builtins_back_nothing` writes down the resulting set
+/// per class, gaps included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PhantomClaim {
     /// "I sent it to Telegram", "posted it to the channel", "emailed you".
@@ -137,6 +146,32 @@ const UNIVERSAL_ACTION_TOOL_FRAGMENTS: &[&str] = &[
     "workflow",
     "mcp",
     "skill",
+];
+
+/// Builtin tools that only read, list or describe, and therefore back nothing.
+///
+/// The substring lists above are deliberately generous, and that generosity
+/// misfires on names that merely *contain* an action fragment:
+/// `process_list` and `process_poll` match "process", `skill_list` and
+/// `skill_describe` match "skill", `hand_list` and `hand_status` match "hand"
+/// — all four fragments are universal, so a turn that did nothing but list its
+/// own skills counted as backing for a delivery, a write and a store at once.
+/// `memory_recall` and `knowledge_query` did the same for a store claim.
+///
+/// Compared against the whole lowercased tool name, so a prefixed variant
+/// (`mcp__x__memory_recall`) is not vetoed: this process cannot know what an
+/// MCP server named after a builtin actually does. The list is checked against
+/// `builtin_tool_definitions()` by `test_read_only_builtins_back_nothing`,
+/// which also pins the exact set of builtins that *do* back each class.
+const READ_ONLY_TOOLS: &[&str] = &[
+    "hand_list",
+    "hand_status",
+    "knowledge_query",
+    "memory_recall",
+    "process_list",
+    "process_poll",
+    "skill_describe",
+    "skill_list",
 ];
 
 impl PhantomClaim {
@@ -202,47 +237,126 @@ impl PhantomClaim {
         }
     }
 
-    /// Appended to the answer when the model repeats the unbacked claim after
-    /// being challenged. The turn still succeeds — but it stops travelling as
-    /// an unqualified report of work that never happened.
-    fn unverified_note(self) -> &'static str {
+    /// What a tool of this class would have had to be, in the note's words.
+    fn missing_tool_phrase(self) -> &'static str {
         match self {
-            PhantomClaim::Delivery => "\n\n[Unverified — nothing was sent in this turn: the agent reported a delivery, was challenged, and still called no sending tool. Treat the delivery as NOT performed.]",
-            PhantomClaim::FileWrite => "\n\n[Unverified — nothing was written in this turn: the agent reported a completed write, was challenged, and still called no writing tool. Treat the file as NOT written and check the path before relying on it.]",
-            PhantomClaim::MemoryWrite => "\n\n[Unverified — nothing was stored in this turn: the agent reported a completed store, was challenged, and still called no storing tool. Treat the store as NOT performed.]",
+            PhantomClaim::Delivery => "no tool that sends anything",
+            PhantomClaim::FileWrite => "no tool that writes to disk",
+            PhantomClaim::MemoryWrite => "no tool that writes to memory",
+        }
+    }
+
+    /// What the caller should do with the claim.
+    fn verdict_phrase(self) -> &'static str {
+        match self {
+            PhantomClaim::Delivery => "Treat the delivery as NOT performed.",
+            PhantomClaim::FileWrite => {
+                "Treat the file as NOT written, and check the path before relying on it."
+            }
+            PhantomClaim::MemoryWrite => "Treat the store as NOT performed.",
         }
     }
 }
 
-/// True when any tool that *succeeded* this turn could have performed `claim`.
-/// `succeeded` holds lowercased names of tools whose result came back without
-/// `is_error` — a write that failed backs nothing, which is the case the old
-/// guard could not see at all.
-fn claim_is_backed(claim: PhantomClaim, succeeded: &std::collections::HashSet<String>) -> bool {
-    succeeded.iter().any(|name| {
-        UNIVERSAL_ACTION_TOOL_FRAGMENTS
-            .iter()
-            .any(|f| name.contains(f))
-            || claim
-                .backing_tool_fragments()
+/// What this turn actually did about one claim. Every field is written by the
+/// loop from something that happened, never assumed.
+///
+/// This type exists because the first version of the note was a constant
+/// string that said "the agent reported a delivery, was challenged, and still
+/// called no sending tool" — and the challenge is skipped on the last
+/// iteration, so on that path the note asserted a challenge that never
+/// happened. A guard against fabricated reports must not fabricate its own.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ClaimEvidence {
+    /// A challenge for *this* class was injected earlier in this turn and the
+    /// model answered it. False when the guard had no iteration left to spend,
+    /// and false when the challenge that was spent was about another class.
+    challenged: bool,
+    /// A tool that would have backed this class did run this turn and came
+    /// back an error.
+    matching_tool_failed: bool,
+}
+
+/// Assemble the note from `evidence`. Each sentence corresponds to one
+/// recorded fact; a fact that did not happen contributes no sentence.
+///
+/// The opening clause is the one thing always true when this is called: no
+/// tool that could have performed the claim succeeded in this turn. That is
+/// what `claim_is_backed` returning false means, and nothing more is asserted
+/// unless the loop recorded it.
+fn unverified_note(claim: PhantomClaim, evidence: ClaimEvidence) -> String {
+    let mut note = format!(
+        "\n\n[Unverified — {} succeeded in this turn.",
+        claim.missing_tool_phrase()
+    );
+    if evidence.matching_tool_failed {
+        note.push_str(" One ran and returned an error.");
+    }
+    if evidence.challenged {
+        note.push_str(
+            " The agent was asked to either run one or say plainly that it had not, \
+             and repeated the claim instead.",
+        );
+    }
+    note.push(' ');
+    note.push_str(claim.verdict_phrase());
+    note.push(']');
+    note
+}
+
+/// True when any tool in `ran` could have performed `claim`.
+///
+/// Called with the turn's *successful* tools to decide whether a claim is
+/// backed, and with its *failed* tools to decide whether the note may say a
+/// matching tool errored. Read-only builtins are vetoed by exact name: they
+/// can perform nothing, whatever their name contains.
+fn claim_is_backed(claim: PhantomClaim, ran: &std::collections::HashSet<String>) -> bool {
+    ran.iter().any(|name| {
+        !READ_ONLY_TOOLS.contains(&name.as_str())
+            && (UNIVERSAL_ACTION_TOOL_FRAGMENTS
                 .iter()
                 .any(|f| name.contains(f))
+                || claim
+                    .backing_tool_fragments()
+                    .iter()
+                    .any(|f| name.contains(f)))
     })
 }
 
-/// Collect the names of tools whose results say they succeeded.
-fn record_successful_tools(
+/// Put back on the wire the `ContentComplete` events the streaming loop held.
+///
+/// Draining is unconditional: whatever the outcome of the iteration, a client
+/// that is waiting for `done` must get it. See the gate in
+/// `run_agent_loop_streaming` for why it is ever held.
+async fn release_held_completions(tx: &mpsc::Sender<StreamEvent>, held: &mut Vec<StreamEvent>) {
+    for ev in held.drain(..) {
+        if tx.send(ev).await.is_err() {
+            warn!("Stream consumer disconnected before the call-complete event was released");
+            break;
+        }
+    }
+}
+
+/// Split this response's tool results into the names that succeeded and the
+/// names that came back `is_error`. A write that failed backs nothing — and
+/// having failed is itself a fact the note is allowed to state.
+fn record_tool_outcomes(
     blocks: &[ContentBlock],
     succeeded: &mut std::collections::HashSet<String>,
+    failed: &mut std::collections::HashSet<String>,
 ) {
     for block in blocks {
         if let ContentBlock::ToolResult {
             tool_name,
-            is_error: false,
+            is_error,
             ..
         } = block
         {
-            succeeded.insert(tool_name.to_lowercase());
+            if *is_error {
+                failed.insert(tool_name.to_lowercase());
+            } else {
+                succeeded.insert(tool_name.to_lowercase());
+            }
         }
     }
 }
@@ -458,6 +572,32 @@ fn phantom_action_detected(text: &str) -> bool {
 
 /// Classify every completed-action claim the text makes, most-severe-first in
 /// the order the guard should challenge them.
+///
+/// # How much this catches
+///
+/// A claim is recognised when one sentence carries a past-tense verb from the
+/// class's list *and* an object from it (or, for a write, a path-shaped
+/// token), and that sentence is not negated, not future, not a question and
+/// not about somebody else.
+///
+/// That is a narrower net than "the agent said it did something", and the gap
+/// is measured rather than estimated: on the corpus in
+/// `tests::CLAIM_CORPUS` — 29 phantom claims written the way models
+/// actually word them — this classifies **18**. The 11 it misses are listed
+/// there row by row, and `test_measured_catch_rate_on_natural_phrasings`
+/// fails if either number moves. The commonest shapes it does not see are a
+/// state description with no verb ("the summary is now at output/report.md"),
+/// a verb outside the list ("I put the results in notes.txt", "I added the
+/// section to README.md"), a bare verb with no object ("Notification sent.",
+/// "Saved!"), and anything addressed to the user without a first-person
+/// pronoun ("The report has been emailed to you") — that last one is the
+/// price of the rule that keeps "you saved it to notes.txt" from being read
+/// as the agent's own work.
+///
+/// The asymmetry is deliberate. A miss leaves the pre-existing behaviour
+/// alone; a false positive challenges an honest answer and can end up
+/// stamping `[Unverified]` on the truth. `tests::HONEST_CORPUS` is the other
+/// half of the measurement and must stay empty-handed on every row.
 fn classify_phantom_claims(text: &str) -> Vec<PhantomClaim> {
     const DELIVERY_VERBS: &[&str] = &[
         "sent",
@@ -1002,10 +1142,14 @@ pub async fn run_agent_loop(
     let ctx_window = context_window_tokens.unwrap_or(DEFAULT_CONTEXT_WINDOW);
     let context_budget = ContextBudget::new(ctx_window);
     let mut any_tools_executed = false;
-    // FANG-9: names of the tools that ran *and succeeded* in this turn, and
-    // whether the phantom-completion guard has already spent its one challenge.
+    // FANG-9: the tools that ran in this turn, split by outcome, and *which*
+    // claim class the phantom-completion guard spent its one challenge on.
+    // `Option<PhantomClaim>` rather than a bool because the note is built from
+    // this: a challenge about a delivery is not a challenge about a write, and
+    // the note may only mention a challenge that this claim actually got.
     let mut succeeded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut phantom_challenged = false;
+    let mut failed_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut phantom_challenged: Option<PhantomClaim> = None;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Agent loop iteration");
@@ -1218,16 +1362,31 @@ pub async fn run_agent_loop(
                     .into_iter()
                     .find(|claim| !claim_is_backed(*claim, &succeeded_tools));
                 let text = match unbacked_claim {
-                    Some(claim) if !phantom_challenged && iteration + 1 < max_iterations => {
-                        phantom_challenged = true;
+                    Some(claim)
+                        if phantom_challenged.is_none() && iteration + 1 < max_iterations =>
+                    {
+                        phantom_challenged = Some(claim);
                         warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — re-prompting for real tool use");
                         messages.push(Message::assistant(text.clone()));
                         messages.push(Message::user(claim.reprompt()));
                         continue;
                     }
                     Some(claim) => {
-                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — still unbacked after the challenge, answering as unverified");
-                        format!("{}{}", text.trim_end(), claim.unverified_note())
+                        let evidence = ClaimEvidence {
+                            challenged: phantom_challenged == Some(claim),
+                            matching_tool_failed: claim_is_backed(claim, &failed_tools),
+                        };
+                        // Both fields go into the log line rather than into its
+                        // prose, so the WARN says exactly as much as the note
+                        // does and no more.
+                        warn!(
+                            agent = %manifest.name,
+                            claim = claim.label(),
+                            challenged = evidence.challenged,
+                            matching_tool_failed = evidence.matching_tool_failed,
+                            "Phantom action detected — answering as unverified"
+                        );
+                        format!("{}{}", text.trim_end(), unverified_note(claim, evidence))
                     }
                     None => text,
                 };
@@ -1534,9 +1693,11 @@ pub async fn run_agent_loop(
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
-                // FANG-9: remember what actually worked, so a completion claim
-                // later in this turn can be checked against it.
-                record_successful_tools(&tool_result_blocks, &mut succeeded_tools);
+                // FANG-9: remember what actually worked and what did not, so a
+                // completion claim later in this turn can be checked against
+                // it, and so the note can say a matching tool failed only when
+                // one did.
+                record_tool_outcomes(&tool_result_blocks, &mut succeeded_tools, &mut failed_tools);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
@@ -2287,7 +2448,8 @@ pub async fn run_agent_loop_streaming(
     // phantom guard at all — a claim streamed to a TUI or an SSE consumer was
     // never examined, for writes or for channel sends.
     let mut succeeded_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut phantom_challenged = false;
+    let mut failed_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut phantom_challenged: Option<PhantomClaim> = None;
 
     for iteration in 0..max_iterations {
         debug!(iteration, "Streaming agent loop iteration");
@@ -2358,17 +2520,65 @@ pub async fn run_agent_loop_streaming(
             k.touch_agent(&agent_id_str);
         }
 
-        // Stream LLM call with retry, error classification, and circuit breaker
+        // Stream LLM call with retry, error classification, and circuit breaker.
+        //
+        // FANG-9 ordering. The driver emits `ContentComplete` the instant the
+        // model stops talking, and the SSE layer turns that into
+        // `event: done`. The phantom guard below runs after that, so the first
+        // version of this patch pushed its `[Unverified]` note out *after* the
+        // client had already been told the turn was over: a consumer that
+        // treats `done` as the end of the turn saw the claim and never the
+        // retraction. That is worse than the defect being fixed.
+        //
+        // So this iteration's `ContentComplete` goes through `gate_tx`, which
+        // holds it back while every other event passes straight through, and
+        // the loop releases it only once the answer is settled. The gate task
+        // cannot outlive the call: `stream_with_retry` takes the sender by
+        // value and every clone it makes lives inside an await it owns, so the
+        // channel closes when it returns and the task ends.
         let provider_name = manifest.model.provider.as_str();
-        let (mut response, report) = stream_with_retry(
+        let (gate_tx, mut gate_rx) = mpsc::channel::<StreamEvent>(64);
+        let gate_out = stream_tx.clone();
+        let gate = tokio::spawn(async move {
+            let mut held: Vec<StreamEvent> = Vec::new();
+            while let Some(ev) = gate_rx.recv().await {
+                if matches!(ev, StreamEvent::ContentComplete { .. }) {
+                    held.push(ev);
+                } else if gate_out.send(ev).await.is_err() {
+                    break;
+                }
+            }
+            held
+        });
+        let streamed = stream_with_retry(
             &*driver,
             request,
-            stream_tx.clone(),
+            gate_tx,
             Some(provider_name),
             None,
             &manifest.fallback_models,
         )
-        .await?;
+        .await;
+        let mut held_completions = gate.await.unwrap_or_default();
+        let (mut response, report) = match streamed {
+            Ok(pair) => pair,
+            Err(e) => {
+                // The turn is over either way; do not leave a client that is
+                // waiting on `done` holding an event we took hostage.
+                release_held_completions(&stream_tx, &mut held_completions).await;
+                return Err(e);
+            }
+        };
+        // Only a response that could still be the turn's final answer is worth
+        // holding: everything else goes on the wire now, so `done` keeps
+        // arriving before `call` exactly as it did before.
+        if !matches!(
+            response.stop_reason,
+            StopReason::EndTurn | StopReason::StopSequence
+        ) || !response.tool_calls.is_empty()
+        {
+            release_held_completions(&stream_tx, &mut held_completions).await;
+        }
 
         total_usage.input_tokens += response.usage.input_tokens;
         total_usage.output_tokens += response.usage.output_tokens;
@@ -2381,8 +2591,10 @@ pub async fn run_agent_loop_streaming(
         );
         // Disclose the call on the stream itself: the dashboard and the SSE
         // clients build their view from stream events and never see
-        // `AgentLoopResult`. The driver already sent `ContentComplete` on this
-        // same channel, so a client sees `done` and then `call`.
+        // `AgentLoopResult`. On every iteration that cannot be the final
+        // answer the driver's `ContentComplete` has already been released
+        // above, so a client still sees `done` and then `call`; on the one
+        // that can, `call` comes first and `done` closes the turn.
         if let Some(c) = calls.last() {
             let _ = stream_tx
                 .send(StreamEvent::CallReported {
@@ -2437,6 +2649,7 @@ pub async fn run_agent_loop_streaming(
                 // [SILENT] must not be stored literally — it reinforces silence in future turns.
                 if is_silent_token(&text) || parsed_directives_s.silent {
                     debug!(agent = %manifest.name, "Agent chose NO_REPLY/silent (streaming) — silent completion");
+                    release_held_completions(&stream_tx, &mut held_completions).await;
                     session
                         .messages
                         .push(Message::assistant("[no reply needed]".to_string()));
@@ -2484,6 +2697,7 @@ pub async fn run_agent_loop_streaming(
                         }
                         messages.push(Message::assistant("[no response]".to_string()));
                         messages.push(Message::user("Please provide your response.".to_string()));
+                        release_held_completions(&stream_tx, &mut held_completions).await;
                         continue;
                     }
                 }
@@ -2521,18 +2735,23 @@ pub async fn run_agent_loop_streaming(
                 // the non-streaming loop: a reported action needs a successful
                 // tool call of the matching kind behind it.
                 //
-                // Two things are different here because the tokens are already
-                // on the wire. The challenge is announced as a phase change,
-                // so a client can label the second answer; and the
+                // Three things are different here because the tokens are
+                // already on the wire. The challenge is announced as a phase
+                // change, so a client can label the second answer; the
                 // `[Unverified]` note is also pushed as a text delta, because
                 // a consumer that renders the stream and never reads
-                // `AgentLoopResult` would otherwise see only the claim.
+                // `AgentLoopResult` would otherwise see only the claim; and
+                // this iteration's `ContentComplete` — the SSE `done` — is
+                // still held by the gate above, so the note goes out first and
+                // `done` only after the answer is settled.
                 let unbacked_claim = classify_phantom_claims(&text)
                     .into_iter()
                     .find(|claim| !claim_is_backed(*claim, &succeeded_tools));
                 let text = match unbacked_claim {
-                    Some(claim) if !phantom_challenged && iteration + 1 < max_iterations => {
-                        phantom_challenged = true;
+                    Some(claim)
+                        if phantom_challenged.is_none() && iteration + 1 < max_iterations =>
+                    {
+                        phantom_challenged = Some(claim);
                         warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — re-prompting for real tool use");
                         if stream_tx
                             .send(StreamEvent::PhaseChange {
@@ -2549,14 +2768,26 @@ pub async fn run_agent_loop_streaming(
                         }
                         messages.push(Message::assistant(text.clone()));
                         messages.push(Message::user(claim.reprompt()));
+                        // The claim's own `done` is released only now, behind
+                        // the phase change that disowns it.
+                        release_held_completions(&stream_tx, &mut held_completions).await;
                         continue;
                     }
                     Some(claim) => {
-                        warn!(agent = %manifest.name, claim = claim.label(), "Phantom action detected — still unbacked after the challenge, answering as unverified");
+                        let evidence = ClaimEvidence {
+                            challenged: phantom_challenged == Some(claim),
+                            matching_tool_failed: claim_is_backed(claim, &failed_tools),
+                        };
+                        warn!(
+                            agent = %manifest.name,
+                            claim = claim.label(),
+                            challenged = evidence.challenged,
+                            matching_tool_failed = evidence.matching_tool_failed,
+                            "Phantom action detected — answering as unverified"
+                        );
+                        let note = unverified_note(claim, evidence);
                         if stream_tx
-                            .send(StreamEvent::TextDelta {
-                                text: claim.unverified_note().to_string(),
-                            })
+                            .send(StreamEvent::TextDelta { text: note.clone() })
                             .await
                             .is_err()
                         {
@@ -2564,10 +2795,13 @@ pub async fn run_agent_loop_streaming(
                                 "Stream consumer disconnected while sending unverified-claim note"
                             );
                         }
-                        format!("{}{}", text.trim_end(), claim.unverified_note())
+                        format!("{}{}", text.trim_end(), note)
                     }
                     None => text,
                 };
+                // Everything the caller is owed about this answer is on the
+                // wire; the turn may now be declared complete.
+                release_held_completions(&stream_tx, &mut held_completions).await;
 
                 final_response = text.clone();
                 // Issue #1098: preserve Thinking blocks (with Anthropic
@@ -2667,6 +2901,11 @@ pub async fn run_agent_loop_streaming(
                 });
             }
             StopReason::ToolUse => {
+                // `recover_text_tool_calls` can promote an EndTurn response
+                // into this arm after the release check above, so a held
+                // `ContentComplete` can still be sitting here. This is not a
+                // final answer, so nothing is waiting on it.
+                release_held_completions(&stream_tx, &mut held_completions).await;
                 // Reset MaxTokens continuation counter on tool use
                 consecutive_max_tokens = 0;
                 any_tools_executed = true;
@@ -2875,9 +3114,11 @@ pub async fn run_agent_loop_streaming(
                 }
 
                 append_tool_error_guidance(&mut tool_result_blocks);
-                // FANG-9: remember what actually worked, so a completion claim
-                // later in this turn can be checked against it.
-                record_successful_tools(&tool_result_blocks, &mut succeeded_tools);
+                // FANG-9: remember what actually worked and what did not, so a
+                // completion claim later in this turn can be checked against
+                // it, and so the note can say a matching tool failed only when
+                // one did.
+                record_tool_outcomes(&tool_result_blocks, &mut succeeded_tools, &mut failed_tools);
 
                 // Detect approval denials and inject guidance to prevent infinite retry loops
                 let denial_count = tool_result_blocks
@@ -6784,9 +7025,319 @@ mod tests {
             },
         ];
         let mut succeeded = std::collections::HashSet::new();
-        record_successful_tools(&blocks, &mut succeeded);
+        let mut failed = std::collections::HashSet::new();
+        record_tool_outcomes(&blocks, &mut succeeded, &mut failed);
         assert_eq!(succeeded, tool_set(&["file_read"]));
+        assert_eq!(failed, tool_set(&["file_write"]));
         assert!(!claim_is_backed(PhantomClaim::FileWrite, &succeeded));
+        assert!(
+            claim_is_backed(PhantomClaim::FileWrite, &failed),
+            "the failed write is what lets the note say a matching tool errored"
+        );
+    }
+
+    /// Read-only builtins back nothing, and the exact set of builtins that
+    /// *does* back each class is written down here rather than left to be
+    /// inferred from two substring lists.
+    ///
+    /// The first assertion is the finding this test exists for: `skill_list`,
+    /// `process_list`, `hand_status` and friends match a universal fragment by
+    /// name alone, so before the veto a turn that merely listed its own skills
+    /// counted as backing for a delivery, a write and a store at once.
+    #[test]
+    fn test_read_only_builtins_back_nothing() {
+        let builtins: Vec<String> = crate::tool_runner::builtin_tool_definitions()
+            .into_iter()
+            .map(|t| t.name.to_lowercase())
+            .collect();
+
+        for name in READ_ONLY_TOOLS {
+            assert!(
+                builtins.iter().any(|b| b == name),
+                "{name} is not a builtin any more — the veto list is stale"
+            );
+            let set = tool_set(&[name]);
+            for claim in [
+                PhantomClaim::Delivery,
+                PhantomClaim::FileWrite,
+                PhantomClaim::MemoryWrite,
+            ] {
+                assert!(
+                    !claim_is_backed(claim, &set),
+                    "{name} only reads; it cannot back a {} claim",
+                    claim.label()
+                );
+            }
+        }
+
+        let backing = |claim: PhantomClaim| -> Vec<&str> {
+            builtins
+                .iter()
+                .filter(|b| claim_is_backed(claim, &tool_set(&[b])))
+                .map(|b| b.as_str())
+                .collect()
+        };
+        // Pinned, not derived: if a fragment list changes, this test says
+        // exactly which tools changed sides. The gaps are visible on purpose —
+        // `browser_click` and `browser_run_js` can post a form and write a
+        // file, and back neither today.
+        assert_eq!(
+            backing(PhantomClaim::Delivery),
+            vec![
+                "shell_exec",
+                "agent_send",
+                "agent_spawn",
+                "task_post",
+                "event_publish",
+                "channel_send",
+                "hand_activate",
+                "hand_deactivate",
+                "a2a_send",
+                "docker_exec",
+                "process_start",
+                "process_write",
+                "process_kill",
+                "skill_execute",
+            ]
+        );
+        assert_eq!(
+            backing(PhantomClaim::FileWrite),
+            vec![
+                "file_write",
+                "create_directory",
+                "apply_patch",
+                "shell_exec",
+                "agent_send",
+                "agent_spawn",
+                "schedule_create",
+                "cron_create",
+                "hand_activate",
+                "hand_deactivate",
+                "docker_exec",
+                "process_start",
+                "process_write",
+                "process_kill",
+                "canvas_present",
+                "skill_execute",
+            ]
+        );
+        assert_eq!(
+            backing(PhantomClaim::MemoryWrite),
+            vec![
+                "shell_exec",
+                "agent_send",
+                "agent_spawn",
+                "memory_store",
+                "knowledge_add_entity",
+                "knowledge_add_relation",
+                "hand_activate",
+                "hand_deactivate",
+                "docker_exec",
+                "process_start",
+                "process_write",
+                "process_kill",
+                "skill_execute",
+            ]
+        );
+    }
+
+    /// Phantom claims, worded the way models word them, each labelled with
+    /// what `classify_phantom_claims` *actually* returns. `None` marks a
+    /// phrasing the guard does not see; those rows are the documented gap, and
+    /// they are asserted too, so the gap cannot quietly grow or quietly close
+    /// while the docs keep quoting an old number.
+    const CLAIM_CORPUS: &[(&str, Option<PhantomClaim>)] = &[
+        // -- delivery -------------------------------------------------------
+        (
+            "Done — I sent the summary to the Telegram channel.",
+            Some(PhantomClaim::Delivery),
+        ),
+        (
+            "I've posted the update to Slack.",
+            Some(PhantomClaim::Delivery),
+        ),
+        // "emailed" is not the word "email", and "to you" with no first-person
+        // pronoun trips the somebody-else rule.
+        ("The report has been emailed to you.", None),
+        // A verb with no object: nothing says what was sent or where.
+        ("Notification sent.", None),
+        (
+            "I messaged the team on Slack.",
+            Some(PhantomClaim::Delivery),
+        ),
+        ("Your message is on its way to Telegram.", None),
+        (
+            "I forwarded it to the ops channel.",
+            Some(PhantomClaim::Delivery),
+        ),
+        ("Delivered to Discord.", Some(PhantomClaim::Delivery)),
+        (
+            "I've notified the team by email.",
+            Some(PhantomClaim::Delivery),
+        ),
+        // "dropped" is not in the verb list.
+        ("I dropped it in the #general channel.", None),
+        // -- file write -----------------------------------------------------
+        (
+            "Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        (
+            "I've saved the summary to output/report.md.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        (
+            "The file has been created at output/report.md.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        (
+            "I updated README.md with the new section.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        // A state description, no verb of the agent's own.
+        ("All set — the summary is now at output/report.md.", None),
+        ("I put the results in notes.txt.", None),
+        ("I added the section to README.md.", None),
+        // The colon ends the sentence, so the verb and the path land in
+        // different spans and neither span carries both.
+        ("Report generated: output/report.md", None),
+        (
+            "I've written it out to disk.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        ("The summary now lives in output/report.md.", None),
+        (
+            "I exported the table to data.csv.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        (
+            "Wrote 1.2 KB to output/report.md.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        (
+            "I've appended the log to run.log.",
+            Some(PhantomClaim::FileWrite),
+        ),
+        ("Saved!", None),
+        // -- memory write ---------------------------------------------------
+        (
+            "I stored that in memory for next time.",
+            Some(PhantomClaim::MemoryWrite),
+        ),
+        ("I've remembered your preference.", None),
+        (
+            "Noted in my knowledge base.",
+            Some(PhantomClaim::MemoryWrite),
+        ),
+        ("I saved it to memory.", Some(PhantomClaim::MemoryWrite)),
+        (
+            "I recorded it in my long-term memory.",
+            Some(PhantomClaim::MemoryWrite),
+        ),
+    ];
+
+    /// The other half of the measurement: answers that report no completed
+    /// work. Refusals, failures, intent, questions, and the user's own action.
+    /// A hit on any of these is worse than every miss above put together —
+    /// it is the guard stamping `[Unverified]` on the truth.
+    const HONEST_CORPUS: &[&str] = &[
+        "I could not write output/report.md — the workspace is read-only.",
+        "I did not send it to Telegram; no channel is configured.",
+        "Writing failed: permission denied on output/report.md.",
+        "Nothing was stored in memory.",
+        "I'll write the summary to output/report.md next.",
+        "Should I save this to output/report.md?",
+        "You saved it to notes.txt earlier.",
+        "I failed to write the file because I lacked the necessary tool to \
+         perform the write operation. No content was saved to \
+         output/live-fabricated.md.",
+        "I'm going to post this to Slack once you confirm.",
+        "I tried to write output/report.md but the directory does not exist.",
+    ];
+
+    /// The measurement the guard's documentation quotes. Run on a corpus, not
+    /// on the one phrasing the repro happens to use.
+    #[test]
+    fn test_measured_catch_rate_on_natural_phrasings() {
+        let mut caught = 0usize;
+        for (text, expected) in CLAIM_CORPUS {
+            let got = classify_phantom_claims(text);
+            match expected {
+                Some(claim) => {
+                    assert!(
+                        got.contains(claim),
+                        "expected {claim:?}, got {got:?} for: {text}"
+                    );
+                    caught += 1;
+                }
+                None => assert!(
+                    got.is_empty(),
+                    "this row is recorded as a known gap but now classifies as \
+                     {got:?}: {text}\nUpdate the row, the count below, and the \
+                     number quoted on classify_phantom_claims."
+                ),
+            }
+        }
+        assert_eq!(
+            (caught, CLAIM_CORPUS.len()),
+            (18, 29),
+            "the documented catch rate on classify_phantom_claims must match \
+             what the corpus measures"
+        );
+
+        for text in HONEST_CORPUS {
+            assert!(
+                classify_phantom_claims(text).is_empty(),
+                "an honest answer must never be classified as a claim: {text}"
+            );
+        }
+    }
+
+    /// The note is assembled from what the loop recorded, so a fact that did
+    /// not happen contributes no sentence. This is the finding that sent the
+    /// first version back: the note was a constant that asserted a challenge
+    /// even on the path where the guard had no iteration left to spend one.
+    #[test]
+    fn test_note_says_only_what_happened() {
+        let bare = unverified_note(PhantomClaim::FileWrite, ClaimEvidence::default());
+        assert!(
+            bare.contains("no tool that writes to disk succeeded in this turn"),
+            "{bare}"
+        );
+        assert!(
+            !bare.contains("challenged") && !bare.contains("asked"),
+            "no challenge happened, so the note must not mention one: {bare}"
+        );
+        assert!(
+            !bare.contains("returned an error"),
+            "no tool failed, so the note must not mention one: {bare}"
+        );
+
+        let challenged = unverified_note(
+            PhantomClaim::Delivery,
+            ClaimEvidence {
+                challenged: true,
+                matching_tool_failed: false,
+            },
+        );
+        assert!(
+            challenged.contains("repeated the claim instead"),
+            "{challenged}"
+        );
+        assert!(!challenged.contains("returned an error"), "{challenged}");
+
+        let failed = unverified_note(
+            PhantomClaim::MemoryWrite,
+            ClaimEvidence {
+                challenged: false,
+                matching_tool_failed: true,
+            },
+        );
+        assert!(
+            failed.contains("One ran and returned an error."),
+            "{failed}"
+        );
+        assert!(!failed.contains("repeated the claim instead"), "{failed}");
     }
 
     /// Claims a write, calls nothing. `admit` decides what it does once the
@@ -6854,6 +7405,13 @@ mod tests {
     }
 
     async fn run_loop_with(driver: Arc<dyn LlmDriver>) -> AgentLoopResult {
+        run_loop_with_manifest(driver, test_manifest()).await
+    }
+
+    async fn run_loop_with_manifest(
+        driver: Arc<dyn LlmDriver>,
+        manifest: AgentManifest,
+    ) -> AgentLoopResult {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -6863,7 +7421,6 @@ mod tests {
             context_window_tokens: 0,
             label: None,
         };
-        let manifest = test_manifest();
         run_agent_loop(
             &manifest,
             "Write a summary of the project into output/fang9-report.md",
@@ -6942,6 +7499,151 @@ mod tests {
         assert_eq!(
             result.response,
             "I could not write output/fang9-report.md — file_write is not among my tools."
+        );
+    }
+
+    /// The path the constant note lied about. With one iteration to spend
+    /// there is no room to challenge — `continue` here would drop the turn
+    /// into MaxIterationsExceeded — so the claim is stamped without ever
+    /// having been challenged, and the note must not say otherwise.
+    ///
+    /// Both assertions are worded against the defect rather than against the
+    /// replacement text, so neither can pass by accident on a note that is
+    /// still a constant: a constant cannot avoid the word "challenge" and
+    /// cannot differ between the two runs.
+    #[tokio::test]
+    async fn test_note_omits_the_challenge_when_none_was_spent() {
+        let manifest = AgentManifest {
+            autonomous: Some(openfang_types::agent::AutonomousConfig {
+                max_iterations: 1,
+                ..Default::default()
+            }),
+            ..test_manifest()
+        };
+        let unchallenged = run_loop_with_manifest(
+            Arc::new(PhantomWriteDriver {
+                admit_after_challenge: false,
+            }),
+            manifest,
+        )
+        .await;
+        assert_eq!(
+            unchallenged.iterations, 1,
+            "there was no second call to make"
+        );
+        assert!(
+            unchallenged.response.contains("[Unverified"),
+            "the claim is still disowned: {:?}",
+            unchallenged.response
+        );
+        assert!(
+            !unchallenged.response.to_lowercase().contains("challeng"),
+            "no challenge was issued, so the note must not mention one: {:?}",
+            unchallenged.response
+        );
+
+        // The same claim, in a turn that did spend a challenge. If the note
+        // were a template the two would be identical.
+        let challenged = run_loop_with(Arc::new(PhantomWriteDriver {
+            admit_after_challenge: false,
+        }))
+        .await;
+        assert_eq!(challenged.iterations, 2);
+        let note_of = |r: &AgentLoopResult| {
+            r.response[r.response.find("[Unverified").expect("stamped")..].to_string()
+        };
+        assert_ne!(
+            note_of(&unchallenged),
+            note_of(&challenged),
+            "the note is built from the turn, so a turn with a challenge and a \
+             turn without one cannot produce the same sentence"
+        );
+    }
+
+    /// FANG-9, the streaming half of the acceptance. The driver's
+    /// `ContentComplete` is what the SSE layer publishes as `event: done`, and
+    /// it used to go out before the guard had even looked at the text — so the
+    /// `[Unverified]` note arrived after the client had been told the turn was
+    /// over. The retraction must be on the wire first.
+    #[tokio::test]
+    async fn test_streaming_note_precedes_the_final_content_complete() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(PhantomWriteDriver {
+            admit_after_challenge: false,
+        });
+        let (tx, mut rx) = mpsc::channel(256);
+        let collector = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(ev) = rx.recv().await {
+                events.push(ev);
+            }
+            events
+        });
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "Write a summary of the project into output/fang9-report.md",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("the streamed turn completes");
+
+        let events = collector.await.expect("collector joins");
+        let last_complete = events
+            .iter()
+            .rposition(|e| matches!(e, StreamEvent::ContentComplete { .. }))
+            .expect("the turn reports a completed call");
+        let note = events
+            .iter()
+            .position(
+                |e| matches!(e, StreamEvent::TextDelta { text } if text.contains("[Unverified")),
+            )
+            .expect("the retraction is on the stream, not only in AgentLoopResult");
+        assert!(
+            note < last_complete,
+            "the note must reach the client before the event that ends the turn; \
+             got note at {note}, last ContentComplete at {last_complete}: {events:#?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ContentComplete { .. }))
+                .count(),
+            2,
+            "one per LLM call, none swallowed by the gate"
+        );
+        assert!(
+            result.response.contains("repeated the claim instead"),
+            "this turn did spend its challenge, so the note may say so: {:?}",
+            result.response
         );
     }
 }

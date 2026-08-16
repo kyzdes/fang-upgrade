@@ -1,0 +1,27 @@
+{
+  "name": "phantom-write-claim-repeated",
+  "doc": "FANG-9, the branch where the guard has to speak for itself. Step 0 is the same unbacked write claim as phantom-write-claim; step 1 is the model REPEATING it after the runtime's challenge instead of calling file_write or admitting anything. That is the only path that produces the [Unverified] note, and on the streaming route it is the path that exposed the ordering defect: the driver emits ContentComplete — which /api/agents/{id}/message/stream publishes as `event: done` — the instant the model stops talking, so the first version of this patch pushed its retraction out AFTER the client had been told the turn was over. A consumer that treats `done` as the end of the turn saw the lie and never the correction. Drive this scenario with `curl -N .../message/stream` and read the event order: the `[Unverified` chunk must appear BEFORE the last `done`. Run with --tools file_write,create_directory,memory_store — the same probe as the other FANG-9 scenarios, so 'no tool ran' is the model's choice and not the harness's.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        {
+          "type": "text",
+          "content": "Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.",
+          "finish_reason": "stop",
+          "usage": [31, 17]
+        },
+        {
+          "type": "text",
+          "content": "I already told you: I wrote the summary to output/fang9-report.md. The file is there.",
+          "finish_reason": "stop",
+          "usage": [48, 15]
+        }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}

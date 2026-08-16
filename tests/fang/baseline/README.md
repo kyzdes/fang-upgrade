@@ -37,6 +37,23 @@ old script proves nothing about the new one:
   vocabulary). Red again, which is what says the green above is a measurement and not a
   script that cannot fail.
 
+The second review round added a fourth phase and two more recordings. The script is now
+four phases; phase D is **printed, not graded**, and the two files below are what the
+first round was missing rather than what it got wrong:
+
+* `FANG-9-v2-prepatch.txt` — the FOUR-phase script against `openfang:sprint3`, the
+  unpatched build. Red, and phase D shows the guard's boundary on a build that has no
+  fix at all.
+* `../after/FANG-9-v2.txt` — the four-phase script against the patched tree. Green, with
+  the same phase D result: that phrasing is outside the guard on **both** builds, which
+  is the point of printing it instead of grading it.
+* `../after/FANG-9-v2-stream-order.txt` — SSE and WS driven by hand against the patched
+  stand on the `phantom-write-claim-repeated` scenario, the only path that emits the
+  `[Unverified]` note. The SSE transcript is the acceptance for "the retraction arrives
+  before `done`"; the WS transcript is there because WS drops `ContentComplete`
+  entirely (`ws.rs`: `_ => None`) and so never had the defect — a fact worth measuring
+  rather than asserting.
+
 One trap worth repeating, because it cost a run here: the Dockerfile builds with
 `--mount=type=cache,target=/build/target`, and cargo decides what is stale by mtime. A
 worktree checked out *after* the artifacts in that cache — which is what
