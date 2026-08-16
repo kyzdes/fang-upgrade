@@ -47,6 +47,10 @@ first round was missing rather than what it got wrong:
 * `../after/FANG-9-v2.txt` — the four-phase script against the patched tree. Green, with
   the same phase D result: that phrasing is outside the guard on **both** builds, which
   is the point of printing it instead of grading it.
+* `../after/FANG-9-v2-run-sh-three-builds.txt` — the whole cheap suite on three stands:
+  the deployed `openfang:sprint3`, `ours` @ 7606210 built with the patched image's own
+  build args, and that tree with the patch. The middle column is the one that matters —
+  without it FANG-31 looks like a regression this patch caused, and it is not.
 * `../after/FANG-9-v2-stream-order.txt` — SSE and WS driven by hand against the patched
   stand on the `phantom-write-claim-repeated` scenario, the only path that emits the
   `[Unverified]` note. The SSE transcript is the acceptance for "the retraction arrives
