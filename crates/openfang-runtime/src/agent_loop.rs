@@ -6268,6 +6268,68 @@ mod tests {
         );
     }
 
+    /// The streaming loop has already sent the reply out as deltas by the time
+    /// the check runs, so the line has to reach the caller as one more delta.
+    #[tokio::test]
+    async fn test_streaming_loop_sends_the_check_as_a_delta() {
+        let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
+        let agent_id = openfang_types::agent::AgentId::new();
+        let mut session = openfang_memory::session::Session {
+            id: openfang_types::agent::SessionId::new(),
+            agent_id,
+            messages: Vec::new(),
+            context_window_tokens: 0,
+            label: None,
+        };
+        let manifest = test_manifest();
+        let driver: Arc<dyn LlmDriver> = Arc::new(ClaimsAWriteDriver);
+        let dir = tempfile::TempDir::new().unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+
+        let result = run_agent_loop_streaming(
+            &manifest,
+            "Write a summary of the project into output/fang9-report.md",
+            &mut session,
+            &memory,
+            driver,
+            &[],
+            None,
+            tx,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(dir.path()),
+            None, // on_phase
+            None, // media_engine
+            None, // tts_engine
+            None, // docker_config
+            None, // hooks
+            None, // context_window_tokens
+            None, // process_manager
+            None, // user_content_blocks
+        )
+        .await
+        .expect("Streaming loop should complete without error");
+
+        let mut streamed = String::new();
+        while let Ok(event) = rx.try_recv() {
+            if let StreamEvent::TextDelta { text } = event {
+                streamed.push_str(&text);
+            }
+        }
+        assert!(
+            streamed.contains("output/fang9-report.md") && streamed.contains("does not exist"),
+            "the check must reach the caller as a delta, got: {streamed:?}"
+        );
+        assert!(
+            result.response.contains("does not exist"),
+            "and it must be in the returned response too: {:?}",
+            result.response
+        );
+    }
+
     /// No workspace, no way to look: the reply is returned as the model wrote
     /// it, with no verdict either way.
     #[tokio::test]
