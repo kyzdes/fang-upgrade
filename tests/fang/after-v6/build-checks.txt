@@ -1,0 +1,25 @@
+# The gates fork-ci.yml runs, run here on the tree at c514a96, each inside the
+# same rust:1-slim-bookworm builder the release image is built in.
+#
+# 1. cargo fmt --all -- --check      (.github/workflows/fork-ci.yml:68)
+#    Clean. 4ed6355 is what made it so; all four of its hunks are inside
+#    #[cfg(test)] mod tests.
+#
+# 2. cargo clippy -p openfang-runtime --all-targets -- -D warnings
+    Checking openfang-runtime v0.6.9 (/build/crates/openfang-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 13s
+#    exit 0 — no warning survived -D warnings.
+#
+# 3. cargo test -p openfang-runtime -p openfang-kernel -p openfang-api --lib
+    test result: ok. 96 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.16s
+    test result: ok. 301 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.00s
+    test result: ok. 1025 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.86s
+#    exit 0. Three crates, not the workspace: `cargo test --workspace` does not
+#    build on this box because a GUI crate wants glib-2.0 dev headers the
+#    builder image does not carry (fork-ci installs them itself). These three
+#    are the crates around the change; the only file this branch edits outside
+#    tests/ is crates/openfang-runtime/src/agent_loop.rs.
+#
+# And the negative control for the two new tests is not here but in
+# unit-tests-sabotage-S1-S2.txt: on a build with the two things they assert
+# reverted, exactly those two fail and the other six still pass.
