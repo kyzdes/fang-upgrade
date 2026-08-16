@@ -69,7 +69,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
-        run: cargo test --workspace
+        # The openfang-runtime binary contains hundreds of Wasmtime-heavy tests.
+        # Keep the complete workspace suite while bounding peak memory use on
+        # GitHub-hosted runners.
+        run: cargo test --workspace -- --test-threads=2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Two things this workflow does not do, stated so nobody assumes otherwise.
