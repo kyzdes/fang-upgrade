@@ -10,6 +10,10 @@
 //! Server → Client: `{"type":"error","content":"..."}`
 //! Server → Client: `{"type":"agents_updated","agents":[...]}`
 //! Server → Client: `{"type":"silent_complete"}` (agent chose NO_REPLY)
+//!
+//! A turn that streamed no text is reported by exactly one of those last two:
+//! `silent_complete` when the loop finished, `error` when it failed. It used to
+//! be `silent_complete` either way — see FANG-13 further down this file.
 //! Server → Client: `{"type":"canvas","canvas_id":"...","html":"...","title":"..."}`
 
 use crate::routes::AppState;
@@ -862,40 +866,98 @@ async fn handle_text_message(
                     // wait for post-processing.
                     let stream_result = stream_task.await;
 
-                    // Spawn the kernel task in the background for cleanup
-                    // (canonical session writes, JSONL mirror, compaction).
-                    // We don't need its result for the response event.
-                    let sender_bg = Arc::clone(sender);
-                    tokio::spawn(async move {
-                        match handle.await {
+                    // FANG-13. A turn that streamed no text at all is
+                    // ambiguous: a deliberate NO_REPLY and a provider that
+                    // answered with nothing produce exactly the same events —
+                    // usage, no deltas — and `is_silent` above cannot tell them
+                    // apart. Both were therefore reported as `silent_complete`,
+                    // i.e. this socket told the dashboard the agent had CHOSEN
+                    // to stay quiet on turns where the provider had simply said
+                    // nothing. The loop's own result is the only thing that
+                    // separates them, so for that one shape we wait for it
+                    // before saying anything.
+                    //
+                    // Turns that did stream text keep the fast path unchanged:
+                    // the answer is already known, and the kernel's clean-up
+                    // (canonical session writes, JSONL mirror, metering) is
+                    // reported from the background as before. The wait is
+                    // bounded because the stream only closes once the loop has
+                    // returned — what is left is local book-keeping — and the
+                    // timeout is there so a stuck task cannot hold the socket.
+                    let streamed_nothing =
+                        matches!(&stream_result, Ok((text, _, _, _)) if text.trim().is_empty());
+
+                    if streamed_nothing {
+                        let outcome = tokio::time::timeout(Duration::from_secs(30), handle).await;
+                        let failure: Option<String> = match outcome {
+                            Ok(Ok(Err(e))) => {
+                                warn!("Agent turn failed with no text streamed: {e}");
+                                Some(classify_streaming_error(&e))
+                            }
                             Ok(Err(e)) => {
-                                warn!("Agent post-processing failed: {e}");
-                                let user_msg = classify_streaming_error(&e);
-                                let _ = send_json(
-                                    &sender_bg,
-                                    &serde_json::json!({
-                                        "type": "error",
-                                        "content": user_msg,
-                                    }),
-                                )
-                                .await;
-                            }
-                            Err(e) => {
                                 warn!("Agent task panicked: {e}");
-                                let _ = send_json(
-                                    &sender_bg,
-                                    &serde_json::json!({
-                                        "type": "error",
-                                        "content": "Internal error occurred",
-                                    }),
-                                )
-                                .await;
+                                Some("Internal error occurred".to_string())
                             }
-                            Ok(Ok(_)) => {
-                                // Post-processing completed successfully — nothing to send
+                            Err(_) => {
+                                warn!("Agent task did not finish within 30s of the stream closing");
+                                None
                             }
+                            Ok(Ok(Ok(_))) => None,
+                        };
+                        if let Some(user_msg) = failure {
+                            let _ = send_json(
+                                sender,
+                                &serde_json::json!({
+                                    "type": "typing", "state": "stop",
+                                }),
+                            )
+                            .await;
+                            let _ = send_json(
+                                sender,
+                                &serde_json::json!({
+                                    "type": "error",
+                                    "content": user_msg,
+                                }),
+                            )
+                            .await;
+                            return;
                         }
-                    });
+                    } else {
+                        // Spawn the kernel task in the background for cleanup
+                        // (canonical session writes, JSONL mirror, compaction).
+                        // We don't need its result for the response event.
+                        let sender_bg = Arc::clone(sender);
+                        tokio::spawn(async move {
+                            match handle.await {
+                                Ok(Err(e)) => {
+                                    warn!("Agent post-processing failed: {e}");
+                                    let user_msg = classify_streaming_error(&e);
+                                    let _ = send_json(
+                                        &sender_bg,
+                                        &serde_json::json!({
+                                            "type": "error",
+                                            "content": user_msg,
+                                        }),
+                                    )
+                                    .await;
+                                }
+                                Err(e) => {
+                                    warn!("Agent task panicked: {e}");
+                                    let _ = send_json(
+                                        &sender_bg,
+                                        &serde_json::json!({
+                                            "type": "error",
+                                            "content": "Internal error occurred",
+                                        }),
+                                    )
+                                    .await;
+                                }
+                                Ok(Ok(_)) => {
+                                    // Post-processing completed successfully — nothing to send
+                                }
+                            }
+                        });
+                    }
 
                     // Send the response immediately from stream data
                     match stream_result {

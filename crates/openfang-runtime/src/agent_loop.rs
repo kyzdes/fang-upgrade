@@ -283,6 +283,55 @@ fn finish_calls(calls: &mut Vec<LlmCall>) -> Vec<LlmCall> {
     std::mem::take(calls)
 }
 
+/// FANG-13 — the turn ended with nothing to say, and that is a failed turn.
+///
+/// Reached when the provider's final message carried no text, no tool calls and
+/// no content of any kind, the one-shot retry above did not change that, and no
+/// text was accumulated during earlier tool_use iterations. The response was
+/// *structurally* valid — one choice, `finish_reason: stop` — which is why it
+/// never became an `LlmError` in the driver the way an empty `choices` array
+/// does (`drivers/openai.rs`, "No choices in response"). It was simply empty.
+///
+/// Both loops used to substitute a sentence of their own here and return `Ok`,
+/// so the caller got HTTP 200 with the runtime's words sitting in the field
+/// where the model's answer belongs — and when tools had run, those words
+/// asserted the task had COMPLETED on a turn where the provider said nothing.
+/// A turn with no answer now leaves through the same door as every other
+/// provider failure, so REST, SSE, WS and /v1 all report it as one.
+///
+/// One function for both loops on purpose: the streaming and non-streaming
+/// paths are copies of each other, and this is precisely the kind of text that
+/// drifts apart between them.
+fn empty_response_failure(
+    agent: &str,
+    iterations: u32,
+    usage: &TokenUsage,
+    any_tools_executed: bool,
+    streaming: bool,
+) -> OpenFangError {
+    let tools_note = if any_tools_executed {
+        " Tools executed earlier in this turn did run and their effects stand, \
+         but the provider never summarised them."
+    } else {
+        ""
+    };
+    // No guesses about *why* in this text. The sentence it replaces offered
+    // three ("overloaded, the context is too large, or the API key lacks
+    // credits") and the runtime knew none of them to be true; worse, the word
+    // "overloaded" is one of the patterns `llm_errors::classify_error` matches
+    // on, so the guess came back out of the WebSocket classifier as a
+    // confident "Provider overloaded". State what was observed, nothing else.
+    OpenFangError::LlmDriver(format!(
+        "Provider returned an empty response: after {iterations} iteration(s) the \
+         final{stream} message carried no text, no tool calls and no content \
+         ({input} in / {output} out tokens). The turn produced no answer.{tools_note} \
+         (agent: {agent})",
+        stream = if streaming { " streamed" } else { "" },
+        input = usage.input_tokens,
+        output = usage.output_tokens,
+    ))
+}
+
 /// Record how many tool calls the just-finished LLM response actually asked for.
 ///
 /// Called after text-based recovery, because a model that emits `<function=…>` in prose has
@@ -740,19 +789,46 @@ pub async fn run_agent_loop(
                         );
                         accumulated_text.clone()
                     } else {
+                        // FANG-13: nothing was said, by the provider or by any
+                        // earlier iteration of this turn. Fail the turn instead
+                        // of writing an answer on the model's behalf — see
+                        // `empty_response_failure`. Same exit shape as the
+                        // max-iterations failure below: persist what the turn
+                        // did accomplish (the tool_use/tool_result pairs are
+                        // already in `session`), close the loop out through the
+                        // hook, then return the error.
                         warn!(
                             agent = %manifest.name,
                             iteration,
                             input_tokens = total_usage.input_tokens,
                             output_tokens = total_usage.output_tokens,
                             messages_count = messages.len(),
-                            "Empty response from LLM — guard activated"
+                            any_tools_executed,
+                            "Empty response from LLM — failing the turn"
                         );
-                        if any_tools_executed {
-                            "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
-                        } else {
-                            "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        if let Err(e) = memory.save_session_async(session).await {
+                            warn!("Failed to save session on empty response: {e}");
                         }
+                        if let Some(hook_reg) = hooks {
+                            let ctx = crate::hooks::HookContext {
+                                agent_name: &manifest.name,
+                                agent_id: agent_id_str.as_str(),
+                                event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                data: serde_json::json!({
+                                    "reason": "empty_response",
+                                    "iterations": iteration + 1,
+                                    "any_tools_executed": any_tools_executed,
+                                }),
+                            };
+                            let _ = hook_reg.fire(&ctx);
+                        }
+                        return Err(empty_response_failure(
+                            &manifest.name,
+                            iteration + 1,
+                            &total_usage,
+                            any_tools_executed,
+                            false,
+                        ));
                     }
                 } else {
                     text
@@ -2035,19 +2111,43 @@ pub async fn run_agent_loop_streaming(
                         );
                         accumulated_text.clone()
                     } else {
+                        // FANG-13, streaming half. Kept byte-for-byte parallel
+                        // with the non-streaming guard: a difference here is a
+                        // difference between what the dashboard/SSE sees and
+                        // what REST sees, which is how these two drifted apart
+                        // before.
                         warn!(
                             agent = %manifest.name,
                             iteration,
                             input_tokens = total_usage.input_tokens,
                             output_tokens = total_usage.output_tokens,
                             messages_count = messages.len(),
-                            "Empty response from LLM (streaming) — guard activated"
+                            any_tools_executed,
+                            "Empty response from LLM (streaming) — failing the turn"
                         );
-                        if any_tools_executed {
-                            "[Task completed — the agent executed tools but did not produce a text summary.]".to_string()
-                        } else {
-                            "[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]".to_string()
+                        if let Err(e) = memory.save_session_async(session).await {
+                            warn!("Failed to save session on empty response (streaming): {e}");
                         }
+                        if let Some(hook_reg) = hooks {
+                            let ctx = crate::hooks::HookContext {
+                                agent_name: &manifest.name,
+                                agent_id: agent_id_str.as_str(),
+                                event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                data: serde_json::json!({
+                                    "reason": "empty_response",
+                                    "iterations": iteration + 1,
+                                    "any_tools_executed": any_tools_executed,
+                                }),
+                            };
+                            let _ = hook_reg.fire(&ctx);
+                        }
+                        return Err(empty_response_failure(
+                            &manifest.name,
+                            iteration + 1,
+                            &total_usage,
+                            any_tools_executed,
+                            true,
+                        ));
                     }
                 } else {
                     text
@@ -3916,8 +4016,14 @@ mod tests {
         }
     }
 
+    /// FANG-13. The driver runs a tool, then ends the turn with an empty
+    /// message. Until this fix the loop answered `Ok("[Task completed — the
+    /// agent executed tools but did not produce a text summary.]")`, i.e. the
+    /// runtime asserted completion on a turn the provider never answered. The
+    /// turn now fails, and the failure names what happened — including that the
+    /// tools did run, because their side effects are real.
     #[tokio::test]
-    async fn test_empty_response_after_tool_use_returns_fallback() {
+    async fn test_empty_response_after_tool_use_fails_the_turn() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -3953,19 +4059,25 @@ mod tests {
             None, // process_manager
             None, // user_content_blocks
         )
-        .await
-        .expect("Loop should complete without error");
+        .await;
 
-        // The response MUST NOT be empty — it should contain our fallback text
+        let err = result.expect_err("an empty final message must fail the turn");
         assert!(
-            !result.response.trim().is_empty(),
-            "Response should not be empty after tool use, got: {:?}",
-            result.response
+            matches!(err, OpenFangError::LlmDriver(_)),
+            "empty response is a provider failure, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty response"),
+            "error should name the cause, got: {msg}"
         );
         assert!(
-            result.response.contains("Task completed"),
-            "Expected fallback message, got: {:?}",
-            result.response
+            !msg.contains("Task completed"),
+            "no completion may be claimed for a turn with no answer, got: {msg}"
+        );
+        assert!(
+            msg.contains("Tools executed earlier in this turn did run"),
+            "the tool side effects must be disclosed, got: {msg}"
         );
     }
 
@@ -4007,7 +4119,11 @@ mod tests {
             None, // user_content_blocks
         )
         .await
-        .expect("Loop should complete without error");
+        // This driver ends the turn with an empty message, which since FANG-13
+        // is a failure. The subject here is what landed in `session` on the way
+        // — the guidance injected after the failed tool call — and `session` is
+        // borrowed mutably, so it carries the turn's messages either way.
+        .expect_err("this driver's empty final message must fail the turn");
 
         let guidance_seen = session.messages.iter().any(|msg| {
             match &msg.content {
@@ -4121,8 +4237,11 @@ mod tests {
         assert_eq!(result.response, "Hello from the agent!");
     }
 
+    /// FANG-13, streaming half — the surface the dashboard and SSE read. It
+    /// must fail exactly as the non-streaming loop does; a difference here is
+    /// a difference between what the web UI is told and what REST is told.
     #[tokio::test]
-    async fn test_streaming_empty_response_after_tool_use_returns_fallback() {
+    async fn test_streaming_empty_response_after_tool_use_fails_the_turn() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -4160,18 +4279,21 @@ mod tests {
             None, // process_manager
             None, // user_content_blocks
         )
-        .await
-        .expect("Streaming loop should complete without error");
+        .await;
 
+        let err = result.expect_err("an empty final streamed message must fail the turn");
         assert!(
-            !result.response.trim().is_empty(),
-            "Streaming response should not be empty after tool use, got: {:?}",
-            result.response
+            matches!(err, OpenFangError::LlmDriver(_)),
+            "empty response is a provider failure, got: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("empty response") && msg.contains("streamed"),
+            "error should name the cause and the path, got: {msg}"
         );
         assert!(
-            result.response.contains("Task completed"),
-            "Expected fallback message in streaming, got: {:?}",
-            result.response
+            !msg.contains("Task completed"),
+            "no completion may be claimed for a turn with no answer, got: {msg}"
         );
     }
 
@@ -4294,8 +4416,12 @@ mod tests {
         );
     }
 
+    /// FANG-13, the no-tools half of the guard: the one-shot retry fires on
+    /// iteration 0 and the second answer is empty too. Two LLM calls, no
+    /// answer — previously HTTP 200 carrying "[The model returned an empty
+    /// response …]", a sentence the runtime wrote itself.
     #[tokio::test]
-    async fn test_empty_first_response_fallback_when_retry_also_empty() {
+    async fn test_empty_first_response_fails_when_retry_also_empty() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -4331,14 +4457,22 @@ mod tests {
             None, // process_manager
             None, // user_content_blocks
         )
-        .await
-        .expect("Loop should complete with fallback");
+        .await;
 
-        // No tools were executed, so should get the empty response message
+        let err = result.expect_err("two empty answers in a row must fail the turn");
+        let msg = err.to_string();
         assert!(
-            result.response.contains("empty response"),
-            "Expected empty response fallback (no tools executed), got: {:?}",
-            result.response
+            matches!(err, OpenFangError::LlmDriver(_)) && msg.contains("empty response"),
+            "expected a provider failure naming the empty response, got: {msg}"
+        );
+        // No tool ran, so nothing may be claimed about tool side effects.
+        assert!(
+            !msg.contains("Tools executed earlier"),
+            "no tools ran in this turn, got: {msg}"
+        );
+        assert!(
+            msg.contains("2 iteration(s)"),
+            "the retry must be counted, got: {msg}"
         );
     }
 
