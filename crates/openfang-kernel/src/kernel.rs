@@ -2430,26 +2430,28 @@ impl OpenFangKernel {
             // ping timeout before post-processing finished).
             drop(phase_cb);
 
+            // FANG-13. Mirrored on both exits — see the non-streaming twin of
+            // this block for why. Everything below that needs the loop's answer
+            // stays inside the `Ok` arm.
+            if session.messages.len() > messages_before {
+                let new_messages = session.messages[messages_before..].to_vec();
+                if let Err(e) = memory.append_canonical(agent_id, &new_messages, None) {
+                    warn!(agent_id = %agent_id, "Failed to update canonical session (streaming): {e}");
+                }
+            }
+            if let Some(ref state_dir) = manifest.state_dir {
+                // Write the JSONL session mirror to the agent's private state
+                // directory, not the user-facing workspace. See issue #1097.
+                if let Err(e) = memory.write_jsonl_mirror(&session, &state_dir.join("sessions")) {
+                    warn!("Failed to write JSONL session mirror (streaming): {e}");
+                }
+            }
+
             match result {
                 Ok(mut result) => {
-                    // Append new messages to canonical session for cross-channel memory
-                    if session.messages.len() > messages_before {
-                        let new_messages = session.messages[messages_before..].to_vec();
-                        if let Err(e) = memory.append_canonical(agent_id, &new_messages, None) {
-                            warn!(agent_id = %agent_id, "Failed to update canonical session (streaming): {e}");
-                        }
-                    }
-
-                    // Write JSONL session mirror and daily memory log to the
-                    // agent's private state directory, not the user-facing
-                    // workspace. See issue #1097.
                     if let Some(ref state_dir) = manifest.state_dir {
-                        if let Err(e) =
-                            memory.write_jsonl_mirror(&session, &state_dir.join("sessions"))
-                        {
-                            warn!("Failed to write JSONL session mirror (streaming): {e}");
-                        }
-                        // Append daily memory log (best-effort)
+                        // Append daily memory log (best-effort) — it records
+                        // what the agent said, so it needs a turn that spoke.
                         append_daily_memory_log(state_dir, &result.response);
                     }
 
@@ -3001,10 +3003,21 @@ impl OpenFangKernel {
             Some(&self.process_manager),
             content_blocks,
         )
-        .await
-        .map_err(KernelError::OpenFang)?;
+        .await;
 
-        // Append new messages to canonical session for cross-channel memory
+        // FANG-13. The canonical append and the JSONL mirror used to sit on the
+        // `Ok` side of a `?`, so a failing turn left the per-session history
+        // holding the turn's messages while the cross-channel one did not.
+        // Mirroring both exits closes that for the failures that DO save the
+        // per-session store on their way out — max-iterations, and now a turn
+        // that produced no text.
+        //
+        // Not every failing exit does: an earlier version of this comment said
+        // "every failing exit ... saves the per-session store", and that is not
+        // true. On an exit that saves neither, the two stores still agree; the
+        // ones to watch are exits that save one and not the other. This mirrors
+        // whatever the per-session store did, so it does not create that case —
+        // but nothing here proves no such exit exists.
         if session.messages.len() > messages_before {
             let new_messages = session.messages[messages_before..].to_vec();
             if let Err(e) = self.memory.append_canonical(agent_id, &new_messages, None) {
@@ -3012,8 +3025,8 @@ impl OpenFangKernel {
             }
         }
 
-        // Write JSONL session mirror and daily memory log to the agent's
-        // private state directory, not the user-facing workspace. See #1097.
+        // Write JSONL session mirror to the agent's private state directory,
+        // not the user-facing workspace. See #1097.
         if let Some(ref state_dir) = manifest.state_dir {
             if let Err(e) = self
                 .memory
@@ -3021,7 +3034,13 @@ impl OpenFangKernel {
             {
                 warn!("Failed to write JSONL session mirror: {e}");
             }
-            // Append daily memory log (best-effort)
+        }
+
+        let result = result.map_err(KernelError::OpenFang)?;
+
+        // The daily memory log is the one piece that needs an answer to write:
+        // it records what the agent said, and on a failed turn it said nothing.
+        if let Some(ref state_dir) = manifest.state_dir {
             append_daily_memory_log(state_dir, &result.response);
         }
 

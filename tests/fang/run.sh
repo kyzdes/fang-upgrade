@@ -261,7 +261,7 @@ REPROS=(
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
   "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
   "FANG-10|FANG-10.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (fix 2c69ebe, 07b5d67)"
-  "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
+  "FANG-13|FANG-13.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response came back as a successful turn carrying a sentence the runtime wrote itself (fixed; the two SSE surfaces still report nothing — FANG-84 — and the repro prints that as a named gap)"
   "FANG-47|FANG-47.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (fix 2c69ebe, 07b5d67)"
 )
 

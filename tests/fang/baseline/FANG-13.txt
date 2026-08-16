@@ -1,33 +1,120 @@
-# Baseline for FANG-13 — captured on the UNPATCHED build (no fix commit exists).
-# captured : 2026-08-14T12:50:36Z
-# repo     : fix/fang-run @ 56e10e8 (branched from ours)
-# target   : openfang-staging, image openfang:sprint3
-# command  : ./FANG-13.sh
-# ---------------------------------------------------------------------
-=== FANG-13 — empty provider content returns HTTP 200 ===
-target: http://127.0.0.1:4201   container: openfang-staging
-image : openfang:sprint3
+# Baseline for FANG-13 — an empty-but-valid provider response is returned as a
+#   successful turn, with a sentence the runtime wrote itself as the answer
+# captured : 2026-08-16T12:07:36Z
+# repro    : fix/fang-13-empty-response — the SCRIPT is the one committed alongside
+#            this file; the BUILD below has no FANG-13 patch of any kind.
+# build    : openfang:ours-7606210 — ours @ 7606210, built for this run.
+#            NOT openfang:sprint3: that image was built 2026-08-14 and predates
+#            merges that landed on ours on 2026-08-15, so it is not 'ours'.
+#            Built from an export with fresh mtimes, because the shared
+#            /build/target cache mount otherwise lets cargo skip the rebuild
+#            entirely — see FANG-13.sh's header. Verified by the marker lines
+#            below: the patch string is absent, both fabricated ones present.
+# stand    : openfang-fang13-ours on 127.0.0.1:4205 — a throwaway container over
+#            a fresh clone of the openfang-staging-data volume. Neither staging
+#            (:4201) nor production (:4200) was touched.
+# command  : FANGRIG_RUN_ROOT=/tmp/fang13-rig-ours OF_CONTAINER=openfang-fang13-ours \
+#              OF_CONFIG=/var/lib/docker/volumes/openfang-fang13-ours-data/_data/config.toml \
+#              ./FANG-13.sh http://127.0.0.1:4205
+# note     : supersedes the pre-rewrite capture of the same defect (git history);
+#            the script that produced that one no longer exists.
 
-probe agent: fangrig-probe / 7478d65d-6986-4369-8099-d31a5718856c
+=== FANG-13 — an empty provider response, across every caller-facing surface ===
+target: http://127.0.0.1:4205   container: openfang-fang13-ours
+image : openfang:ours-7606210
+binary: /usr/local/bin/openfang   (0 matching lines = the string is not in this build)
+  "The turn produced no text:"                  matching lines: 0    present only WITH the FANG-13 patch
+  "Task completed — the agent executed tools" matching lines: 1    present only WITHOUT it
+  "Partial response — token limit reached"    matching lines: 1    present only WITHOUT its second half
 
---- turn 1: provider answers a tool_call, then an EMPTY text ---
+probe agent: fangrig-probe / f23c430f-4369-4f93-ae7a-964cb086ef99
+
+--- surface 1/6: REST POST /api/agents/{id}/message, tools ran first ---
 HTTP 200
 {"calls":[{"cost_usd":0.000032,"input_tokens":11,"model":"adv-primary","n":0,"output_tokens":7,"provider":"fangrig","tool_calls":1},{"cost_usd":0.000013,"input_tokens":13,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000044999999999999996,"input_tokens":24,"iterations":2,"model_used":"adv-primary","output_tokens":7,"provider_used":"fangrig","response":"[Task completed — the agent executed tools but did not produce a text summary.]"}
 
---- turn 2: provider answers EMPTY text twice, no tools ---
+--- surface 2/6: REST POST /api/agents/{id}/message, no tools ---
 HTTP 200
 {"calls":[{"cost_usd":0.000017,"input_tokens":17,"model":"adv-primary","n":0,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000019,"input_tokens":19,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000036,"input_tokens":36,"iterations":2,"model_used":"adv-primary","output_tokens":0,"provider_used":"fangrig","response":"[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]"}
 
+--- surface 3/6: POST /v1/chat/completions (stream:false) ---
+HTTP 200
+{"choices":[{"finish_reason":"stop","index":0,"message":{"content":"[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /status.]","role":"assistant"}}],"created":1786882061,"id":"chatcmpl-5f93ae51-26f0-49a3-815b-ca92948185ac","model":"fangrig-probe","object":"chat.completion","openfang":{"calls":[{"cost_usd":0.000023,"input_tokens":23,"model":"adv-primary","n":0,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000029,"input_tokens":29,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"fallback":null,"model_used":"adv-primary","provider_used":"fangrig"},"usage":{"completion_tokens":0,"prompt_tokens":52,"total_tokens":52}}
+
+--- surface 4/6: WebSocket /api/agents/{id}/ws ---
+{"agent_id":"f23c430f-4369-4f93-ae7a-964cb086ef99","type":"connected"}
+{"state":"start","type":"typing"}
+{"agents":[{"id":"d1212e4d-b6c9-445f-aedc-2d404ffbc6db","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG2","state":"Running"},{"id":"d5fd3e74-4add-4931-98dd-4cad91d6e923","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52C","state":"Running"},{"id":"d1c3402f-bddb-4db2-af62-a7694c402fd7","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52","state":"Running"},{"id":"84e6ab6b-1522-4490-a5df-6283d65bceeb","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"AgentGemma4","state":"Running"},{"id":"3db254e3-638a-453d-b7a9-04aef89087fb","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG","state":"Running"},{"id":"d4dbb30b-c3ee-4245-97b4-4ebd449596fc","model_name":"openai/gpt-oss-120b","model_provider":"hyperfusion","name":"AgentGptOss","state":"Running"},{"id":"12ac121e-3370-4ed9-80d4-18fcd405a058","model_name":"openai/gpt-oss-120b","model_provider":"hyperfusion","name":"test-a1-probe","state":"Running"},{"id":"d1a14338-7bbb-468f-858e-bcc61d3f6c65","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52B","state":"Running"},{"id":"17ffd1ca-b548-4132-a305-df3e32fbd9e3","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"assistant","state":"Running"},{"id":"f23c430f-4369-4f93-ae7a-964cb086ef99","model_name":"adv-primary","model_provider":"fangrig","name":"fangrig-probe","state":"Running"},{"id":"bf7564a1-2c88-5fdf-8ba7-24788d4da8c1","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"youtube-insights","state":"Running"},{"id":"194c8a3e-75ed-44d4-8c60-e8edaa156a95","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG3","state":"Running"},{"id":"484987e6-962a-48a9-8d77-66e144f81280","model_name":"kimi/k3","model_provider":"y7router","name":"AgentKimi3","state":"Running"},{"id":"7a460d1e-3195-48d8-9acf-1761d3b0815a","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG4","state":"Running"},{"id":"7bf4ee20-04d9-45a8-9438-8ecd459f4605","model_name":"ark/deepseek-v4-pro","model_provider":"y7router","name":"AgentDeepSeek4","state":"Running"}],"type":"agents_updated"}
+{"detail":null,"phase":"streaming","type":"phase"}
+{"detail":null,"phase":"thinking","type":"phase"}
+{"detail":null,"phase":"done","type":"phase"}
+{"state":"stop","type":"typing"}
+{"input_tokens":68,"output_tokens":0,"type":"silent_complete"}
+
+--- surface 5/6: SSE POST /api/agents/{id}/message/stream ---
+HTTP 200
+event: phase
+data: {"detail":null,"phase":"streaming"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":41,"output_tokens":0}}
+
+event: call
+data: {"model":"adv-primary","n":0,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":41,"output_tokens":0}}
+
+event: phase
+data: {"detail":null,"phase":"thinking"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":43,"output_tokens":0}}
+
+event: call
+data: {"model":"adv-primary","n":1,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":43,"output_tokens":0}}
+
+event: phase
+data: {"detail":null,"phase":"done"}
+
+
+--- surface 6/6: POST /v1/chat/completions (stream:true) ---
+HTTP 200
+data: {"id":"chatcmpl-8d516673-00d3-4ba6-8d17-632830b4b62c","object":"chat.completion.chunk","created":1786882062,"model":"fangrig-probe","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8d516673-00d3-4ba6-8d17-632830b4b62c","object":"chat.completion.chunk","created":1786882062,"model":"fangrig-probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+
 --- what the provider actually served (stub journal rollup) ---
-{"run_id": "20260814-125038-f40a8b7b", "scenario": "empty-content-success", "counts": {"primary": 4}, "models": {"adv-primary": 4}, "streams": {}, "statuses": {"200": 4}, "log": ["primary call#1 model=adv-primary step=tool_call", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text"]}
+{"run_id": "20260816-120738-51c5c9b8", "scenario": "empty-content-success", "counts": {"primary": 12}, "models": {"adv-primary": 12}, "streams": {"primary": 6}, "statuses": {"200": 12}, "log": ["primary call#1 model=adv-primary step=tool_call", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text", "primary call#6 model=adv-primary step=text", "primary call#7 model=adv-primary step=text", "primary call#8 model=adv-primary step=text", "primary call#9 model=adv-primary step=text", "primary call#10 model=adv-primary step=text", "primary call#11 model=adv-primary step=text", "primary call#12 model=adv-primary step=text"]}
 
-RED  (turn 1): HTTP 200 and the runtime asserts '[Task completed ...]'
-              on a turn whose final provider response had no content.
-RED  (turn 2): HTTP 200 with a runtime-authored sentence standing in
-              for an answer the provider never gave.
+=== phase B: the continuation budget runs out without a character of text ===
+probe agent: fangrig-probe / ea450954-7f35-4439-a8d0-6e2963889c7d
 
-FANG13_TURN1_STATUS=200   # want: not 2xx, or a body that flags the failure
-FANG13_TURN2_STATUS=200   # want: not 2xx, or a body that flags the failure
-RESULT: RED — an empty provider response is indistinguishable from a real answer
+--- REST POST /api/agents/{id}/message, 5x finish_reason=length ---
+HTTP 200
+{"calls":[{"cost_usd":0.000059,"input_tokens":59,"model":"adv-primary","n":0,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000061,"input_tokens":61,"model":"adv-primary","n":1,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000067,"input_tokens":67,"model":"adv-primary","n":2,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000071,"input_tokens":71,"model":"adv-primary","n":3,"output_tokens":0,"provider":"fangrig","tool_calls":0},{"cost_usd":0.000073,"input_tokens":73,"model":"adv-primary","n":4,"output_tokens":0,"provider":"fangrig","tool_calls":0}],"cost_usd":0.00033099999999999997,"input_tokens":331,"iterations":5,"model_used":"adv-primary","output_tokens":0,"provider_used":"fangrig","response":"[Partial response — token limit reached with no text output.]"}
 
-# exit code: 0   (run.sh mode=exit4: 0=RED defect reproduced, 1=GREEN, 3=SKIPPED, 4=INCONCLUSIVE)
+{"run_id": "20260816-120744-0111383e", "scenario": "empty-truncated-length", "counts": {"primary": 5}, "models": {"adv-primary": 5}, "streams": {}, "statuses": {"200": 5}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text"]}
+
+=== how each surface reported a turn the provider never answered ===
+SURFACE                                              CLASS             DETAIL
+REST /api/agents/{id}/message (tools ran)            ANSWER-INVENTED   HTTP 200, 79 chars of answer the provider never sent: '[Task completed — the agent executed tools but did not produce a text summary.]'
+REST /api/agents/{id}/message (no tools)             ANSWER-INVENTED   HTTP 200, 167 chars of answer the provider never sent: '[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /s'
+REST /api/agents/{id}/message (finish_reason=length x5) ANSWER-INVENTED   HTTP 200, 61 chars of answer the provider never sent: '[Partial response — token limit reached with no text output.]'
+/v1/chat/completions (stream:false)                  ANSWER-INVENTED   HTTP 200, 167 chars of answer the provider never sent: '[The model returned an empty response. This usually means the model is overloaded, the context is too large, or the API key lacks credits. Try again or check /s'
+WS /api/agents/{id}/ws                               SUCCESS-CLAIMED   events [connected typing agents_updated phase phase phase typing silent_complete]
+SSE /api/agents/{id}/message/stream                  SUCCESS-CLAIMED   HTTP 200, events [phase done call phase done call phase], no error event
+/v1/chat/completions (stream:true)                   SUCCESS-CLAIMED   HTTP 200, finish_reason=stop [DONE]
+
+FANG13_INVENTED_ANSWERS=4   # want 0: nothing the provider did not send
+FANG13_REST_TOOLS=ANSWER-INVENTED
+FANG13_REST_PLAIN=ANSWER-INVENTED
+FANG13_V1_PLAIN=ANSWER-INVENTED
+FANG13_WS_PLAIN=SUCCESS-CLAIMED
+FANG13_TRUNC=ANSWER-INVENTED
+
+RED — 4 surface(s) handed back an answer the provider never sent.
+      A turn where the provider said nothing is indistinguishable, to those
+      callers, from a turn it answered.
+RESULT: RED
+# exit code: 0
