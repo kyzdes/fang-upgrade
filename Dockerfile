@@ -39,7 +39,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-venv \
     nodejs \
     npm \
+    chromium \
+    curl \
+    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
+
+# Clip Hand shells out to yt-dlp. Pin it so image rebuilds stay reproducible.
+RUN pip3 install --break-system-packages --no-cache-dir yt-dlp==2025.10.14
 
 COPY --from=builder /openfang /usr/local/bin/openfang
 COPY --from=builder /build/agents /opt/openfang/agents
