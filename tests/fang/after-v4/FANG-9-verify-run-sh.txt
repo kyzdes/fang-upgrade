@@ -1,0 +1,153 @@
+# The whole repro suite, on the build that carries the FANG-9 fix.
+# captured : 2026-08-16T16:23Z (the run logged in evidence-fang9/)
+# repo     : fix/fang-9-verify-claims @ 715e8c1
+# target   : openfang-staging, image openfang:fang9-verify
+# command  : ./run.sh --out evidence-fang9   (exit 0)
+#
+# The five SKIPPED rows bill real providers and are gated behind --costly.
+# A-1 is REVIEW by design: it measures and leaves the verdict to a reader.
+# FANG-31 passes here because this image is built from ours+patch; on the
+# older openfang:sprint3 stand it fails, and that is the stand lagging.
+# ---------------------------------------------------------------------
+======================================================================
+tests/fang/run.sh — 20260816-162626
+target      : http://127.0.0.1:4201   container: openfang-staging
+same stand? : yes — 'openfang-staging' publishes 127.0.0.1:4201/tcp and http://127.0.0.1:4201 asks this machine for port 4201; a published host port belongs to one container at a time. Nothing else was compared.
+data dir    : /var/lib/docker/volumes/openfang-staging-data/_data   (from openfang-staging:/data)
+config      : /var/lib/docker/volumes/openfang-staging-data/_data/config.toml
+api key     : 51 chars from /var/lib/docker/volumes/openfang-staging-data/_data/config.toml
+staging     : up (image openfang:fang9-verify)
+credential  : ACCEPTED — GET /api/usage/by-model: bad key -> 401, this key -> 200
+costly gate : closed: repros that bill real providers are SKIPPED (pass --costly)
+logs        : evidence-fang9
+======================================================================
+
+A-1      running   (A-1.sh, mode=manual, expect=-) ... REVIEW (0s)
+         no machine-readable verdict; read evidence-fang9/A-1.log against the red criterion in the script header (exit 0)
+A-2      running   (A-2.sh, mode=a2, expect=GREEN) ... PASS (1s)
+A-4      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+A-6      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+A-7      SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-31  running   (FANG-31.sh, mode=result, expect=GREEN) ... PASS (77s)
+         exit code was 0 and is not used in this mode
+FANG-43  SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-45  SKIPPED   makes real, billed LLM calls against live providers; pass --costly to run it
+FANG-9   running   (FANG-9.sh, mode=exit4, expect=GREEN) ... PASS (5s)
+FANG-10  running   (FANG-10.sh, mode=exit4, expect=RED) ... PASS (8s)
+FANG-13  running   (FANG-13.sh, mode=exit4, expect=RED) ... PASS (5s)
+FANG-47  running   (FANG-47.sh, mode=exit4, expect=RED) ... PASS (7s)
+
+======================================================================
+RESULTS
+======================================================================
+OUTCOME        ID       DETAIL
+REVIEW         A-1      REVIEW — no machine-readable verdict; read evidence-fang9/A-1.log against the red criterion in the script header (exit 0)
+PASS           A-2      GREEN
+SKIPPED        A-4      makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        A-6      makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        A-7      makes real, billed LLM calls against live providers; pass --costly to run it
+PASS           FANG-31  GREEN — exit code was 0 and is not used in this mode
+SKIPPED        FANG-43  makes real, billed LLM calls against live providers; pass --costly to run it
+SKIPPED        FANG-45  makes real, billed LLM calls against live providers; pass --costly to run it
+PASS           FANG-9   GREEN
+PASS           FANG-10  RED
+PASS           FANG-13  RED
+PASS           FANG-47  RED
+
+PASS=6  FAIL=0  REVIEW=1  SKIPPED=5  ERROR=0
+
+REVIEW is not PASS. Those scripts measure; the verdict is a human's.
+SKIPPED is not PASS either. Each skip above carries its reason.
+
+======================================================================
+AUTHENTICITY — what each repro had to show before it was graded
+======================================================================
+credential: accepted (tested on /api/usage/by-model) — GET /api/usage/by-model: bad key -> 401, this key -> 200
+every repro in the registry carries a witness pattern.
+
+witnesses confirmed by a run recorded on disk : A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-9 FANG-10 FANG-13 FANG-47
+witnesses no recorded run confirms            : FANG-45
+  (the pattern is a line the script prints, but nothing captured on disk
+   shows it — usually because the file under baseline/ for that repro is
+   a written-up recon document rather than the script's stdout. Not
+   wrong; never yet seen to fire. Capture one as evidence-run*/live-<ID>.log
+   and this line will shorten by itself.)
+
+======================================================================
+CLEAN-UP — probe entities on http://127.0.0.1:4201
+======================================================================
+  removed agent test-a1-probe (d2238a86-7eed-4001-85d6-3d672b4fe6ca) via DELETE http://127.0.0.1:4201/api/agents/d2238a86-7eed-4001-85d6-3d672b4fe6ca
+  http://127.0.0.1:4201/api/agents lists no probe agent of this run's making now.
+  LEFT ON DISK, not deleted, under /var/lib/docker/volumes/openfang-staging-data/_data/agents: test-a1-probe
+  This sweep does not remove directories. Delete them by hand if you
+  want them gone — and check the path before you do.
+
+======================================================================
+COVERAGE — 14 fix commits on 'ours', and what reproduces them
+======================================================================
+COMMIT    KIND    REPRO              EVIDENCE   SUBJECT
+5891b2b   direct  A-2                base+after fix(runtime): recount provider model_count on custom model removal
+366d62f   direct  A-7                base+after fix(kernel): resolve fallback base_url per provider, not from default_model
+cdd70de   direct  A-4                base+after fix(runtime): wrap runtime prompt data in tags, not ## headings
+63f9185   direct  none               none       fix(runtime): cap workspace context by whole file blocks
+b86e65b   direct  A-1                base+after fix(api): PUT /agents/{id}/update returns 501 and names the working routes
+6cb20be   direct  A-1                base+after fix(api): the 501 body was wrong about skills, mcp_servers and tools
+61dd183   direct  none               none       fix(runtime): drop a dead assignment clippy was right about
+bf0fee0   direct  none               none       fix(telegram): stop leaking the bot token into logs on network errors
+cbb0660   direct  A-6                base+after fix(metering): meter usage per LLM call, not per agent turn
+308cd7a   direct  none               none       fix(kernel): report what hot-reload actually applied, not what it detected
+acc85d7   direct  FANG-43            base only  fix(channels): stop token/secret leaks in Telegram file content and 6 adapters
+8b502f9   direct  FANG-45            base only  fix(tools): make file_read disclose truncation and support offset/limit paging
+8a2f8d4   bundle  A-1,A-2,A-6,A-7    base+after fix: four defects the adversarial review found in the sprint-2 patches
+d83abbf   bundle  FANG-43,FANG-45    base only  fix: three defects the adversarial review found in the sprint-3 patches
+
+Counted by fix commit (12 direct + 2 adversarial round-ups = 14):
+  direct fixes with a baseline AND an after-the-fix run : 6
+  direct fixes with a baseline but no green recorded    : 2
+  direct fixes with no reproduction at all              : 4
+  round-up commits inheriting the rows above            : 2
+
+Counted by reproduction script (two commits can share one script, which
+is why these numbers are smaller than the ones above):
+  baseline + after (a red run and a green run on record): A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-9
+  baseline only (red on record, no green yet)           : FANG-43 FANG-45 FANG-10 FANG-13 FANG-47
+  no baseline on disk at all                            :
+
+  Note on the 'baseline only' group: a missing green is a gap in the
+  evidence only where a fix exists. For every repro this branch expects
+  RED — the 'expect' column of the registry, which --list prints — red IS
+  the current truth and there is nothing green to record.
+
+Repros in this directory that are NOT tied to a fix commit — they
+reproduce defects that are still open on 'ours', which is why their
+expected verdict above is RED:
+  FANG-10  max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)
+  FANG-13  an empty-but-valid provider response is returned as a successful turn (NO FIX)
+  FANG-47  the max-iterations exit discards the whole turn's accounting (NO FIX)
+
+Baselines on disk:
+  A-1.txt                        2913 bytes
+  A-2.txt                        2179 bytes
+  A-4.txt                       13023 bytes
+  A-6.txt                       60015 bytes
+  A-7-run1.txt                   9405 bytes
+  A-7.txt                       12368 bytes
+  FANG-10.txt                    3033 bytes
+  FANG-13.txt                    2767 bytes
+  FANG-31-rerun-2026-08-14.txt   3573 bytes
+  FANG-31.txt                   10872 bytes
+  FANG-40-cargo-tests.txt        2448 bytes
+  FANG-40-sigterm-sprint3.txt    3261 bytes
+  FANG-40-sigterm-tautology-sprint3.txt   2517 bytes
+  FANG-40-sigterm.txt            1204 bytes
+  FANG-40-spin-arms.txt          3425 bytes
+  FANG-40.txt                    1112 bytes
+  FANG-43.txt                    2723 bytes
+  FANG-44-audit.txt             13452 bytes
+  FANG-45.txt                    8900 bytes
+  FANG-47.txt                    2489 bytes
+  FANG-9-verify-prepatch.txt     3386 bytes
+  FANG-9.txt                     2360 bytes
+
+run.sh: all 6 graded repro(s) reached the verdict this build should produce.
+        (5 skipped, 1 awaiting a human — neither is a pass.)

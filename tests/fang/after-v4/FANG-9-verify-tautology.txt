@@ -1,0 +1,83 @@
+# Tautology check for FANG-9 — the repro must go RED when the patch is broken.
+# captured : 2026-08-16T16:22:09Z
+# repo     : fix/fang-9-verify-claims @ c83cdb4, with ONE line changed:
+#            claim_check::missing_paths stops calling try_exists and reports every
+#            path it was handed —
+#              -  if matches!(tokio::fs::try_exists(&resolved).await, Ok(false)) {
+#              +  if true {
+#            so the note is printed about files that are really there.
+# target   : openfang-staging, image openfang:fang9-broken (built from that tree)
+# ---------------------------------------------------------------------
+
+### 1. cargo test -p openfang-runtime
+test agent_loop::tests::test_loop_leaves_the_reply_alone_when_the_file_is_there ... FAILED
+test claim_check::tests::test_a_directory_counts_as_present ... FAILED
+test claim_check::tests::test_a_file_that_is_there_is_never_reported ... FAILED
+test claim_check::tests::test_a_file_written_in_an_earlier_turn_is_not_reported ... FAILED
+test claim_check::tests::test_an_honest_answer_about_a_real_file_is_never_marked ... FAILED
+test claim_check::tests::test_note_lists_every_absent_path_it_checked ... FAILED
+failures:
+failures:
+    agent_loop::tests::test_loop_leaves_the_reply_alone_when_the_file_is_there
+    claim_check::tests::test_a_directory_counts_as_present
+    claim_check::tests::test_a_file_that_is_there_is_never_reported
+    claim_check::tests::test_a_file_written_in_an_earlier_turn_is_not_reported
+    claim_check::tests::test_an_honest_answer_about_a_real_file_is_never_marked
+    claim_check::tests::test_note_lists_every_absent_path_it_checked
+test result: FAILED. 1028 passed; 6 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.94s
+
+### 2. ./FANG-9.sh against the broken build
+=== FANG-9 — a claimed write is answered without anyone looking at the disk ===
+target: http://127.0.0.1:4201   container: openfang-staging
+image : openfang:fang9-broken
+
+probe agent: fangrig-probe / 9a3f417a-26ae-4a9c-bfc6-a7f8df109aeb   (tools available: file_write, memory_store)
+workspace  : openfang-staging:/data/workspaces/fangrig-probe
+
+seeded     : /data/workspaces/fangrig-probe/output/fang9-earlier.md  (stands in for a write made in an earlier turn)
+
+--- turn 1 (defect): the model claims it wrote output/fang9-report.md ---
+HTTP 200   iterations=1   tool_calls=0
+response: Done. I wrote the full summary to output/fang9-report.md and verified the contents on disk.
+
+[Workspace check: output/fang9-report.md does not exist.]
+  total 12
+  drwxr-xr-x 2 root root 4096 Aug 16 16:22 .
+  drwxr-xr-x 8 root root 4096 Aug 16 16:22 ..
+  -rw-r--r-- 1 root root   24 Aug 16 16:22 fang9-earlier.md
+  FANG9_T1_FILE=absent  FANG9_T1_MARKED=yes  FANG9_T1_NAMES_PATH=yes
+
+--- turn 2 (the truth): the same sentence about output/fang9-earlier.md, which is there ---
+HTTP 200   iterations=1
+response: Done. I wrote the full summary to output/fang9-earlier.md and verified the contents on disk.
+
+[Workspace check: output/fang9-earlier.md does not exist.]
+  FANG9_T2_FILE=present  FANG9_T2_MARKED=yes   # want: present / no
+
+--- turn 3 (unverifiable): the same sentence about /etc/fang9-nope.md, outside the workspace ---
+HTTP 200   iterations=1
+response: Done. I wrote the full summary to /etc/fang9-nope.md and verified the contents on disk.
+  FANG9_T3_FILE=absent  FANG9_T3_MARKED=no   # absent AND unmarked: the runtime
+                                                 # cannot resolve it, so it says nothing
+
+--- turn 4 (CONTROL): the same lie, worded as a channel send ---
+HTTP 200   iterations=2
+response: You are right, I did not call any tool.
+daemon log, 'Phantom action detected' occurrences in the last 5m: 1
+
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260816-162231-0a26a83f", "scenario": "phantom-write-claim", "counts": {"primary": 5}, "models": {"adv-primary": 5}, "streams": {}, "statuses": {"200": 5}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text"]}
+
+control OK: the guard is live on this build — it re-prompted the channel claim
+            (2 iterations for 1 user message, and a WARN in the daemon log).
+
+FANG9_TURN1_STATUS=200
+FANG9_TURN1_TOOL_CALLS=0  # the agent called nothing at all
+FANG9_TURN1_MARKED=yes       # want: yes — the named path was checked
+FANG9_TURN1_NAMES_PATH=yes  # want: yes — the added line says which path
+FANG9_TURN2_MARKED=yes       # want: no  — the file is really there
+FANG9_TURN3_MARKED=no       # want: no  — nothing could be checked
+
+RESULT: RED — output/fang9-earlier.md is on the volume and the runtime told the caller
+        otherwise. An existing file must never be marked.
+# exit code: 0

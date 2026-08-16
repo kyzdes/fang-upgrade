@@ -1,0 +1,31 @@
+=== FANG-31 · Telegram 409 on channel hot-reload ===
+date              : 2026-08-16T16:26:27Z
+target            : http://127.0.0.1:4201  (container openfang-staging)
+daemon version    : 0.6.9
+image             : sha256:92f9228c1a23
+poller attached, long-poll in flight (timeout=30s)
+--- POST /api/channels/reload while the long-poll is in flight ---
+{"started":["telegram"],"status":"ok"}
+
+--- stub view (one line per getUpdates) ---
+1.965 getUpdates START peer=127.0.0.1:36072 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+1.965 getUpdates ACCEPTED
+32.009 getUpdates START peer=127.0.0.1:37966 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+32.009 getUpdates ACCEPTED
+63.051 getUpdates START peer=127.0.0.1:37966 verb=GET params={"allowed_updates": ["message", "edited_message"], "timeout": 30} inflight=1
+63.051 getUpdates ACCEPTED
+
+--- daemon log ---
+2026-08-16T16:24:51.734772144Z 2026-08-16T16:24:51.734104Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-16T16:24:51.734814398Z 2026-08-16T16:24:51.734611Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=0 channels=[]
+2026-08-16T16:26:29.818219063Z 2026-08-16T16:26:29.818122Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T16:26:29.819492716Z 2026-08-16T16:26:29.819392Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+2026-08-16T16:26:59.861127127Z 2026-08-16T16:26:59.860937Z  INFO openfang_channels::telegram: Telegram polling loop stopped
+2026-08-16T16:26:59.862252486Z 2026-08-16T16:26:59.862119Z  INFO openfang_channels::telegram: Telegram bot @stub_probe_bot connected
+2026-08-16T16:26:59.863333587Z 2026-08-16T16:26:59.863053Z  INFO openfang_api::channel_bridge: Channel hot-reload complete started=1 channels=["telegram"]
+
+OF31_409_COUNT=0      # 409 WARNs caused by one reload (want 0)
+
+RESULT: GREEN — one reload, no 409 conflict. This says nothing about
+        whether the channel is still polling; see the stub view above.
+restored /var/lib/docker/volumes/openfang-staging-data/_data/config.toml

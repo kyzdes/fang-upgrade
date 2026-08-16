@@ -1,0 +1,40 @@
+# Unit evidence for FANG-9 — the cases the stand cannot reach.
+# captured : 2026-08-16T16:29:53Z
+# repo     : fix/fang-9-verify-claims @ 715e8c1
+# command  : cargo test -p openfang-runtime   (in rust:1-slim-bookworm, CARGO_TARGET_DIR=/target)
+#
+# workspace_root=None is unreachable over the API: openfang-kernel assigns
+# every registered agent a workspace, so manifest.workspace is always Some.
+# These two rows are where that case is proved:
+#   agent_loop::tests::test_loop_says_nothing_when_there_is_no_workspace_to_check
+#   claim_check::tests::test_silence_when_there_is_no_workspace_to_check_against
+# ---------------------------------------------------------------------
+$ cargo clippy -p openfang-runtime --all-targets -- -D warnings
+info: downloading 5 components
+    Checking openfang-runtime v0.6.9 (/build/crates/openfang-runtime)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.88s
+
+$ cargo fmt --all -- --check
+(no diff)
+
+$ cargo test -p openfang-runtime
+test agent_loop::tests::test_loop_leaves_the_reply_alone_when_the_file_is_there ... ok
+test agent_loop::tests::test_loop_marks_a_named_path_that_is_not_on_disk ... ok
+test agent_loop::tests::test_loop_says_nothing_when_there_is_no_workspace_to_check ... ok
+test claim_check::tests::test_a_directory_counts_as_present ... ok
+test claim_check::tests::test_a_file_that_is_absent_is_reported_by_name ... ok
+test claim_check::tests::test_a_file_that_is_there_is_never_reported ... ok
+test claim_check::tests::test_a_path_is_named_once_however_often_it_is_repeated ... ok
+test claim_check::tests::test_a_pathless_claim_is_caught_through_the_tool_it_asked_for ... ok
+test claim_check::tests::test_a_file_written_in_an_earlier_turn_is_not_reported ... ok
+test claim_check::tests::test_an_absolute_path_inside_the_workspace_is_checked ... ok
+test claim_check::tests::test_measured_extraction_on_natural_phrasings ... ok
+test claim_check::tests::test_note_lists_every_absent_path_it_checked ... ok
+test claim_check::tests::test_an_honest_answer_about_a_real_file_is_never_marked ... ok
+test claim_check::tests::test_path_is_taken_out_of_prose_and_markdown ... ok
+test claim_check::tests::test_silence_when_there_is_no_workspace_to_check_against ... ok
+test claim_check::tests::test_silence_for_a_path_that_leaves_the_workspace ... ok
+test claim_check::tests::test_tokens_that_are_not_paths_are_left_alone ... ok
+test claim_check::tests::test_tool_arguments_name_a_path_the_prose_omits ... ok
+test result: ok. 1034 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.83s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
