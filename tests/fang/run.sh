@@ -1092,6 +1092,22 @@ COVERAGE=(
 )
 printf '%-9s %-7s %-18s %-10s %s\n' COMMIT KIND REPRO EVIDENCE SUBJECT
 NO_REPRO=0; NO_GREEN=0; FULL=0; N_BUNDLE=0
+# An "after the fix" run for <id>: baseline/ is one file per repro, but the
+# green runs are spread over after/, after-v2/, after-v3/ and after-v4/ and
+# are named after the round that captured them. Looking only at
+# after/<id>.txt and after-v2/<id>.txt reported "no green yet" for repros
+# whose green sat in after-v4/ — a false gap, printed with a straight face.
+have_after_run() {
+  local d f
+  for d in "$HERE"/after "$HERE"/after-v*; do
+    [ -d "$d" ] || continue
+    for f in "$d/$1.txt" "$d/$1-"*.txt; do
+      [ -f "$f" ] && return 0
+    done
+  done
+  return 1
+}
+
 for c in "${COVERAGE[@]}"; do
   sha="$(field "$c" 1)"; kind="$(field "$c" 2)"; repros="$(field "$c" 3)"; subj="$(field "$c" 4)"
   if [ "$repros" = "-" ]; then
@@ -1103,7 +1119,7 @@ for c in "${COVERAGE[@]}"; do
   IFS=',' read -ra rs <<<"$repros"
   for one in "${rs[@]}"; do
     [ -f "$HERE/baseline/$one.txt" ] && have_base=1
-    { [ -f "$HERE/after/$one.txt" ] || [ -f "$HERE/after-v2/$one.txt" ]; } && have_after=1
+    have_after_run "$one" && have_after=1
   done
   if [ "$have_base" = 1 ] && [ "$have_after" = 1 ]; then ev="base+after"
   elif [ "$have_base" = 1 ]; then ev="base only"
@@ -1131,7 +1147,7 @@ for s in A-1 A-2 A-4 A-6 A-7 FANG-31 FANG-43 FANG-45 FANG-9 FANG-10 FANG-13 FANG
   [ -f "$HERE/$s.sh" ] || continue
   b=0; a=0
   [ -f "$HERE/baseline/$s.txt" ] && b=1
-  { [ -f "$HERE/after/$s.txt" ] || [ -f "$HERE/after-v2/$s.txt" ]; } && a=1
+  have_after_run "$s" && a=1
   if   [ "$b" = 1 ] && [ "$a" = 1 ]; then BR_FULL="$BR_FULL $s"
   elif [ "$b" = 1 ];                 then BR_BASE="$BR_BASE $s"
   else                                    BR_NONE="$BR_NONE $s"; fi
@@ -1140,10 +1156,10 @@ echo "  baseline + after (a red run and a green run on record):$BR_FULL"
 echo "  baseline only (red on record, no green yet)           :$BR_BASE"
 echo "  no baseline on disk at all                            :$BR_NONE"
 echo
-echo "  Note on the 'baseline only' group: for FANG-43 and FANG-45 the missing"
-echo "  green is a gap in the evidence. For FANG-9/10/13/31/47 it is not — those"
-echo "  defects have no fix commit on 'ours', so red IS the current truth and"
-echo "  there is nothing green to record until sprint 5."
+echo "  Note on the 'baseline only' group: a missing green is a gap in the"
+echo "  evidence only where a fix exists. For every repro this branch expects"
+echo "  RED — the 'expect' column of the registry, which --list prints — red IS"
+echo "  the current truth and there is nothing green to record."
 echo
 echo "Repros in this directory that are NOT tied to a fix commit — they"
 echo "reproduce defects that are still open on 'ours', which is why their"

@@ -21,6 +21,15 @@ it is the evidence. `../run.sh` expects them to come back RED and reports a GREE
 failure, because a repro that stops reproducing an unfixed defect has stopped being a
 repro. `../run.sh --list` prints which is which.
 
+`FANG-9` has since moved into the first group, on branch `fix/fang-9-verify-claims`.
+`FANG-9.txt` is the red run of the *old* repro; `FANG-9-verify-prepatch.txt` is the red
+run of the rewritten one, against the same unpatched `openfang:sprint3`, and
+`../after-v4/FANG-9-verify-green.txt` is the matching green against an image built from
+that branch. `../after-v4/FANG-9-verify-tautology.txt` breaks the patch at one line —
+`missing_paths` stops calling `try_exists` and reports every path it was handed — and
+records what the repro and the unit tests do about it. `../run.sh` now expects FANG-9
+GREEN, so it must be pointed at a build that carries the fix.
+
 ## Re-capturing one
 
 Each file starts with a header naming the branch, the short SHA, the staging image and
