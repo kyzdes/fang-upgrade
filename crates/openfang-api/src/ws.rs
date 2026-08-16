@@ -10,11 +10,18 @@
 //! Server → Client: `{"type":"error","content":"..."}`
 //! Server → Client: `{"type":"agents_updated","agents":[...]}`
 //! Server → Client: `{"type":"silent_complete"}` (agent chose NO_REPLY)
-//!
-//! A turn that streamed no text is reported by exactly one of those last two:
-//! `silent_complete` when the loop finished, `error` when it failed. It used to
-//! be `silent_complete` either way — see FANG-13 further down this file.
 //! Server → Client: `{"type":"canvas","canvas_id":"...","html":"...","title":"..."}`
+//!
+//! FANG-13. A turn that streamed no text used to be reported as
+//! `silent_complete` whatever the reason, so this socket told the dashboard the
+//! agent had CHOSEN to stay quiet on turns where the provider had simply said
+//! nothing. It now waits for the loop's result before speaking and sends
+//! `error` when the loop failed. Both halves of that sentence are measured, on
+//! an unpatched and a patched build, by `tests/fang/FANG-13.sh`: it drives an
+//! empty-provider-response turn through this socket on a live stand and prints
+//! the events it received. What a no-text turn that did NOT fail produces is
+//! not covered by that repro; the code for it is the `is_silent` check further
+//! down.
 
 use crate::routes::AppState;
 use axum::extract::ws::{Message, WebSocket};
@@ -1523,6 +1530,16 @@ fn sanitize_text(s: &str) -> String {
 fn classify_streaming_error(err: &openfang_kernel::error::KernelError) -> String {
     let inner = format!("{err}");
 
+    // A turn that produced no text is not a request that failed. That message
+    // is written by the runtime from what it observed (`agent_loop.rs`,
+    // `no_text_failure`) and carries no provider payload, so it goes to the
+    // client as written. Through the classifier below it would not: that is a
+    // substring matcher over provider error bodies, and an unrecognised
+    // message falls out of it as `Format`, i.e. "Request failed: …".
+    if let Some(idx) = inner.find(openfang_runtime::agent_loop::NO_TEXT_FAILURE_PREFIX) {
+        return inner[idx..].to_string();
+    }
+
     // Check for agent-specific errors first (not LLM errors)
     if inner.contains("Agent not found") {
         return "Agent not found. It may have been stopped or deleted.".to_string();
@@ -1754,6 +1771,36 @@ mod tests {
     fn test_ws_module_loads() {
         // Verify module compiles and loads correctly
         let _ = VerboseLevel::Off;
+    }
+
+    /// FANG-13 — the no-text failure reaches the socket as the runtime wrote
+    /// it, and the comment above `classify_streaming_error` about what the
+    /// classifier would otherwise do to it is checked here rather than
+    /// asserted in prose.
+    #[test]
+    fn test_no_text_failure_bypasses_the_provider_error_classifier() {
+        let raw = format!(
+            "{} after 2 iteration(s) the final message carried no text, no tool \
+             calls and no content (24 in / 0 out tokens). (agent: probe)",
+            openfang_runtime::agent_loop::NO_TEXT_FAILURE_PREFIX
+        );
+        let err = openfang_kernel::error::KernelError::OpenFang(
+            openfang_types::error::OpenFangError::LlmDriver(raw.clone()),
+        );
+
+        // What the client is told: the runtime's own sentence, nothing bolted on.
+        assert_eq!(classify_streaming_error(&err), raw);
+
+        // Why the bypass exists: the classifier does not recognise this message
+        // and files it under Format, whose user-facing prefix is "Request
+        // failed" — a claim about a request that in fact succeeded.
+        let classified = llm_errors::classify_error(&raw, None);
+        assert_eq!(classified.category, llm_errors::LlmErrorCategory::Format);
+        assert!(
+            classified.sanitized_message.starts_with("Request failed"),
+            "got: {:?}",
+            classified.sanitized_message
+        );
     }
 
     #[test]

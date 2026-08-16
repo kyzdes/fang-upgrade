@@ -1,0 +1,20 @@
+{
+  "name": "empty-truncated-length",
+  "doc": "FANG-13, second half: the OTHER exit that can end a turn with nothing to say. Every response is `finish_reason: length` with an empty content string, so the loop takes the StopReason::MaxTokens arm, pushes 'Please continue.' and asks again - MAX_CONTINUATIONS (5, agent_loop.rs) times, at which point the continuation budget is spent. Until this scenario existed that exit answered with '[Partial response - token limit reached with no text output.]' and HTTP 200: a runtime-authored sentence in the field where the model's answer belongs, on a turn where not one of the five responses carried a character - the same fabrication the empty-final-message exit stopped making, in a branch nobody had looked at. Exactly five calls per turn, no tools, no retry (the one-shot empty-response retry lives in the EndTurn arm and is never reached). Driver ../FANG-13.sh, phase B.",
+  "endpoints": [
+    {
+      "role": "primary",
+      "port": 8972,
+      "prefix": "/primary/v1",
+      "open": true,
+      "steps": [
+        { "type": "text", "content": "", "finish_reason": "length", "usage": [59, 0] },
+        { "type": "text", "content": "", "finish_reason": "length", "usage": [61, 0] },
+        { "type": "text", "content": "", "finish_reason": "length", "usage": [67, 0] },
+        { "type": "text", "content": "", "finish_reason": "length", "usage": [71, 0] },
+        { "type": "text", "content": "", "finish_reason": "length", "usage": [73, 0] }
+      ],
+      "default_step": { "type": "text", "content": "fangrig: steps exhausted", "usage": [1, 1] }
+    }
+  ]
+}

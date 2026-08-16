@@ -283,50 +283,105 @@ fn finish_calls(calls: &mut Vec<LlmCall>) -> Vec<LlmCall> {
     std::mem::take(calls)
 }
 
+/// The prefix every "this turn produced no text" failure carries.
+///
+/// It exists so a consumer can recognise the failure without matching on the
+/// rest of the sentence, which is assembled from what happened and therefore
+/// varies. `openfang-api`'s WebSocket error path uses it to skip
+/// `llm_errors::classify_error`: that classifier is a substring matcher over
+/// provider error bodies, and a message it does not recognise comes back out
+/// of it labelled `Format` — "Request failed: …". Nothing failed to be
+/// requested here; the provider answered, with nothing.
+pub const NO_TEXT_FAILURE_PREFIX: &str = "The turn produced no text:";
+
+/// Why a turn reached the end with nothing to say. One variant per exit that
+/// can get there, because the two are not the same event and the sentence the
+/// caller reads is built from this, not chosen from a template.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoText {
+    /// The provider's final message came back with `finish_reason: stop` (or a
+    /// stop sequence), carrying no text, no tool calls and no content of any
+    /// kind; the one-shot retry did not change that; and no text had been
+    /// accumulated during earlier tool_use iterations. The response was
+    /// *structurally* valid, which is why it never became an `LlmError` in the
+    /// driver the way an empty `choices` array does (`drivers/openai.rs`, "No
+    /// choices in response"). It was simply empty.
+    EmptyFinalMessage,
+    /// The provider stopped at `finish_reason: length` `continuations` times in
+    /// a row — the whole continuation budget (`MAX_CONTINUATIONS`) — and not
+    /// one of those responses carried a character of text.
+    TruncatedWithNoText { continuations: u32 },
+}
+
 /// FANG-13 — the turn ended with nothing to say, and that is a failed turn.
 ///
-/// Reached when the provider's final message carried no text, no tool calls and
-/// no content of any kind, the one-shot retry above did not change that, and no
-/// text was accumulated during earlier tool_use iterations. The response was
-/// *structurally* valid — one choice, `finish_reason: stop` — which is why it
-/// never became an `LlmError` in the driver the way an empty `choices` array
-/// does (`drivers/openai.rs`, "No choices in response"). It was simply empty.
+/// Both loops used to substitute a sentence of their own at each of the two
+/// exits below and return `Ok`, so the caller got HTTP 200 with the runtime's
+/// words sitting in the field where the model's answer belongs — and when tools
+/// had run, those words asserted the task had COMPLETED on a turn where the
+/// provider had said nothing.
 ///
-/// Both loops used to substitute a sentence of their own here and return `Ok`,
-/// so the caller got HTTP 200 with the runtime's words sitting in the field
-/// where the model's answer belongs — and when tools had run, those words
-/// asserted the task had COMPLETED on a turn where the provider said nothing.
-/// A turn with no answer now leaves through the same door as every other
-/// provider failure, so REST, SSE, WS and /v1 all report it as one.
+/// What each caller-facing surface does with the resulting `Err` is not
+/// uniform, and is measured rather than assumed: `tests/fang/FANG-13.sh`
+/// drives this shape through all five of them on a live stand and prints what
+/// each one did. Measured there, on this patch:
+///
+/// * `POST /api/agents/{id}/message` — HTTP 500 carrying this text.
+/// * `POST /v1/chat/completions` (`stream:false`) — HTTP 500.
+/// * `GET  /api/agents/{id}/ws` — `{"type":"error"}` carrying this text
+///   verbatim (see `ws.rs`, `classify_streaming_error`).
+/// * `POST /api/agents/{id}/message/stream` — no failure reported: the SSE
+///   ends after its per-call `done` events, exactly as it ends a turn that
+///   succeeded.
+/// * `POST /v1/chat/completions` (`stream:true`) — no failure reported: the
+///   stream ends with `finish_reason: "stop"` and `[DONE]`.
+///
+/// The last two both drop the loop's join handle (`routes.rs`
+/// `send_message_stream`, `openai_compat.rs` `stream_response`: `let (rx,
+/// _handle)`), so no loop failure of any kind has ever reached them —
+/// max-iterations included. That gap is named here and by the repro; it is not
+/// closed here.
 ///
 /// One function for both loops on purpose: the streaming and non-streaming
 /// paths are copies of each other, and this is precisely the kind of text that
 /// drifts apart between them.
-fn empty_response_failure(
+fn no_text_failure(
     agent: &str,
     iterations: u32,
     usage: &TokenUsage,
     any_tools_executed: bool,
     streaming: bool,
+    cause: NoText,
 ) -> OpenFangError {
+    let stream = if streaming { " streamed" } else { "" };
+    // No guesses about *why* in this text. The sentence it replaces offered
+    // three ("overloaded, the context is too large, or the API key lacks
+    // credits") and the runtime knew none of them to be true; worse, the word
+    // "overloaded" is one of the patterns `llm_errors::classify_error` matches
+    // on, so the guess came back out of the WebSocket classifier as a
+    // confident "Provider overloaded". State what was observed, nothing else —
+    // and keep the observation out of that classifier's pattern tables:
+    // "token limit", for one, is read there as a context-window overflow.
+    let what = match cause {
+        NoText::EmptyFinalMessage => format!(
+            "after {iterations} iteration(s) the final{stream} message carried no text, \
+             no tool calls and no content"
+        ),
+        NoText::TruncatedWithNoText { continuations } => format!(
+            "the provider stopped at finish_reason=length {continuations} times in a row \
+             across {iterations} iteration(s) and none of those{stream} responses carried \
+             any text"
+        ),
+    };
     let tools_note = if any_tools_executed {
         " Tools executed earlier in this turn did run and their effects stand, \
          but the provider never summarised them."
     } else {
         ""
     };
-    // No guesses about *why* in this text. The sentence it replaces offered
-    // three ("overloaded, the context is too large, or the API key lacks
-    // credits") and the runtime knew none of them to be true; worse, the word
-    // "overloaded" is one of the patterns `llm_errors::classify_error` matches
-    // on, so the guess came back out of the WebSocket classifier as a
-    // confident "Provider overloaded". State what was observed, nothing else.
     OpenFangError::LlmDriver(format!(
-        "Provider returned an empty response: after {iterations} iteration(s) the \
-         final{stream} message carried no text, no tool calls and no content \
-         ({input} in / {output} out tokens). The turn produced no answer.{tools_note} \
+        "{NO_TEXT_FAILURE_PREFIX} {what} ({input} in / {output} out tokens).{tools_note} \
          (agent: {agent})",
-        stream = if streaming { " streamed" } else { "" },
         input = usage.input_tokens,
         output = usage.output_tokens,
     ))
@@ -792,7 +847,7 @@ pub async fn run_agent_loop(
                         // FANG-13: nothing was said, by the provider or by any
                         // earlier iteration of this turn. Fail the turn instead
                         // of writing an answer on the model's behalf — see
-                        // `empty_response_failure`. Same exit shape as the
+                        // `no_text_failure`. Same exit shape as the
                         // max-iterations failure below: persist what the turn
                         // did accomplish (the tool_use/tool_result pairs are
                         // already in `session`), close the loop out through the
@@ -822,12 +877,13 @@ pub async fn run_agent_loop(
                             };
                             let _ = hook_reg.fire(&ctx);
                         }
-                        return Err(empty_response_failure(
+                        return Err(no_text_failure(
                             &manifest.name,
                             iteration + 1,
                             &total_usage,
                             any_tools_executed,
                             false,
+                            NoText::EmptyFinalMessage,
                         ));
                     }
                 } else {
@@ -1215,10 +1271,57 @@ pub async fn run_agent_loop(
             StopReason::MaxTokens => {
                 consecutive_max_tokens += 1;
                 if consecutive_max_tokens >= MAX_CONTINUATIONS {
-                    // Return partial response instead of continuing forever
+                    // Return the partial response instead of continuing forever.
                     let text = response.text();
+                    // FANG-13, second half. "Partial" is only true when there
+                    // is a part. The continuation budget can run out without a
+                    // single character having arrived — `MAX_CONTINUATIONS`
+                    // truncations in a row that each carried nothing — and this
+                    // branch used to answer that with a sentence of the
+                    // runtime's own and HTTP 200, the same fabrication the exit
+                    // above stopped making. Text accumulated during earlier
+                    // tool_use iterations still counts as an answer: that
+                    // fallback is unchanged from the EndTurn branch.
                     let text = if text.trim().is_empty() {
-                        "[Partial response — token limit reached with no text output.]".to_string()
+                        if !accumulated_text.is_empty() {
+                            accumulated_text.clone()
+                        } else {
+                            warn!(
+                                agent = %manifest.name,
+                                iteration,
+                                consecutive_max_tokens,
+                                input_tokens = total_usage.input_tokens,
+                                output_tokens = total_usage.output_tokens,
+                                any_tools_executed,
+                                "Continuation budget exhausted with no text — failing the turn"
+                            );
+                            if let Err(e) = memory.save_session_async(session).await {
+                                warn!("Failed to save session on max continuations: {e}");
+                            }
+                            if let Some(hook_reg) = hooks {
+                                let ctx = crate::hooks::HookContext {
+                                    agent_name: &manifest.name,
+                                    agent_id: agent_id_str.as_str(),
+                                    event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                    data: serde_json::json!({
+                                        "reason": "max_continuations_no_text",
+                                        "iterations": iteration + 1,
+                                        "any_tools_executed": any_tools_executed,
+                                    }),
+                                };
+                                let _ = hook_reg.fire(&ctx);
+                            }
+                            return Err(no_text_failure(
+                                &manifest.name,
+                                iteration + 1,
+                                &total_usage,
+                                any_tools_executed,
+                                false,
+                                NoText::TruncatedWithNoText {
+                                    continuations: consecutive_max_tokens,
+                                },
+                            ));
+                        }
                     } else {
                         text
                     };
@@ -2141,12 +2244,13 @@ pub async fn run_agent_loop_streaming(
                             };
                             let _ = hook_reg.fire(&ctx);
                         }
-                        return Err(empty_response_failure(
+                        return Err(no_text_failure(
                             &manifest.name,
                             iteration + 1,
                             &total_usage,
                             any_tools_executed,
                             true,
+                            NoText::EmptyFinalMessage,
                         ));
                     }
                 } else {
@@ -2517,8 +2621,50 @@ pub async fn run_agent_loop_streaming(
                 consecutive_max_tokens += 1;
                 if consecutive_max_tokens >= MAX_CONTINUATIONS {
                     let text = response.text();
+                    // FANG-13, second half — see the non-streaming twin of this
+                    // branch for why a continuation budget that ran out without
+                    // producing a character is a failed turn and not a partial
+                    // answer.
                     let text = if text.trim().is_empty() {
-                        "[Partial response — token limit reached with no text output.]".to_string()
+                        if !accumulated_text.is_empty() {
+                            accumulated_text.clone()
+                        } else {
+                            warn!(
+                                agent = %manifest.name,
+                                iteration,
+                                consecutive_max_tokens,
+                                input_tokens = total_usage.input_tokens,
+                                output_tokens = total_usage.output_tokens,
+                                any_tools_executed,
+                                "Continuation budget exhausted with no text (streaming) — failing the turn"
+                            );
+                            if let Err(e) = memory.save_session_async(session).await {
+                                warn!("Failed to save session on max continuations: {e}");
+                            }
+                            if let Some(hook_reg) = hooks {
+                                let ctx = crate::hooks::HookContext {
+                                    agent_name: &manifest.name,
+                                    agent_id: agent_id_str.as_str(),
+                                    event: openfang_types::agent::HookEvent::AgentLoopEnd,
+                                    data: serde_json::json!({
+                                        "reason": "max_continuations_no_text",
+                                        "iterations": iteration + 1,
+                                        "any_tools_executed": any_tools_executed,
+                                    }),
+                                };
+                                let _ = hook_reg.fire(&ctx);
+                            }
+                            return Err(no_text_failure(
+                                &manifest.name,
+                                iteration + 1,
+                                &total_usage,
+                                any_tools_executed,
+                                true,
+                                NoText::TruncatedWithNoText {
+                                    continuations: consecutive_max_tokens,
+                                },
+                            ));
+                        }
                     } else {
                         text
                     };
@@ -4068,7 +4214,7 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(
-            msg.contains("empty response"),
+            msg.contains(NO_TEXT_FAILURE_PREFIX) && msg.contains("carried no text"),
             "error should name the cause, got: {msg}"
         );
         assert!(
@@ -4141,7 +4287,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_empty_response_max_tokens_returns_fallback() {
+    async fn test_empty_response_max_tokens_fails_the_turn() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -4178,18 +4324,27 @@ mod tests {
             None, // user_content_blocks
         )
         .await
-        .expect("Loop should complete without error");
+        // FANG-13. This driver truncates at the token limit MAX_CONTINUATIONS
+        // times and carries no text on any of them. The loop used to answer
+        // that with "[Partial response — token limit reached with no text
+        // output.]" and Ok — a sentence of the runtime's own in the field
+        // where the model's answer belongs, on a turn where nothing was said.
+        // It is a failed turn.
+        .expect_err("a spent continuation budget with no text must fail the turn");
 
-        // Should hit MAX_CONTINUATIONS and return fallback instead of empty
+        let msg = format!("{result}");
         assert!(
-            !result.response.trim().is_empty(),
-            "Response should not be empty on max tokens, got: {:?}",
-            result.response
+            msg.contains(NO_TEXT_FAILURE_PREFIX),
+            "expected the no-text failure, got: {msg:?}"
         );
         assert!(
-            result.response.contains("token limit"),
-            "Expected max-tokens fallback message, got: {:?}",
-            result.response
+            msg.contains("finish_reason=length"),
+            "the message must say what was actually observed, got: {msg:?}"
+        );
+        assert!(
+            !msg.contains("token limit"),
+            "'token limit' is a context-overflow pattern in llm_errors::classify_error \
+             and would come back to the user as 'Context is full'; got: {msg:?}"
         );
     }
 
@@ -4288,7 +4443,7 @@ mod tests {
         );
         let msg = err.to_string();
         assert!(
-            msg.contains("empty response") && msg.contains("streamed"),
+            msg.contains(NO_TEXT_FAILURE_PREFIX) && msg.contains("streamed"),
             "error should name the cause and the path, got: {msg}"
         );
         assert!(
@@ -4462,7 +4617,7 @@ mod tests {
         let err = result.expect_err("two empty answers in a row must fail the turn");
         let msg = err.to_string();
         assert!(
-            matches!(err, OpenFangError::LlmDriver(_)) && msg.contains("empty response"),
+            matches!(err, OpenFangError::LlmDriver(_)) && msg.contains(NO_TEXT_FAILURE_PREFIX),
             "expected a provider failure naming the empty response, got: {msg}"
         );
         // No tool ran, so nothing may be claimed about tool side effects.
@@ -4482,7 +4637,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_streaming_empty_response_max_tokens_returns_fallback() {
+    async fn test_streaming_empty_response_max_tokens_fails_the_turn() {
         let memory = openfang_memory::MemorySubstrate::open_in_memory(0.01).unwrap();
         let agent_id = openfang_types::agent::AgentId::new();
         let mut session = openfang_memory::session::Session {
@@ -4521,17 +4676,18 @@ mod tests {
             None, // user_content_blocks
         )
         .await
-        .expect("Streaming loop should complete without error");
+        // FANG-13 — the streaming twin of
+        // `test_empty_response_max_tokens_fails_the_turn`.
+        .expect_err("a spent continuation budget with no text must fail the turn");
 
+        let msg = format!("{result}");
         assert!(
-            !result.response.trim().is_empty(),
-            "Streaming response should not be empty on max tokens, got: {:?}",
-            result.response
+            msg.contains(NO_TEXT_FAILURE_PREFIX),
+            "expected the no-text failure, got: {msg:?}"
         );
         assert!(
-            result.response.contains("token limit"),
-            "Expected max-tokens fallback in streaming, got: {:?}",
-            result.response
+            msg.contains("finish_reason=length"),
+            "the message must say what was actually observed, got: {msg:?}"
         );
     }
 

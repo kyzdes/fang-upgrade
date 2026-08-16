@@ -1,0 +1,121 @@
+# After-the-fix run for FANG-13 — an empty provider response no longer passes as
+#   an answer on any surface that can carry a verdict
+# captured : 2026-08-16T13:21:06Z
+# branch   : fix/fang-13-empty-response — the commit this file is part of. No SHA:
+#            it would name a pre-amend revision of that same commit.
+# build    : openfang:fang13f, built from that commit's source and test files (this
+#            file and its baseline twin were added to the commit afterwards and
+#            cannot affect a binary). Built from an export with
+#            fresh mtimes (git archive | tar -x, then touch), because the shared
+#            /build/target cache mount otherwise lets cargo skip the rebuild and
+#            hand back another branch's binary — see FANG-13.sh's header. The
+#            build runs 'cargo test --release --lib' for openfang-runtime,
+#            openfang-api and openfang-kernel first, so the image cannot exist
+#            unless those passed (1016 + 301 + 97, 0 failed).
+# stand    : openfang-fang13 on 127.0.0.1:4203 — a throwaway container over a
+#            fresh clone of the openfang-staging-data volume. Neither staging
+#            (:4201) nor production (:4200) was touched.
+# command  : FANGRIG_RUN_ROOT=/tmp/fang13-rig-green OF_CONTAINER=openfang-fang13 \
+#              OF_CONFIG=/var/lib/docker/volumes/openfang-fang13-data/_data/config.toml \
+#              ./FANG-13.sh http://127.0.0.1:4203
+# pair     : ../baseline/FANG-13.txt is the same script against a build of ours.
+
+=== FANG-13 — an empty provider response, across every caller-facing surface ===
+target: http://127.0.0.1:4203   container: openfang-fang13
+image : openfang:fang13f
+binary: /usr/local/bin/openfang   (0 matching lines = the string is not in this build)
+  "The turn produced no text:"                  matching lines: 1    present only WITH the FANG-13 patch
+  "Task completed — the agent executed tools" matching lines: 0    present only WITHOUT it
+  "Partial response — token limit reached"    matching lines: 0    present only WITHOUT its second half
+
+probe agent: fangrig-probe / d84fd9ce-401f-4025-b725-13101594c9f6
+
+--- surface 1/6: REST POST /api/agents/{id}/message, tools ran first ---
+HTTP 500
+{"error":"Message delivery failed: LLM driver error: The turn produced no text: after 2 iteration(s) the final message carried no text, no tool calls and no content (24 in / 7 out tokens). Tools executed earlier in this turn did run and their effects stand, but the provider never summarised them. (agent: fangrig-probe)"}
+
+--- surface 2/6: REST POST /api/agents/{id}/message, no tools ---
+HTTP 500
+{"error":"Message delivery failed: LLM driver error: The turn produced no text: after 2 iteration(s) the final message carried no text, no tool calls and no content (36 in / 0 out tokens). (agent: fangrig-probe)"}
+
+--- surface 3/6: POST /v1/chat/completions (stream:false) ---
+HTTP 500
+{"error":{"message":"Agent processing failed","type":"server_error"}}
+
+--- surface 4/6: WebSocket /api/agents/{id}/ws ---
+{"agent_id":"d84fd9ce-401f-4025-b725-13101594c9f6","type":"connected"}
+{"state":"start","type":"typing"}
+{"agents":[{"id":"d1a14338-7bbb-468f-858e-bcc61d3f6c65","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52B","state":"Running"},{"id":"d84fd9ce-401f-4025-b725-13101594c9f6","model_name":"adv-primary","model_provider":"fangrig","name":"fangrig-probe","state":"Running"},{"id":"17ffd1ca-b548-4132-a305-df3e32fbd9e3","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"assistant","state":"Running"},{"id":"fd66d9b8-5671-42e6-84b2-b7ffbb1b030b","model_name":"openai/gpt-oss-120b","model_provider":"hyperfusion","name":"test-a1-probe","state":"Running"},{"id":"194c8a3e-75ed-44d4-8c60-e8edaa156a95","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG3","state":"Running"},{"id":"d1c3402f-bddb-4db2-af62-a7694c402fd7","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52","state":"Running"},{"id":"3db254e3-638a-453d-b7a9-04aef89087fb","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG","state":"Running"},{"id":"d4dbb30b-c3ee-4245-97b4-4ebd449596fc","model_name":"openai/gpt-oss-120b","model_provider":"hyperfusion","name":"AgentGptOss","state":"Running"},{"id":"bf7564a1-2c88-5fdf-8ba7-24788d4da8c1","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"youtube-insights","state":"Running"},{"id":"7a460d1e-3195-48d8-9acf-1761d3b0815a","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG4","state":"Running"},{"id":"d1212e4d-b6c9-445f-aedc-2d404ffbc6db","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentRAG2","state":"Running"},{"id":"d5fd3e74-4add-4931-98dd-4cad91d6e923","model_name":"ark/glm-5.2","model_provider":"y7router","name":"AgentGLM52C","state":"Running"},{"id":"484987e6-962a-48a9-8d77-66e144f81280","model_name":"kimi/k3","model_provider":"y7router","name":"AgentKimi3","state":"Running"},{"id":"84e6ab6b-1522-4490-a5df-6283d65bceeb","model_name":"google/gemma-4-31b-it","model_provider":"hyperfusion","name":"AgentGemma4","state":"Running"},{"id":"7bf4ee20-04d9-45a8-9438-8ecd459f4605","model_name":"ark/deepseek-v4-pro","model_provider":"y7router","name":"AgentDeepSeek4","state":"Running"}],"type":"agents_updated"}
+{"detail":null,"phase":"streaming","type":"phase"}
+{"detail":null,"phase":"thinking","type":"phase"}
+{"state":"stop","type":"typing"}
+{"content":"The turn produced no text: after 2 iteration(s) the final streamed message carried no text, no tool calls and no content (68 in / 0 out tokens). (agent: fangrig-probe)","type":"error"}
+
+--- surface 5/6: SSE POST /api/agents/{id}/message/stream ---
+HTTP 200
+event: phase
+data: {"detail":null,"phase":"streaming"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":41,"output_tokens":0}}
+
+event: call
+data: {"model":"adv-primary","n":0,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":41,"output_tokens":0}}
+
+event: phase
+data: {"detail":null,"phase":"thinking"}
+
+event: done
+data: {"done":true,"usage":{"input_tokens":43,"output_tokens":0}}
+
+event: call
+data: {"model":"adv-primary","n":1,"provider":"fangrig","reason":null,"requested":null,"usage":{"input_tokens":43,"output_tokens":0}}
+
+
+--- surface 6/6: POST /v1/chat/completions (stream:true) ---
+HTTP 200
+data: {"id":"chatcmpl-8260e64f-b6b8-45b3-bcb0-c2d087b39ebb","object":"chat.completion.chunk","created":1786886471,"model":"fangrig-probe","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8260e64f-b6b8-45b3-bcb0-c2d087b39ebb","object":"chat.completion.chunk","created":1786886471,"model":"fangrig-probe","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+
+--- what the provider actually served (stub journal rollup) ---
+{"run_id": "20260816-132108-0046ac75", "scenario": "empty-content-success", "counts": {"primary": 12}, "models": {"adv-primary": 12}, "streams": {"primary": 6}, "statuses": {"200": 12}, "log": ["primary call#1 model=adv-primary step=tool_call", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text", "primary call#6 model=adv-primary step=text", "primary call#7 model=adv-primary step=text", "primary call#8 model=adv-primary step=text", "primary call#9 model=adv-primary step=text", "primary call#10 model=adv-primary step=text", "primary call#11 model=adv-primary step=text", "primary call#12 model=adv-primary step=text"]}
+
+=== phase B: the continuation budget runs out without a character of text ===
+probe agent: fangrig-probe / 9a215342-7853-410b-b79b-05ff002ee33b
+
+--- REST POST /api/agents/{id}/message, 5x finish_reason=length ---
+HTTP 500
+{"error":"Message delivery failed: LLM driver error: The turn produced no text: the provider stopped at finish_reason=length 5 times in a row across 5 iteration(s) and none of those responses carried any text (331 in / 0 out tokens). (agent: fangrig-probe)"}
+
+{"run_id": "20260816-132114-e048bbbb", "scenario": "empty-truncated-length", "counts": {"primary": 5}, "models": {"adv-primary": 5}, "streams": {}, "statuses": {"200": 5}, "log": ["primary call#1 model=adv-primary step=text", "primary call#2 model=adv-primary step=text", "primary call#3 model=adv-primary step=text", "primary call#4 model=adv-primary step=text", "primary call#5 model=adv-primary step=text"]}
+
+=== how each surface reported a turn the provider never answered ===
+SURFACE                                              CLASS             DETAIL
+REST /api/agents/{id}/message (tools ran)            FAILURE-REPORTED  HTTP 500
+REST /api/agents/{id}/message (no tools)             FAILURE-REPORTED  HTTP 500
+REST /api/agents/{id}/message (finish_reason=length x5) FAILURE-REPORTED  HTTP 500
+/v1/chat/completions (stream:false)                  FAILURE-REPORTED  HTTP 500
+WS /api/agents/{id}/ws                               FAILURE-REPORTED  events [connected typing agents_updated phase phase typing error]; error: 'The turn produced no text: after 2 iteration(s) the final streamed message carried no text, no tool calls and no content (68 in / 0 out tokens). (agent: fangrig-probe)'
+SSE /api/agents/{id}/message/stream                  SUCCESS-CLAIMED   HTTP 200, events [phase done call phase done call], no error event
+/v1/chat/completions (stream:true)                   SUCCESS-CLAIMED   HTTP 200, finish_reason=stop [DONE]
+
+FANG13_INVENTED_ANSWERS=0   # want 0: nothing the provider did not send
+FANG13_REST_TOOLS=FAILURE-REPORTED
+FANG13_REST_PLAIN=FAILURE-REPORTED
+FANG13_V1_PLAIN=FAILURE-REPORTED
+FANG13_WS_PLAIN=FAILURE-REPORTED
+FANG13_TRUNC=FAILURE-REPORTED
+
+GREEN — no surface invents an answer, and REST, /v1 non-streaming and the
+        WebSocket all report the turn as failed.
+GAP (measured, not fixed here): the two SSE surfaces still report neither an
+     answer nor the failure — both drop the agent loop's join handle
+     (routes.rs send_message_stream, openai_compat.rs stream_response:
+     'let (rx, _handle)'), so no loop failure of any kind has ever reached
+     them, max-iterations included. Their classes above say so.
+RESULT: GREEN — an empty provider response no longer passes as an answer
+# exit code: 1

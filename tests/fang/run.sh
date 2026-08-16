@@ -256,12 +256,19 @@ REPROS=(
   "A-4|A-4.sh|manual|-|costly|^agent_id: +[0-9a-f]{8}|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
   "A-6|A-6.sh|manual|-|costly|turns that returned a response *: *[1-9]|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
   "A-7|A-7.sh|manual|-|costly|^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}&&^test-a7-control +200 +answered|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
+  # This row is left expecting RED, and on a build of `ours` it now FAILs. That
+  # is measured, not guessed: evidence-run4/FANG-31-expectation-vs-ours.txt has
+  # FANG-31.sh red three times on openfang:sprint3 (an image built 2026-08-14,
+  # before the merges that landed on ours on 2026-08-15) and green on a build of
+  # ours @7606210 itself. Whether the row should now say GREEN — and which merge
+  # closed it — belongs to whoever owns FANG-31; flipping it on one probe's word
+  # is how a registry stops meaning anything.
   "FANG-31|FANG-31.sh|result|RED|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
   "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
   "FANG-10|FANG-10.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|max_iterations exceeded -> HTTP 500 carrying none of the turn's work (NO FIX)"
-  "FANG-13|FANG-13.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response is returned as a successful turn (NO FIX)"
+  "FANG-13|FANG-13.sh|exit4|GREEN|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|an empty-but-valid provider response came back as a successful turn carrying a sentence the runtime wrote itself (fixed on this branch; the two SSE surfaces still report nothing and the repro prints that as a named gap)"
   "FANG-47|FANG-47.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|the max-iterations exit discards the whole turn's accounting (NO FIX)"
 )
 
@@ -1141,9 +1148,12 @@ echo "  baseline only (red on record, no green yet)           :$BR_BASE"
 echo "  no baseline on disk at all                            :$BR_NONE"
 echo
 echo "  Note on the 'baseline only' group: for FANG-43 and FANG-45 the missing"
-echo "  green is a gap in the evidence. For FANG-9/10/13/31/47 it is not — those"
+echo "  green is a gap in the evidence. For FANG-9/10/31/47 it is not — those"
 echo "  defects have no fix commit on 'ours', so red IS the current truth and"
-echo "  there is nothing green to record until sprint 5."
+echo "  there is nothing green to record until sprint 5. FANG-13 is neither:"
+echo "  it has a fix on this branch and none on 'ours', which is why its row"
+echo "  above expects GREEN while the COVERAGE table below — which counts only"
+echo "  commits already on 'ours' — does not list it."
 echo
 echo "Repros in this directory that are NOT tied to a fix commit — they"
 echo "reproduce defects that are still open on 'ours', which is why their"

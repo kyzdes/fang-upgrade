@@ -14,12 +14,20 @@ under test.
 sense: red runs against a build that was later patched, and `../after/` (plus
 `../after-v2/` for the second adversarial round) holds the matching green.
 
-`FANG-9`, `FANG-10`, `FANG-13`, `FANG-31`, `FANG-47` are red runs against a build that
-was **never** patched — those defects have no fix commit on `ours`. There is no green
+`FANG-9`, `FANG-10`, `FANG-31`, `FANG-47` are red runs against a build that was
+**never** patched — those defects have no fix commit on `ours`. There is no green
 to record for them yet and their absence from `../after/` is not a gap in the evidence;
 it is the evidence. `../run.sh` expects them to come back RED and reports a GREEN as a
 failure, because a repro that stops reproducing an unfixed defect has stopped being a
 repro. `../run.sh --list` prints which is which.
+
+`FANG-13` is in the first group as of `fix/fang-13-empty-response`: `FANG-13.txt` here is
+red against a build of `ours` with no fix, `../after/FANG-13.txt` is green against a build
+of that branch, and both files name their image and carry the binary-marker lines that say
+which one the container was actually running. The pair replaces an earlier `FANG-13.txt`
+produced by a version of the script that no longer exists (see git history) — that one was
+captured against `openfang:sprint3`, an image built before several of the merges that are
+now on `ours`.
 
 ## Re-capturing one
 
