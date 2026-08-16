@@ -256,7 +256,7 @@ REPROS=(
   "A-4|A-4.sh|manual|-|costly|^agent_id: +[0-9a-f]{8}|'## Current Date' and other service prompt sections leaked into agent output (fix cdd70de)"
   "A-6|A-6.sh|manual|-|costly|turns that returned a response *: *[1-9]|a fallback-served turn never disclosed which model actually answered (fix cbb0660)"
   "A-7|A-7.sh|manual|-|costly|^--- spawn: HTTP 201 +agent_id=[0-9a-f]{8}&&^test-a7-control +200 +answered|manifest [[fallback_models]] inherited [default_model].base_url (fix 366d62f)"
-  "FANG-31|FANG-31.sh|result|RED|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandons an in-flight getUpdates (NO FIX ON ours)"
+  "FANG-31|FANG-31.sh|result|GREEN|cheap|poller attached, long-poll in flight|Telegram 409: channel reload abandoned an in-flight getUpdates (fixed on ours by bedb365 + bef4c0a)"
   "FANG-43|FANG-43.sh|result|GREEN|costly|^--- session file: |the Telegram bot token reached the LLM prompt and the on-disk session (fix acc85d7)"
   "FANG-45|FANG-45.sh|manual|-|costly|^session file: |file_read truncated silently with no way to page the rest (fix 8b502f9)"
   "FANG-9|FANG-9.sh|exit4|RED|cheap|^probe agent: fangrig-probe / [0-9a-f]{8}|agent reports a write it never performed; the phantom-action guard covers channels only (NO FIX)"
