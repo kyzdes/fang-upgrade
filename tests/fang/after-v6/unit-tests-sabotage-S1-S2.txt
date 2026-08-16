@@ -1,0 +1,70 @@
+# SABOTAGE — the two new unit tests, run against a deliberately broken build,
+# so that "they pass" means something. Both sabotages are single-site reverts
+# to what the first cut of this patch (2c69ebe) actually did:
+#
+#   S1  run_agent_loop_streaming's max-iterations exit sends the WHOLE summary
+#       as the final TextDelta instead of just the notice.
+#   S2  the non-streaming loop records a LoopGuardVerdict::Block as
+#       ToolCallFate::Completed instead of Blocked.
+#
+# They are independent — S1 touches only the streaming exit, S2 only the
+# non-streaming loop guard arm — so each test below fails for its own sabotage
+# and for no other reason. Exactly two of the eight fail, and the panic messages
+# print the two false claims verbatim: "STREAM-PARTIAL-0" arriving twice, and
+# "Tool calls that ran and succeeded (9)" for a turn in which four ran.
+#
+# captured : 2026-08-16T12:57:49Z
+# tree     : a copy of this worktree at 07b5d67 + the two reverts above
+# command  : cargo test -p openfang-runtime --lib max_iterations -- --nocapture
+#            (inside the same rust:1-slim-bookworm builder the image uses)
+# ---------------------------------------------------------------------
+running 8 tests
+test agent_loop::tests::test_max_iterations_constant ... ok
+test agent_loop::tests::test_max_iterations_notice_counts_blocked_calls_apart_from_calls_that_ran ... ok
+test agent_loop::tests::test_max_iterations_notice_omits_the_sections_it_has_no_calls_for ... ok
+test agent_loop::tests::test_max_iterations_notice_says_so_when_nothing_ran ... ok
+test agent_loop::tests::test_max_iterations_notice_elides_a_long_tool_list_without_losing_the_count ... ok
+
+thread 'agent_loop::tests::test_streaming_max_iterations_notice_does_not_repeat_the_streamed_text' (6641) panicked at crates/openfang-runtime/src/agent_loop.rs:6574:13:
+assertion `left == right` failed: chunk 0 duplicated in the streamed transcript: STREAM-PARTIAL-0STREAM-PARTIAL-1STREAM-PARTIAL-2STREAM-PARTIAL-0
+
+STREAM-PARTIAL-1
+
+STREAM-PARTIAL-2
+
+[Turn incomplete — Max iterations exceeded (3). The agent stopped here without finishing. Configure a higher limit in agent.toml under [autonomous] max_iterations.]
+
+Tool calls that ran and succeeded (3):
+  1. system_time {"note":"MAXITER-PARTIAL-CANARY","step":0}
+  2. system_time {"note":"MAXITER-PARTIAL-CANARY","step":1}
+  3. system_time {"note":"MAXITER-PARTIAL-CANARY","step":2}
+  left: 2
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test agent_loop::tests::test_max_iterations_hands_back_the_partial_turn_not_an_error ... ok
+test agent_loop::tests::test_streaming_max_iterations_notice_does_not_repeat_the_streamed_text ... FAILED
+
+thread 'agent_loop::tests::test_max_iterations_does_not_report_loop_guard_blocked_calls_as_executed' (6635) panicked at crates/openfang-runtime/src/agent_loop.rs:6474:9:
+only the four the loop guard let through ran: [Turn incomplete — Max iterations exceeded (9). The agent stopped here without finishing. Configure a higher limit in agent.toml under [autonomous] max_iterations.]
+
+Tool calls that ran and succeeded (9):
+  1. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  2. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  3. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  4. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  5. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  6. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  7. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  8. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+  9. system_time {"note":"MAXITER-PARTIAL-CANARY"}
+test agent_loop::tests::test_max_iterations_does_not_report_loop_guard_blocked_calls_as_executed ... FAILED
+
+failures:
+
+failures:
+    agent_loop::tests::test_max_iterations_does_not_report_loop_guard_blocked_calls_as_executed
+    agent_loop::tests::test_streaming_max_iterations_notice_does_not_repeat_the_streamed_text
+
+test result: FAILED. 6 passed; 2 failed; 0 ignored; 0 measured; 1017 filtered out; finished in 0.03s
+
+error: test failed, to rerun pass `-p openfang-runtime --lib`

@@ -1,3 +1,18 @@
+# SUPERSEDED — do not read the GREEN at the bottom of this file as current.
+#
+# This run graded 2c69ebe green, and the summary it captured says
+# "Tool calls executed (50)". On this scenario 46 of those 50 calls were
+# refused by the loop guard and never reached the tool: the turn's transcript
+# carries 46 "Blocked: tool ..." results, which the reworked probe now counts
+# and prints — see FANG10_GUARD_BLOCKS_IN_TRANSCRIPT=46 in ../after-v6/.
+# So the response this run accepted was announcing work that did not happen —
+# the defect 07b5d67 fixes.
+#
+# The green criterion that accepted it was also negative ("not exactly the old
+# RED"). It is positive now, and the current runs are in ../after-v6/.
+# Renamed out of the way of run.sh's after*/<ID>.txt glob on purpose: this is
+# not a green on record any more.
+#
 # AFTER the fix for FANG-47 — the max-iterations exit books every call it made.
 # captured : 2026-08-16T00:15:17Z
 # repo     : fix/fang-10-47-maxiter @ 2c69ebe (branched from ours @ 7606210)

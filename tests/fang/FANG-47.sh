@@ -112,6 +112,29 @@ else:
 "
 }
 
+# The rows behind that endpoint, read straight out of the database the daemon
+# writes: "count sum_input sum_output" over usage_events for $MODEL.
+#
+# /api/usage/by-model is a projection. A projection can move because a row was
+# written or because something upstream of it was cached, summed or defaulted,
+# and the two look identical from outside. usage_events is where record_turn_usage
+# actually lands, so one row per LLM call in there is the accounting existing —
+# the endpoint agreeing is then a second, weaker witness rather than the only one.
+# Opened read-only so a concurrent daemon write cannot be blamed for a wrong answer.
+DB=/data/data/openfang.db
+usage_rows() {
+  docker exec "$CONTAINER" python3 -c "
+import sqlite3, sys
+try:
+    c = sqlite3.connect('file:$DB?mode=ro', uri=True)
+    r = c.execute('SELECT COUNT(*), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0) '
+                  'FROM usage_events WHERE model = ?', ('$MODEL',)).fetchone()
+    print(r[0], r[1], r[2])
+except Exception as e:
+    print(-1, -1, -1)
+" 2>/dev/null || echo "-1 -1 -1"
+}
+
 cleanup() { "$RIG" down >/dev/null 2>&1; }
 trap cleanup EXIT INT TERM
 
@@ -119,6 +142,7 @@ echo "=== FANG-47 — the max-iterations exit loses the turn's accounting entire
 echo "target: $BASE_URL   container: $CONTAINER"
 echo "image : $(docker inspect -f '{{.Config.Image}}' "$CONTAINER")"
 echo "meter : GET /api/usage/by-model, row model=$MODEL"
+echo "ledger: $CONTAINER:$DB, table usage_events, model=$MODEL"
 echo
 
 "$RIG" down >/dev/null 2>&1
@@ -129,7 +153,15 @@ echo "probe agent: fangrig-probe / $AID"
 echo
 
 read -r C0 I0 O0 <<<"$(by_model)"
-echo "meter BEFORE any turn : calls=$C0 input=$I0 output=$O0"
+read -r R0 RI0 RO0 <<<"$(usage_rows)"
+echo "meter  BEFORE any turn: calls=$C0 input=$I0 output=$O0"
+echo "ledger BEFORE any turn: rows=$R0 input=$RI0 output=$RO0"
+if [ "$R0" = "-1" ]; then
+  echo "SKIPPED: cannot read usage_events out of $CONTAINER:$DB — the in-database"
+  echo "         half of this repro is the half that matters, so there is no"
+  echo "         point grading the endpoint on its own."
+  exit 3
+fi
 echo
 
 echo "--- turn 1 (CONTROL): an ordinary 2-call turn, $STEP_IN/$STEP_OUT per call ---"
@@ -139,8 +171,11 @@ B1="$(printf '%s' "$OUT1" | sed '$d')"
 echo "HTTP $S1"
 echo "$B1"
 read -r C1 I1 O1 <<<"$(by_model)"
-echo "meter AFTER control   : calls=$C1 input=$I1 output=$O1"
+read -r R1 RI1 RO1 <<<"$(usage_rows)"
+echo "meter  AFTER control  : calls=$C1 input=$I1 output=$O1"
 echo "delta                 : calls=$((C1 - C0)) input=$((I1 - I0)) output=$((O1 - O0))"
+echo "ledger AFTER control  : rows=$R1 input=$RI1 output=$RO1"
+echo "delta                 : rows=$((R1 - R0)) input=$((RI1 - RI0)) output=$((RO1 - RO0))"
 echo
 
 echo "--- turn 2 (defect): the provider never stops asking for tools ---"
@@ -150,8 +185,11 @@ B2="$(printf '%s' "$OUT2" | sed '$d')"
 echo "HTTP $S2"
 echo "$B2"
 read -r C2 I2 O2 <<<"$(by_model)"
-echo "meter AFTER defect    : calls=$C2 input=$I2 output=$O2"
+read -r R2 RI2 RO2 <<<"$(usage_rows)"
+echo "meter  AFTER defect   : calls=$C2 input=$I2 output=$O2"
 echo "delta                 : calls=$((C2 - C1)) input=$((I2 - I1)) output=$((O2 - O1))"
+echo "ledger AFTER defect   : rows=$((R2)) input=$RI2 output=$RO2"
+echo "delta                 : rows=$((R2 - R1)) input=$((RI2 - RI1)) output=$((RO2 - RO1))"
 echo
 
 echo "--- what the provider actually served and billed (stub journal) ---"
@@ -176,6 +214,7 @@ echo
 
 # ------------------------------------------------------------- assertions --
 CTL_CALLS=$((C1 - C0)); CTL_IN=$((I1 - I0)); CTL_OUT=$((O1 - O0))
+CTL_ROWS=$((R1 - R0)); CTL_ROW_IN=$((RI1 - RI0)); CTL_ROW_OUT=$((RO1 - RO0))
 WANT_IN=$((2 * STEP_IN)); WANT_OUT=$((2 * STEP_OUT))
 if [ "$S1" != "200" ] || [ "$CTL_CALLS" != 2 ] || [ "$CTL_IN" != "$WANT_IN" ] || [ "$CTL_OUT" != "$WANT_OUT" ]; then
   echo "RESULT: INCONCLUSIVE — the control turn did not move the meter as scripted"
@@ -184,30 +223,63 @@ if [ "$S1" != "200" ] || [ "$CTL_CALLS" != 2 ] || [ "$CTL_IN" != "$WANT_IN" ] ||
   echo "        would then only mean this model is not metered at all."
   exit 4
 fi
+if [ "$CTL_ROWS" != 2 ] || [ "$CTL_ROW_IN" != "$WANT_IN" ] || [ "$CTL_ROW_OUT" != "$WANT_OUT" ]; then
+  echo "RESULT: INCONCLUSIVE — the control turn did not write the rows it should"
+  echo "        (usage_events delta rows=$CTL_ROWS input=$CTL_ROW_IN output=$CTL_ROW_OUT,"
+  echo "        expected 2 / $WANT_IN / $WANT_OUT). Without that, 'the defect turn"
+  echo "        wrote rows' would have nothing to be measured against."
+  exit 4
+fi
 if [ "$SERVED" != "52" ]; then
   echo "RESULT: INCONCLUSIVE — the stub served $SERVED calls, expected 52"
   echo "        (2 for the control turn + 50 for the 50 iterations)."
   exit 4
 fi
-echo "control OK: the same meter, the same model and the same stub moved by exactly"
-echo "            +2 calls / +$WANT_IN input / +$WANT_OUT output for turn 1."
+echo "control OK: the same meter, the same model, the same table and the same stub"
+echo "            moved by exactly +2 calls / +$WANT_IN input / +$WANT_OUT output for turn 1,"
+echo "            in /api/usage/by-model AND in usage_events."
 echo
 
 DEF_CALLS=$((C2 - C1)); DEF_IN=$((I2 - I1)); DEF_OUT=$((O2 - O1))
+DEF_ROWS=$((R2 - R1)); DEF_ROW_IN=$((RI2 - RI1)); DEF_ROW_OUT=$((RO2 - RO1))
 SERVED_IN=$((DEFECT_CALLS * STEP_IN)); SERVED_OUT=$((DEFECT_CALLS * STEP_OUT))
-echo "FANG47_SERVED_CALLS=$DEFECT_CALLS       # LLM calls the provider really answered"
-echo "FANG47_SERVED_INPUT=$SERVED_IN    # tokens the provider really billed"
+echo "FANG47_SERVED_CALLS=$DEFECT_CALLS        # LLM calls the provider really answered"
+echo "FANG47_SERVED_INPUT=$SERVED_IN     # tokens the provider really billed"
 echo "FANG47_SERVED_OUTPUT=$SERVED_OUT"
-echo "FANG47_BOOKED_CALLS=$DEF_CALLS          # what /api/usage/by-model recorded (want: $DEFECT_CALLS)"
+echo "FANG47_ROWS_WRITTEN=$DEF_ROWS         # usage_events rows for the turn (want: $DEFECT_CALLS)"
+echo "FANG47_ROWS_INPUT=$DEF_ROW_IN     # summed over those rows (want: $SERVED_IN)"
+echo "FANG47_ROWS_OUTPUT=$DEF_ROW_OUT"
+echo "FANG47_BOOKED_CALLS=$DEF_CALLS         # and what /api/usage/by-model then reports"
 echo "FANG47_BOOKED_INPUT=$DEF_IN"
 echo "FANG47_BOOKED_OUTPUT=$DEF_OUT"
 
-if [ "$S2" = "500" ] && [ "$DEF_CALLS" = 0 ] && [ "$DEF_IN" = 0 ] && [ "$DEF_OUT" = 0 ]; then
+# RED — the defect as filed: served, billed, and booked nowhere.
+if [ "$S2" = "500" ] && [ "$DEF_CALLS" = 0 ] && [ "$DEF_IN" = 0 ] && [ "$DEF_OUT" = 0 ] \
+   && [ "$DEF_ROWS" = 0 ]; then
   echo
   echo "RESULT: RED — $DEFECT_CALLS LLM calls and $SERVED_IN/$SERVED_OUT tokens were served"
-  echo "        and billed, the turn ended 500, and the ledger moved by zero."
+  echo "        and billed, the turn ended 500, and neither usage_events nor"
+  echo "        /api/usage/by-model moved at all."
   exit 0
 fi
+
+# GREEN — stated as what must be PRESENT. Not "the delta is no longer zero":
+# the rows have to exist in the database, one per call the provider served,
+# summing to the tokens it billed, and the endpoint has to report the same.
+if [ "$S2" = "200" ] \
+   && [ "$DEF_ROWS" = "$DEFECT_CALLS" ] && [ "$DEF_ROW_IN" = "$SERVED_IN" ] && [ "$DEF_ROW_OUT" = "$SERVED_OUT" ] \
+   && [ "$DEF_CALLS" = "$DEFECT_CALLS" ] && [ "$DEF_IN" = "$SERVED_IN" ] && [ "$DEF_OUT" = "$SERVED_OUT" ]; then
+  echo
+  echo "RESULT: GREEN — the turn answered 200 and its accounting is in the database:"
+  echo "        $DEF_ROWS usage_events rows, one per call the stub served, summing to"
+  echo "        $DEF_ROW_IN/$DEF_ROW_OUT tokens — exactly what was billed — and"
+  echo "        /api/usage/by-model reports the same $DEF_CALLS / $DEF_IN / $DEF_OUT."
+  exit 1
+fi
+
 echo
-echo "RESULT: GREEN — the max-iterations exit no longer discards the turn's accounting"
-exit 1
+echo "RESULT: INCONCLUSIVE — the turn matched neither the filed defect nor the"
+echo "        fixed behaviour. Compare FANG47_ROWS_* against FANG47_SERVED_*:"
+echo "        the fixed exit writes one row per served call and books every"
+echo "        token, and at least one of those is not what it should be."
+exit 4

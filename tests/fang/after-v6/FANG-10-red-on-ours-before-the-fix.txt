@@ -1,0 +1,85 @@
+# RED — FANG-10 without the fix: HTTP 500 on REST, nothing at all on the socket.
+# captured : 2026-08-16T12:50:08Z
+# repo     : the probes come from fix/fang-10-47-maxiter; the runtime under
+#            test does not — see the image line below.
+# probes   : the exact files this run used, by content — `sha256sum` them
+#            FANG-10.sh             sha256 75b49f14dae0a6596823c56c807856e2…
+#            harness/ws_probe.py    sha256 41886ca2bd3f7550173701a134c78103…
+# image    : openfang:ours-7606210
+#            (sha256:2536fe57929d3c37a55e82de4a8e349a548734d4f90052068a14240691e3c8de)
+#            The build this branch was cut from, WITHOUT the fix. What this
+#            run establishes about that image is one thing: its max-iterations
+#            exit still answers 500 on REST and silent_complete on the socket,
+#            and books nothing. It is the pairing run, so the green beside it
+#            is a statement about the patch and not about the older sprint-3
+#            image the baselines were captured on.
+# stand    : of-fang1047, container port 4200 published on 127.0.0.1:4247,
+#            on a volume created fresh for the run. Nothing else on this box
+#            was touched; production (:4200) was never addressed.
+# command  : OF_CONTAINER=of-fang1047 \
+#            OF_CONFIG=/var/lib/docker/volumes/of-fang1047-data/_data/config.toml \
+#            ./FANG-10.sh http://127.0.0.1:4247
+# ---------------------------------------------------------------------
+=== FANG-10 — max_iterations exceeded returns HTTP 500 with no partial result ===
+target: http://127.0.0.1:4247   container: of-fang1047
+image : openfang:ours-7606210
+
+probe agent: fangrig-probe / c8efb195-4834-4273-b546-ec1c8427662c   workspace: of-fang1047:/data/workspaces/fangrig-probe
+pre-check: output/fang10-partial.txt absent before any turn
+
+--- turn 1 (CONTROL): an ordinary tool_call-then-text turn ---
+HTTP 200
+{"calls":[{"cost_usd":0.000062,"input_tokens":23,"model":"adv-primary","n":0,"output_tokens":13,"provider":"fangrig","tool_calls":1},{"cost_usd":0.000062,"input_tokens":29,"model":"adv-primary","n":1,"output_tokens":11,"provider":"fangrig","tool_calls":0}],"cost_usd":0.000124,"input_tokens":52,"iterations":2,"model_used":"adv-primary","output_tokens":24,"provider_used":"fangrig","response":"Control turn: wrote output/fang10-control.txt."}
+
+--- turn 2 (defect): the provider never stops asking for tools ---
+HTTP 500   (turn took 2s)
+{"error":"Message delivery failed: Max iterations exceeded (50). Configure a higher limit in agent.toml under [autonomous] max_iterations"}
+
+--- the partial result the caller was not told about ---
+  total 16
+  drwxr-xr-x 2 root root 4096 Aug 16 12:50 .
+  drwxr-xr-x 8 root root 4096 Aug 16 12:50 ..
+  -rw-r--r-- 1 root root   23 Aug 16 12:50 fang10-control.txt
+  -rw-r--r-- 1 root root   87 Aug 16 12:50 fang10-partial.txt
+  content of output/fang10-partial.txt:
+    FANG10-PARTIAL-RESULT-CANARY: written during a turn the caller was told failed with 500
+  FANG10_PARTIAL_FILE=present
+
+--- and the session the runtime deliberately saved before failing ---
+  messages in the saved session after the 500: 97
+
+--- turn 3 (defect, second surface): the same turn over the WebSocket ---
+  terminal      : silent_complete
+  frames        : 213
+  text_delta    : 0 frame(s)
+  detail        : None
+
+--- what the provider actually served (stub journal rollup) ---
+  scenario : max-iterations-500
+  counts   : {'primary': 102}
+  statuses : {'200': 102}
+  step mix : {'tool_call': 101, 'text': 1}
+
+control OK: turn 1 answered 200, and the stub served exactly 102 calls —
+            2 for the control and one per iteration for each turn that followed.
+
+FANG10_STATUS=500                       # want: 200 — a status the caller can act on
+FANG10_EXIT_DOOR=yes           # want: yes = max_iterations, not the circuit breaker
+FANG10_BODY_HAS_RESPONSE=no     # want: yes — the partial answer is in the body
+FANG10_BODY_HAS_CANARY=no         # want: yes — the work is named concretely
+FANG10_RAN=0                          # want: >0  — calls the summary says ran
+FANG10_STOPPED=0                     # want: >0  — calls it says the guard stopped
+FANG10_ACCOUNTED=0                 # want: 50 — one per iteration, none unaccounted
+FANG10_GUARD_BLOCKS_IN_TRANSCRIPT=46   # want: = FANG10_STOPPED, counted from the session
+FANG10_PARTIAL_FILE=present       # the work the first calls did really happened
+FANG10_SESSION_MESSAGES=97      # ...and the runtime kept it
+FANG10_WS_STATE=silent_complete           # want: response — the streaming loop answered
+FANG10_WS_NOTICE_IN_DELTAS=0       # want: 1 — the client's transcript names the exit door
+FANG10_WS_RAN=-1                       # want: >0
+FANG10_WS_STOPPED=-1                  # want: >0
+FANG10_WS_ACCOUNTED=-2                # want: 50 — same arithmetic as the REST turn
+
+RESULT: RED — 50 iterations ran, a real file was written to the workspace,
+        the session was saved on the way out, and the caller got a 500
+        containing none of it. Over the WebSocket the same turn came back
+        as 'silent_complete' with the exit door named in 0 text_delta frames.
