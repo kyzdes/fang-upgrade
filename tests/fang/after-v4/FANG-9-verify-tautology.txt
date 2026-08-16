@@ -7,6 +7,10 @@
 #              +  if true {
 #            so the note is printed about files that are really there.
 # target   : openfang-staging, image openfang:fang9-broken (built from that tree)
+#
+# Captured at c83cdb4, before agent_loop::tests::test_streaming_loop_sends_the
+# _check_as_a_delta was added. The count below is what that tree produced; a
+# rerun on a later commit fails that row too.
 # ---------------------------------------------------------------------
 
 ### 1. cargo test -p openfang-runtime
