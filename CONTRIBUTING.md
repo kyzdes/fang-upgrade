@@ -74,6 +74,24 @@ cargo test --workspace
 
 The test suite is currently 1,744+ tests. All must pass before merging.
 
+### Proving a test can fail (fork `ours`)
+
+A green test proves nothing on its own — over five fork sprints, **ten** tests turned
+out to pass with the fix reverted. On this fork a patch that adds a test is not done
+until the test has been shown red without the patch, and that is checked by tool rather
+than asserted in prose:
+
+```bash
+ofmutate <worktree> --test <filter> -p <crate>
+```
+
+It reverse-applies only the patch's production hunks (leaving `#[cfg(test)]` hunks in
+place, since Rust keeps unit tests in the same file) and requires the test to fail. A
+`ТАВТОЛОГИЯ` verdict, or the `passed=0` refusal when the filter matches nothing, means
+there is effectively no test. The full working protocol, the acceptance checklist and
+the copy-paste task template live in
+[`docs/subagent-task-template.md`](docs/subagent-task-template.md).
+
 ### Run Tests for a Single Crate
 
 ```bash
