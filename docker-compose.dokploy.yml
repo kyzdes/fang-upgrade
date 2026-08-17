@@ -1,0 +1,77 @@
+# Dokploy production deployment for the patched OpenFang fork.
+#
+# NOT usable unchanged on the host this file was ported to, and the reasons are
+# measured rather than guessed (2026-08-17, this box):
+#
+#   * Host port collision. `docker ps` shows openfang-openfang-1 already holding
+#     127.0.0.1:4200 and 100.91.165.20:4200. Bringing this file up as-is fails to
+#     bind, or worse, races the running production daemon. Pick a free port here
+#     before deploying, and note this file publishes loopback only, so the tailnet
+#     address production also serves on is NOT exposed by it.
+#
+#   * Volume identity. This declares a project-local volume `openfang-data`, which
+#     Compose names `<project>_openfang-data`. Production's data lives in
+#     `openfang_openfang-data`, so a project named anything but `openfang` gets an
+#     EMPTY /data and a daemon with no agents — while a project named exactly
+#     `openfang` would instead mount production's data. Neither is what a careless
+#     deploy expects. Decide which one you mean.
+#
+#   * Required secrets, by design. `Y7_V2_API_KEY` and `OPENFANG_BASIC_AUTH` use
+#     the `:?` form, so a missing value fails the deploy instead of booting a
+#     daemon with a silently absent credential. That is deliberate — the sibling
+#     docker-compose.override.yml exists because "empty but present" is read as
+#     "configured" here.
+#
+#   * External network. `dokploy-network` must already exist; on this box it does
+#     (`docker network ls` shows it as a swarm overlay).
+#
+# The BasicAuth middleware below is retained on purpose. Upstream of this port,
+# a later commit removed it in favour of passkey-only dashboard auth; that auth
+# change was NOT ported, so removing BasicAuth here would leave the dashboard on
+# a public domain protected by nothing but the API allowlist.
+services:
+  openfang:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        LTO: "false"
+        CODEGEN_UNITS: "16"
+    restart: unless-stopped
+    init: true
+    environment:
+      # Keep the daemon reachable inside the container while exposing the host
+      # port on loopback only. Traefik reaches it through dokploy-network.
+      OPENFANG_LISTEN: "0.0.0.0:4200"
+      # Fail the deployment instead of booting with a missing provider secret.
+      Y7_V2_API_KEY: "${Y7_V2_API_KEY:?Y7_V2_API_KEY is required}"
+    ports:
+      - "127.0.0.1:4200:4200"
+    volumes:
+      - openfang-data:/data
+    networks:
+      - dokploy-network
+    labels:
+      # The native Dokploy domain references this middleware as
+      # denis-openfang-basic-auth@docker. Only the password hash is injected.
+      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.users: "${OPENFANG_BASIC_AUTH:?OPENFANG_BASIC_AUTH is required}"
+      traefik.http.middlewares.denis-openfang-basic-auth.basicauth.removeheader: "true"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 90s
+
+volumes:
+  openfang-data:
+
+networks:
+  dokploy-network:
+    external: true

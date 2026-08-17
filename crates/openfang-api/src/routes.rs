@@ -6512,12 +6512,99 @@ pub async fn run_migrate(Json(req): Json<MigrateRequest>) -> impl IntoResponse {
 
 // ── Model Catalog Endpoints ─────────────────────────────────────────
 
-/// GET /api/models — List all models in the catalog.
+/// Well-known providers kept visible even with no credential detected, so the
+/// dashboard can offer them for setup instead of hiding them.
+///
+/// This list is a display choice, not a statement about what is usable. Nothing
+/// here is inferred about the operator's configuration — providers named in
+/// `config.toml` come from [`configured_provider_ids`], and providers that need
+/// no key at all are admitted by their `auth_status`. Every id below is pinned
+/// against the builtin catalog by `curated_provider_ids_all_exist_in_catalog`;
+/// an id that is not a real provider is a defect, not a harmless extra.
+const CURATED_PROVIDER_IDS: &[&str] = &[
+    "openrouter",
+    "anthropic",
+    "claude-code",
+    "openai",
+    "codex",
+    "gemini",
+];
+
+/// Provider ids the operator named in `config.toml`.
+///
+/// A provider can be fully set up and still report `AuthStatus::Missing`: the
+/// key may live in the config file rather than in the environment that
+/// `detect_auth` inspects. Configuration is therefore read from the config
+/// itself instead of being guessed from a hardcoded list of ids.
+fn configured_provider_ids(
+    config: &openfang_types::config::KernelConfig,
+) -> std::collections::HashSet<String> {
+    let mut ids = std::collections::HashSet::new();
+    if !config.default_model.provider.trim().is_empty() {
+        ids.insert(config.default_model.provider.to_lowercase());
+    }
+    for fb in &config.fallback_providers {
+        if !fb.provider.trim().is_empty() {
+            ids.insert(fb.provider.to_lowercase());
+        }
+    }
+    for id in config.provider_urls.keys() {
+        ids.insert(id.to_lowercase());
+    }
+    for id in config.provider_api_keys.keys() {
+        ids.insert(id.to_lowercase());
+    }
+    ids
+}
+
+/// Whether a provider belongs in the focused dashboard catalog.
+///
+/// Visible when the operator named it in `config.toml`, when its
+/// `auth_status` is anything other than `Missing` — which covers both
+/// `Configured` and the `NotRequired` of local providers like ollama, vllm and
+/// lmstudio — when it is one of the curated well-known providers, or when it is
+/// not a provider this catalog ships with at all.
+///
+/// That last clause is what admits a provider registered at runtime through
+/// `POST /api/providers/{name}/url`, and it is a fact rather than a guess:
+/// `ModelCatalog::set_provider_url` is the only thing that puts an unrecognised
+/// id into a live catalog, so a non-builtin entry exists because someone added
+/// it. Without it the provider was invisible in both `/api/models` and
+/// `/api/providers` — `configured` reads `state.kernel.config`, the boot-time
+/// snapshot, which never learns about a provider added after start; the pushed
+/// entry carries `AuthStatus::Missing` and `detect_auth` only inspects the
+/// environment; and an operator's own id is not curated by definition. All three
+/// clauses were false at once, so the operator could not see what they had just
+/// registered.
+fn provider_is_visible(
+    p: &openfang_types::model_catalog::ProviderInfo,
+    configured: &std::collections::HashSet<String>,
+    builtin: &std::collections::HashSet<String>,
+) -> bool {
+    configured.contains(&p.id.to_lowercase())
+        || p.auth_status != openfang_types::model_catalog::AuthStatus::Missing
+        || CURATED_PROVIDER_IDS.contains(&p.id.as_str())
+        || !builtin.contains(&p.id.to_lowercase())
+}
+
+fn show_full_catalog(params: &HashMap<String, String>) -> bool {
+    params
+        .get("all")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false)
+}
+
+/// GET /api/models — List models from the focused catalog.
 ///
 /// Query parameters:
 /// - `provider` — filter by provider (e.g. `?provider=anthropic`)
 /// - `tier` — filter by tier (e.g. `?tier=smart`)
 /// - `available` — only show models from configured providers (`?available=true`)
+/// - `all` — include the full built-in catalog for diagnostics (`?all=true`)
+///
+/// Counter semantics, unchanged from before the catalog was focused: `total`
+/// and `available` count the whole catalog, not this response. The length of
+/// the returned list is reported separately as `shown` / `shown_available`.
 pub async fn list_models(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HashMap<String, String>>,
@@ -6533,11 +6620,25 @@ pub async fn list_models(
         .get("available")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
+    let include_all = show_full_catalog(&params);
+    let configured = configured_provider_ids(&state.kernel.config);
+    let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
 
     let models: Vec<serde_json::Value> = catalog
         .list_models()
         .iter()
         .filter(|m| {
+            if !include_all {
+                let visible = catalog
+                    .get_provider(&m.provider)
+                    .map(|p| provider_is_visible(p, &configured, &builtin))
+                    // A model whose provider is not in the catalog at all is a
+                    // custom entry; keep it rather than silently dropping it.
+                    .unwrap_or(true);
+                if !visible {
+                    return false;
+                }
+            }
             if let Some(ref p) = provider_filter {
                 if m.provider.to_lowercase() != *p {
                     return false;
@@ -6583,6 +6684,11 @@ pub async fn list_models(
 
     let total = catalog.list_models().len();
     let available_count = catalog.available_models().len();
+    let shown = models.len();
+    let shown_available = models
+        .iter()
+        .filter(|m| m.get("available").and_then(|v| v.as_bool()) == Some(true))
+        .count();
 
     (
         StatusCode::OK,
@@ -6590,6 +6696,8 @@ pub async fn list_models(
             "models": models,
             "total": total,
             "available": available_count,
+            "shown": shown,
+            "shown_available": shown_available,
         })),
     )
 }
@@ -6664,7 +6772,7 @@ pub async fn get_model(
     }
 }
 
-/// GET /api/providers — List all providers with auth status.
+/// GET /api/providers — List providers from the focused catalog with auth status.
 ///
 /// For local providers (ollama, vllm, lmstudio), also probes reachability and
 /// discovers available models via their health endpoints.
@@ -6672,14 +6780,30 @@ pub async fn get_model(
 /// Probes run **concurrently** and results are **cached for 60 seconds** so the
 /// endpoint responds instantly on repeated dashboard loads even when local
 /// providers are unreachable (fixes #474).
-pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let provider_list: Vec<openfang_types::model_catalog::ProviderInfo> = {
+///
+/// Pass `?all=true` to include the full built-in catalog for diagnostics.
+/// `total` counts the providers in this response, as it always has here;
+/// `catalog_total` counts the whole catalog.
+pub async fn list_providers(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let include_all = show_full_catalog(&params);
+    let configured = configured_provider_ids(&state.kernel.config);
+    let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
+    let (provider_list, catalog_total): (Vec<openfang_types::model_catalog::ProviderInfo>, usize) = {
         let catalog = state
             .kernel
             .model_catalog
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        catalog.list_providers().to_vec()
+        let all = catalog.list_providers();
+        let kept = all
+            .iter()
+            .filter(|p| include_all || provider_is_visible(p, &configured, &builtin))
+            .cloned()
+            .collect();
+        (kept, all.len())
     };
 
     // Collect local providers that need probing
@@ -6749,6 +6873,7 @@ pub async fn list_providers(State(state): State<Arc<AppState>>) -> impl IntoResp
         Json(serde_json::json!({
             "providers": providers,
             "total": total,
+            "catalog_total": catalog_total,
         })),
     )
 }
@@ -13307,5 +13432,209 @@ mod tests {
             a["openfang_llm_fallback_calls_total{agent=\"test-adv-mixed\",requested=\"adv-primary\",served=\"adv-fallback\"}"],
             1.0
         );
+    }
+
+    // ── Focused provider / model catalog ────────────────────────────────
+    //
+    // Each test below pins one defect that the imported version of this
+    // feature actually had, so a re-introduction fails here rather than in a
+    // dashboard nobody is watching.
+
+    fn test_provider(
+        id: &str,
+        auth_status: openfang_types::model_catalog::AuthStatus,
+    ) -> openfang_types::model_catalog::ProviderInfo {
+        openfang_types::model_catalog::ProviderInfo {
+            id: id.to_string(),
+            display_name: id.to_string(),
+            api_key_env: String::new(),
+            base_url: String::new(),
+            key_required: true,
+            auth_status,
+            model_count: 0,
+        }
+    }
+
+    /// Every curated id must name a provider that exists.
+    ///
+    /// The imported list carried "opencode", which is not in the builtin
+    /// catalog at all — written from intent rather than from the catalog. A
+    /// dead id is invisible in production: it simply never matches, so the
+    /// list silently means something narrower than it reads.
+    #[test]
+    fn curated_provider_ids_all_exist_in_catalog() {
+        let catalog = openfang_runtime::model_catalog::ModelCatalog::new();
+        let known: std::collections::HashSet<&str> = catalog
+            .list_providers()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect();
+        let unknown: Vec<&&str> = CURATED_PROVIDER_IDS
+            .iter()
+            .filter(|id| !known.contains(**id))
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "curated ids absent from the builtin catalog: {unknown:?}"
+        );
+    }
+
+    /// Local providers need no key, and `NotRequired` is not `Missing`.
+    ///
+    /// The imported filter admitted only curated ids and `Configured`, which
+    /// dropped a working local ollama/vllm/lmstudio out of both /api/providers
+    /// and /api/models.
+    #[test]
+    fn not_required_providers_stay_visible() {
+        let configured = std::collections::HashSet::new();
+        let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
+        for id in ["ollama", "vllm", "lmstudio", "lemonade"] {
+            let p = test_provider(id, openfang_types::model_catalog::AuthStatus::NotRequired);
+            assert!(
+                provider_is_visible(&p, &configured, &builtin),
+                "{id} needs no API key and must not be hidden"
+            );
+        }
+    }
+
+    /// A provider the operator registered at runtime through
+    /// `POST /api/providers/{name}/url` must stay visible.
+    ///
+    /// Nothing about it satisfies the other three clauses: `configured_provider_ids`
+    /// reads `state.kernel.config`, which is the boot-time snapshot and does not
+    /// learn about a provider added after start; `ModelCatalog::set_provider_url`
+    /// pushes the new entry with `AuthStatus::Missing`, and `detect_auth` only
+    /// inspects the environment, so in the ordinary order (URL first, key second)
+    /// the status stays `Missing`; and an operator's own id is not in the curated
+    /// list by definition.
+    ///
+    /// What makes it admissible is not a guess: a provider that is present in a
+    /// live catalog and is *not* one the catalog ships with can only be there
+    /// because someone put it there.
+    #[test]
+    fn runtime_registered_provider_stays_visible() {
+        let configured = std::collections::HashSet::new();
+        let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
+        // The id a `POST /api/providers/acme-proxy/url` would create.
+        let p = test_provider(
+            "acme-proxy",
+            openfang_types::model_catalog::AuthStatus::Missing,
+        );
+        assert!(
+            !builtin.contains("acme-proxy"),
+            "the fixture must not collide with a builtin provider"
+        );
+        assert!(
+            provider_is_visible(&p, &configured, &builtin),
+            "a provider registered at runtime is invisible in /api/models and \
+             /api/providers, so the operator cannot see what they just added"
+        );
+    }
+
+    /// A builtin provider with no key and no mention in the config stays hidden —
+    /// otherwise the clause above would readmit all 44 and undo the focusing.
+    #[test]
+    fn builtin_provider_without_a_key_stays_hidden() {
+        let configured = std::collections::HashSet::new();
+        let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
+        for id in ["deepseek", "groq", "mistral"] {
+            assert!(
+                builtin.contains(id),
+                "{id} must be a builtin for this test to mean anything"
+            );
+            let p = test_provider(id, openfang_types::model_catalog::AuthStatus::Missing);
+            assert!(
+                !provider_is_visible(&p, &configured, &builtin),
+                "{id} ships with the catalog, has no key and is not in the config, \
+                 so the focused list must not carry it"
+            );
+        }
+    }
+
+    /// A provider named in config.toml stays visible even when no key is
+    /// detected in the environment, because the key may be in the config file.
+    /// This is what makes the curated list a display choice rather than a
+    /// hardcoded claim about who is configured.
+    #[test]
+    fn config_named_provider_is_visible_even_when_auth_missing() {
+        let mut config = openfang_types::config::KernelConfig::default();
+        config.default_model.provider = "hyperfusion".to_string();
+        config.provider_urls.insert(
+            "y7router".to_string(),
+            "https://example.invalid/v1".to_string(),
+        );
+        config.provider_api_keys.insert(
+            "my-corp-proxy".to_string(),
+            "MY_CORP_PROXY_API_KEY".to_string(),
+        );
+        let configured = configured_provider_ids(&config);
+        let builtin = openfang_runtime::model_catalog::builtin_provider_ids();
+
+        // Deliberately not names a curated list would ever carry: the point
+        // is that visibility comes from the config, not from a list of ids
+        // someone typed. y7router and hyperfusion are themselves not builtin
+        // catalog providers — they exist only because config.toml adds them,
+        // which is precisely why hardcoding them would be the wrong fix.
+        for id in ["hyperfusion", "y7router", "my-corp-proxy"] {
+            let p = test_provider(id, openfang_types::model_catalog::AuthStatus::Missing);
+            assert!(
+                provider_is_visible(&p, &configured, &builtin),
+                "{id} is named in config.toml and must stay visible"
+            );
+        }
+
+        // An unconfigured, non-curated builtin is the noise this feature removes.
+        let noise = test_provider(
+            "sambanova",
+            openfang_types::model_catalog::AuthStatus::Missing,
+        );
+        assert!(!provider_is_visible(
+            &noise,
+            &configured,
+            &openfang_runtime::model_catalog::builtin_provider_ids()
+        ));
+    }
+
+    /// Config lookup is case-insensitive on both sides.
+    #[test]
+    fn configured_provider_ids_are_lowercased() {
+        let mut config = openfang_types::config::KernelConfig::default();
+        config.default_model.provider = "HyperFusion".to_string();
+        let configured = configured_provider_ids(&config);
+        assert!(configured.contains("hyperfusion"));
+        assert!(provider_is_visible(
+            &test_provider(
+                "hyperfusion",
+                openfang_types::model_catalog::AuthStatus::Missing
+            ),
+            &configured,
+            &openfang_runtime::model_catalog::builtin_provider_ids()
+        ));
+    }
+
+    /// An empty provider name in config must not admit everything.
+    ///
+    /// `KernelConfig::default()` leaves `default_model.provider` empty, and an
+    /// empty string inserted into the set would match a provider whose id is
+    /// empty — but more importantly it documents that blank is not "configured",
+    /// the same shape of defect as an empty api_key reading as set.
+    #[test]
+    fn blank_config_provider_is_not_configured() {
+        let mut config = openfang_types::config::KernelConfig::default();
+        config.default_model.provider = "   ".to_string();
+        assert!(configured_provider_ids(&config).is_empty());
+    }
+
+    /// `?all=true` is the documented diagnostic escape hatch.
+    #[test]
+    fn show_full_catalog_reads_all_param() {
+        let mut params = HashMap::new();
+        assert!(!show_full_catalog(&params));
+        params.insert("all".to_string(), "true".to_string());
+        assert!(show_full_catalog(&params));
+        params.insert("all".to_string(), "1".to_string());
+        assert!(show_full_catalog(&params));
+        params.insert("all".to_string(), "false".to_string());
+        assert!(!show_full_catalog(&params));
     }
 }

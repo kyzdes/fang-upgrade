@@ -1,0 +1,31 @@
+# Override for a single-host install. Two upstream defaults are unsafe on a public box.
+#
+# Both claims below are checkable rather than taken on trust, and the check is one
+# command — it parses the merge without building or starting anything:
+#
+#   docker compose config
+#
+# Expected: `environment` contains OPENFANG_LISTEN and nothing else, and the single
+# published port carries `host_ip: 127.0.0.1`. Drop either `!override` tag and the
+# same command shows what is actually at stake: the seven empty-but-present provider
+# keys come back, and upstream's 0.0.0.0 publication reappears NEXT TO the loopback
+# one rather than being replaced. Measured with Docker Compose v5.4.0. `!override` is
+# not understood by every Compose version, and no version floor is stated here
+# because none was tested — run the command above on yours and read the output.
+services:
+  openfang:
+    # Upstream declares ANTHROPIC_API_KEY, OPENAI_API_KEY and friends as empty-but-present.
+    # OpenFang reads "present" as "configured": on empty strings it boots claiming an
+    # anthropic provider and auto-enables the OpenAI embedding driver, which sends text
+    # off the machine. Replacing the block instead of extending it is the point.
+    environment: !override
+      # The default 127.0.0.1:50051 is unreachable through a published port from inside
+      # the container; it has to match what we publish.
+      OPENFANG_LISTEN: "0.0.0.0:4200"
+    # Replaces upstream's "4200:4200", which publishes on 0.0.0.0 — and Docker's port
+    # publishing bypasses UFW, so a deny rule will not save you. Add your own private
+    # interface here (a tailnet address, for instance) if you need remote access.
+    ports: !override
+      - "127.0.0.1:4200:4200"
+    env_file:
+      - .env
