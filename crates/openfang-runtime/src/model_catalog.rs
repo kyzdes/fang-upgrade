@@ -586,6 +586,20 @@ pub fn read_codex_credential() -> Option<String> {
 // Builtin data
 // ---------------------------------------------------------------------------
 
+/// Ids of the providers the catalog ships with.
+///
+/// A provider present in a live catalog that is not in this set was put there by
+/// the operator: [`ModelCatalog::set_provider_url`] pushes a new entry for an id
+/// it does not recognise. That is the only way for one to appear, so the set is
+/// what lets a caller tell "we shipped this" from "someone added this" without
+/// guessing from display names or reading the boot-time config.
+pub fn builtin_provider_ids() -> std::collections::HashSet<String> {
+    builtin_providers()
+        .into_iter()
+        .map(|p| p.id.to_lowercase())
+        .collect()
+}
+
 fn builtin_providers() -> Vec<ProviderInfo> {
     vec![
         ProviderInfo {
