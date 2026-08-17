@@ -22,7 +22,12 @@ version = "0.6.9"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/RightNow-AI/openfang"
-rust-version = "1.75"
+# Measured, not inherited: with this Cargo.lock, `cargo check -p openfang-api
+# -p openfang-memory -p openfang-runtime` under RUSTUP_TOOLCHAIN=1.88.0 fails
+# with "cranelift-assembler-x64@0.130.2 requires rustc 1.91.0" (and the same for
+# a dozen more cranelift crates pulled in by wasmtime). The declared 1.75 was
+# false. Raising this makes cargo say so up front instead of failing mid-build.
+rust-version = "1.91"
 
 [workspace.dependencies]
 # Async runtime
