@@ -53,6 +53,7 @@ async fn start_test_server() -> TestServer {
 
     let state = Arc::new(AppState {
         kernel,
+        passkey_auth: None,
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),

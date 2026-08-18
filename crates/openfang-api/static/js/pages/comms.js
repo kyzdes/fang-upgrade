@@ -40,7 +40,6 @@ function commsPage() {
       if (this.sseSource) this.sseSource.close();
       var self = this;
       var url = '/api/comms/events/stream';
-      if (OpenFangAPI.apiKey) url += '?token=' + encodeURIComponent(OpenFangAPI.apiKey);
       this.sseSource = new EventSource(url);
       this.sseSource.onmessage = function(ev) {
         if (ev.data === 'ping') return;
