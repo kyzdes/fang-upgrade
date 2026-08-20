@@ -1459,8 +1459,11 @@ pub async fn version() -> impl IntoResponse {
     Json(serde_json::json!({
         "name": "openfang",
         "version": env!("CARGO_PKG_VERSION"),
-        "build_date": option_env!("BUILD_DATE").unwrap_or("dev"),
-        "git_sha": option_env!("GIT_SHA").unwrap_or("unknown"),
+        "build_date": option_env!("BUILD_DATE").filter(|s| !s.is_empty()).unwrap_or("dev"),
+        "git_sha": option_env!("GIT_SHA").filter(|s| !s.is_empty()).unwrap_or("unknown"),
+        // Тег, а не только SHA: по нему видно, что за сборка, без похода в git.
+        // Пусто → "unknown", потому что пустая строка из --build-arg это не ответ.
+        "git_describe": option_env!("GIT_DESCRIBE").filter(|s| !s.is_empty()).unwrap_or("unknown"),
         "rust_version": option_env!("RUSTC_VERSION").unwrap_or("unknown"),
         "platform": std::env::consts::OS,
         "arch": std::env::consts::ARCH,

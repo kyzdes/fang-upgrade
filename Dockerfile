@@ -13,6 +13,24 @@ ARG LTO=true
 ARG CODEGEN_UNITS=1
 ENV CARGO_PROFILE_RELEASE_LTO=${LTO} \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=${CODEGEN_UNITS}
+
+# Кто эта сборка. Без этих трёх `/api/version` отдаёт
+# {"version":"0.6.9","git_sha":"unknown","build_date":"dev"} — то же, что ваниль,
+# то есть по API отличить форк от стока нельзя вообще. Проверено на живом проде.
+#
+# Передавать так:
+#   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+#                --build-arg GIT_DESCRIBE=$(git describe --tags --always --dirty) \
+#                --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+#
+# Пустые значения оставлены допустимыми намеренно: сборка без них не должна падать,
+# но и врать не будет — `/api/version` покажет "unknown", как и раньше.
+ARG GIT_SHA=""
+ARG GIT_DESCRIBE=""
+ARG BUILD_DATE=""
+ENV GIT_SHA=${GIT_SHA} \
+    GIT_DESCRIBE=${GIT_DESCRIBE} \
+    BUILD_DATE=${BUILD_DATE}
 # Cache the registry, the git checkouts and target/ across builds. Without this a
 # one-line change recompiles all 13 crates from scratch: ~9 minutes on 4 cores,
 # which is the whole cost of iterating on a patch.
