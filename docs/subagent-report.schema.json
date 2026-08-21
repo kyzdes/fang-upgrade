@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kyzdes/openfang/blob/main/docs/subagent-report.schema.json",
+  "title": "Отчёт сабагента форка ours",
+  "description": "Схема ответа сабагента. Существует потому, что правило, которое можно нарушить молча, — не правило: ofmutate был объявлен обязательным в трёх местах и за спринты 1-5 не вызван ни разу. Здесь каждое требование приёмки — обязательное поле, а не абзац. Поля gate и mutate принимают ДОСЛОВНЫЙ вывод инструмента: пересказ отклоняется по форме (у ofgate в закрывающей строке стоит sha256 блока).",
+  "type": "object",
+  "required": [
+    "worktree",
+    "branch",
+    "head",
+    "base",
+    "model",
+    "gate",
+    "mutate",
+    "red_before_green",
+    "findings",
+    "cleanup",
+    "unverified",
+    "claims_without_proof"
+  ],
+  "properties": {
+    "worktree": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Абсолютный путь рабочего дерева, в котором шла работа."
+    },
+    "branch": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "Ветка."
+    },
+    "head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{7,40}$",
+      "description": "git rev-parse HEAD на момент отчёта."
+    },
+    "base": {
+      "$ref": "#/$defs/nonEmptyString",
+      "description": "База, от которой ветвились (обычно ours == main)."
+    },
+    "model": {
+      "enum": ["haiku", "sonnet", "opus"],
+      "description": "Модель, на которой шёл агент. Задаётся ведущим по таблице в docs/subagent-task-template.md, а не выбирается в моменте: спринт 5 шёл 14 агентами из 14 на opus."
+    },
+    "effort": {
+      "enum": ["low", "medium", "high"],
+      "description": "Уровень усилия, если задан ведущим. В спринтах 4-5 не задавался ни разу."
+    },
+    "gate": {
+      "description": "Блок вердикта ofgate ДОСЛОВНО, от строки '=== OFGATE VERDICT ===' до строки '=== END OFGATE VERDICT run=... body-sha256=... ==='. Закрывающая строка несёт sha256 блока, а каждая строка шага — размер и sha256 своего лога, поэтому написанный по памяти блок не воспроизводится и отклоняется здесь же. Если ofgate отказался (код 2 — передний план, код 3 — диск), сюда идёт объект с его собственным выводом: отказ инструмента не то же самое, что ненайденный прогон.",
+      "oneOf": [
+        {
+          "type": "string",
+          "pattern": "=== OFGATE VERDICT ===[\\s\\S]*?\\nresult +: (GREEN|RED)[\\s\\S]*?\\nexit +: [01][ \\t]*\\n=== END OFGATE VERDICT run=\\S+ body-sha256=[0-9a-f]{32} ==="
+        },
+        {
+          "type": "object",
+          "required": ["status", "exit_code", "output"],
+          "additionalProperties": false,
+          "properties": {
+            "status": { "const": "refused" },
+            "exit_code": {
+              "enum": [2, 3],
+              "description": "2 — отказ идти на переднем плане, 3 — отказ по свободному месту. Оба — отказ ИНСТРУМЕНТА, не дефект дерева."
+            },
+            "output": {
+              "type": "string",
+              "pattern": "ofgate:",
+              "description": "Вывод отказа дословно — он начинается с 'ofgate:'."
+            }
+          }
+        }
+      ]
+    },
+    "mutate": {
+      "description": "Вывод ofmutate ДОСЛОВНО (он начинается со строки '# worktree ...' и содержит '# HEAD <sha>'), либо объект с явной причиной неприменимости. Молчание о нём читается как его отсутствие: за пять спринтов тавтология прошла приёмку 10 раз, а ofmutate не был вызван ни разу.",
+      "oneOf": [
+        {
+          "type": "string",
+          "allOf": [
+            { "pattern": "# HEAD [0-9a-f]{7,}" },
+            { "pattern": "ДОКАЗАНО \\(RED-ASSERT\\)|СЛАБОЕ КРАСНОЕ \\(RED-COMPILE\\)|ТАВТОЛОГИЯ|НЕЯСНО|ОТКАЗ:|ДЕРЕВО НЕ ВОССТАНОВЛЕНО" }
+          ]
+        },
+        {
+          "type": "object",
+          "required": ["not_applicable"],
+          "additionalProperties": false,
+          "properties": {
+            "not_applicable": {
+              "type": "string",
+              "minLength": 20,
+              "description": "Причина неприменимости: патч без тестов, правка только CI или документации, отказ инструмента до прогона. Причина, а не 'не применимо'."
+            }
+          }
+        }
+      ]
+    },
+    "red_before_green": {
+      "description": "Вывод падения ДО правки. Тест, проходящий только после правки, без записи о падении не доказывает ничего; записью считается вывод прогона, а не утверждение, что прогон был.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["command", "output"],
+          "additionalProperties": false,
+          "properties": {
+            "command": { "$ref": "#/$defs/nonEmptyString" },
+            "output": {
+              "type": "string",
+              "minLength": 20,
+              "description": "Вывод падения дословно (хвоста достаточно)."
+            },
+            "exit_code": { "type": "integer" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["not_applicable"],
+          "additionalProperties": false,
+          "properties": {
+            "not_applicable": { "type": "string", "minLength": 20 }
+          }
+        }
+      ]
+    },
+    "claims": {
+      "type": "array",
+      "description": "Карта «утверждение → прогон»: для каждой фразы, добавленной в код, докстринг, документ или отчёт, — прогон, который её доказывает. Утверждение, называющее три поверхности, требует трёх прогонов.",
+      "items": {
+        "type": "object",
+        "required": ["claim", "proof_command", "proof_output"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": { "$ref": "#/$defs/nonEmptyString" },
+          "proof_command": { "$ref": "#/$defs/nonEmptyString" },
+          "proof_output": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "claims_without_proof": {
+      "type": "array",
+      "description": "Фразы, добавленные в код, докстринг или документ и НЕ подкреплённые прогоном. Такие фразы удаляются; если оставлены — перечислить здесь. Пустой массив — заявление, что таких фраз нет.",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "findings": {
+      "type": "array",
+      "description": "Расхождения формулировки задачи и документов с живой системой, найденные по ходу. Источник правды — код и живая система; расхождение возвращается в ответе, а не подгоняется молча.",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "tried_and_rejected": {
+      "type": "array",
+      "description": "Что пробовал и отверг, с причиной.",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "cleanup": {
+      "type": "object",
+      "description": "Уборка за собой. Контейнеры и тома называются с личным префиксом агента: за период агенты дважды находили чужие контейнеры и считали их находкой, и осталось 117 томов на 30 ГБ.",
+      "required": ["prefix", "containers", "volumes", "worktree_left"],
+      "additionalProperties": false,
+      "properties": {
+        "prefix": {
+          "$ref": "#/$defs/nonEmptyString",
+          "description": "Личный префикс, которым назывались контейнеры и тома этого агента."
+        },
+        "containers": {
+          "type": "array",
+          "description": "Созданные контейнеры и что с ними стало.",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "volumes": {
+          "type": "array",
+          "description": "Созданные тома и что с ними стало.",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "worktree_left": {
+          "type": "boolean",
+          "description": "Остался ли worktree на диске."
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "unverified": {
+      "type": "array",
+      "description": "Чего НЕ проверял — прямым списком. Самый ценный пункт приёмки и самый часто пропускаемый. Пустой список требует поля unverified_empty_because.",
+      "items": { "$ref": "#/$defs/nonEmptyString" }
+    },
+    "unverified_empty_because": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Обязателен, если unverified пуст: чем именно доказано, что проверено буквально всё."
+    },
+    "loop_rule_9": {
+      "type": "object",
+      "description": "Правило 9: три круга с одним классом дефекта — это решение о подходе, а не четвёртый круг. Заполняется, если агент остановился по нему.",
+      "required": ["defect_class", "options"],
+      "additionalProperties": false,
+      "properties": {
+        "defect_class": { "$ref": "#/$defs/nonEmptyString" },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "done": {
+      "type": "boolean",
+      "description": "Выполнено ли задание целиком."
+    },
+    "summary": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["unverified"],
+        "properties": { "unverified": { "maxItems": 0 } }
+      },
+      "then": { "required": ["unverified_empty_because"] }
+    }
+  ],
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 }
+  }
+}
