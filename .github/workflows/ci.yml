@@ -1,10 +1,21 @@
 name: CI
 
+# This is upstream's workflow. It used to be harmless to leave triggered on `main`
+# because `main` was a mirror we never pushed to. Sprint 4 renamed `ours` → `main`
+# (they are now literally the same commit, see fork-ci.yml), which made this
+# workflow start running for real on every push to our actual trunk — the three-OS
+# matrix, `cargo audit` against advisories in deps nobody here has touched, and
+# install-smoke against upstream's own openfang.sh endpoint, none of which sprint 4
+# decided to run for this fork (see fork-ci.yml's header for why). Scoping the
+# trigger to a branch nothing pushes to keeps the file intact — and runnable by hand
+# via workflow_dispatch — for the day this fork actually syncs with upstream, without
+# it firing on our own commits in the meantime.
 on:
   push:
-    branches: [main]
+    branches: [upstream-sync-only]
   pull_request:
-    branches: [main]
+    branches: [upstream-sync-only]
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
