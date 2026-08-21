@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kyzdes/openfang/blob/main/docs/subagent-report.schema.json",
   "title": "Отчёт сабагента форка ours",
-  "description": "Схема ответа сабагента. Существует потому, что правило, которое можно нарушить молча, — не правило: ofmutate был объявлен обязательным в трёх местах и за спринты 1-5 не вызван ни разу. Здесь каждое требование приёмки — обязательное поле, а не абзац. Поля gate и mutate принимают ДОСЛОВНЫЙ вывод инструмента: пересказ отклоняется по форме (у ofgate в закрывающей строке стоит sha256 блока).",
+  "description": "Схема ответа сабагента. Существует потому, что правило, которое можно нарушить молча, — не правило: ofmutate был объявлен обязательным в трёх местах и за спринты 1-5 не вызван ни разу. Здесь каждое требование приёмки — обязательное поле, а не абзац. ЧТО СХЕМА ДЕЛАЕТ: форма (вывод инструмента разобран по строкам, которые инструмент действительно печатает), полнота (список required совпадает с блоком D шаблона, это сверяется прогоном) и непротиворечивость (отчёт, который сам себя объявляет негодным, не может при этом стоять с done:true). ЧЕГО СХЕМА НЕ ДЕЛАЕТ: она НЕ проверяет подлинность вывода. Блок ofgate воспроизводится по образцу за минуту, ключа и секрета у схемы нет, sha256 в закрывающей строке она сверить не с чем — тело блока это и есть весь её вход. Подлинность доказывается перезапуском гейта (ofverify), а не чтением отчёта.",
   "type": "object",
   "required": [
     "worktree",
@@ -10,21 +10,28 @@
     "head",
     "base",
     "model",
+    "effort",
     "gate",
     "mutate",
     "red_before_green",
+    "claims",
+    "claims_without_proof",
     "findings",
+    "tried_and_rejected",
     "cleanup",
     "unverified",
-    "claims_without_proof"
+    "done",
+    "summary"
   ],
   "properties": {
     "worktree": {
-      "$ref": "#/$defs/nonEmptyString",
+      "type": "string",
+      "minLength": 2,
+      "pattern": "^/\\S",
       "description": "Абсолютный путь рабочего дерева, в котором шла работа."
     },
     "branch": {
-      "$ref": "#/$defs/nonEmptyString",
+      "$ref": "#/$defs/nonBlankString",
       "description": "Ветка."
     },
     "head": {
@@ -33,7 +40,7 @@
       "description": "git rev-parse HEAD на момент отчёта."
     },
     "base": {
-      "$ref": "#/$defs/nonEmptyString",
+      "$ref": "#/$defs/nonBlankString",
       "description": "База, от которой ветвились (обычно ours == main)."
     },
     "model": {
@@ -42,113 +49,92 @@
     },
     "effort": {
       "enum": ["low", "medium", "high"],
-      "description": "Уровень усилия, если задан ведущим. В спринтах 4-5 не задавался ни разу."
+      "description": "Уровень усилия, заданный ведущим по той же таблице. Обязателен: в спринтах 4-5 не задавался ни разу, и отсутствие поля было тем механизмом, которым он терялся."
     },
     "gate": {
-      "description": "Блок вердикта ofgate ДОСЛОВНО, от строки '=== OFGATE VERDICT ===' до строки '=== END OFGATE VERDICT run=... body-sha256=... ==='. Закрывающая строка несёт sha256 блока, а каждая строка шага — размер и sha256 своего лога, поэтому написанный по памяти блок не воспроизводится и отклоняется здесь же. Если ofgate отказался (код 2 — передний план, код 3 — диск), сюда идёт объект с его собственным выводом: отказ инструмента не то же самое, что ненайденный прогон.",
-      "oneOf": [
-        {
-          "type": "string",
-          "pattern": "=== OFGATE VERDICT ===[\\s\\S]*?\\nresult +: (GREEN|RED)[\\s\\S]*?\\nexit +: [01][ \\t]*\\n=== END OFGATE VERDICT run=\\S+ body-sha256=[0-9a-f]{32} ==="
-        },
-        {
-          "type": "object",
-          "required": ["status", "exit_code", "output"],
-          "additionalProperties": false,
-          "properties": {
-            "status": { "const": "refused" },
-            "exit_code": {
-              "enum": [2, 3],
-              "description": "2 — отказ идти на переднем плане, 3 — отказ по свободному месту. Оба — отказ ИНСТРУМЕНТА, не дефект дерева."
-            },
-            "output": {
-              "type": "string",
-              "pattern": "ofgate:",
-              "description": "Вывод отказа дословно — он начинается с 'ofgate:'."
-            }
-          }
-        }
-      ]
+      "description": "Блок вердикта ofgate ДОСЛОВНО, от строки '=== OFGATE VERDICT ===' до строки '=== END OFGATE VERDICT run=... body-sha256=... ==='. Схема разбирает блок по строкам, которые ofgate действительно печатает (worktree, commit, image, toolchain, target-vol, checks, started, logs, строки шагов с размером и sha256 лога, result, elapsed, exit, закрывающая строка), и отклоняет пересказ и огрызок из четырёх строк ПО ФОРМЕ. Подлинность блока схема не проверяет и проверить не может — для этого гейт перезапускается (ofverify). Если ofgate отказался (код 2 — передний план, код 3 — диск), сюда идёт объект с его собственным выводом: отказ инструмента не то же самое, что непроведённый прогон.",
+      "if": { "type": "object" },
+      "then": { "$ref": "#/$defs/gateRefused" },
+      "else": { "$ref": "#/$defs/gateVerdict" }
     },
     "mutate": {
-      "description": "Вывод ofmutate ДОСЛОВНО (он начинается со строки '# worktree ...' и содержит '# HEAD <sha>'), либо объект с явной причиной неприменимости. Молчание о нём читается как его отсутствие: за пять спринтов тавтология прошла приёмку 10 раз, а ofmutate не был вызван ни разу.",
-      "oneOf": [
-        {
-          "type": "string",
-          "allOf": [
-            { "pattern": "# HEAD [0-9a-f]{7,}" },
-            { "pattern": "ДОКАЗАНО \\(RED-ASSERT\\)|СЛАБОЕ КРАСНОЕ \\(RED-COMPILE\\)|ТАВТОЛОГИЯ|НЕЯСНО|ОТКАЗ:|ДЕРЕВО НЕ ВОССТАНОВЛЕНО" }
-          ]
-        },
-        {
-          "type": "object",
-          "required": ["not_applicable"],
-          "additionalProperties": false,
-          "properties": {
-            "not_applicable": {
-              "type": "string",
-              "minLength": 20,
-              "description": "Причина неприменимости: патч без тестов, правка только CI или документации, отказ инструмента до прогона. Причина, а не 'не применимо'."
-            }
-          }
-        }
-      ]
+      "description": "Вывод ofmutate ДОСЛОВНО либо объект с явной причиной неприменимости. Схема разбирает вывод по строкам, которые ofmutate печатает: '# worktree <путь>', '# HEAD <sha>', '# ханков: N продакшн, M тестовых', шаг '[1/2] как есть' со строкой 'как есть: <вердикт> passed=N failed=M' и слово вердикта. Молчание о нём читается как его отсутствие: за пять спринтов тавтология прошла приёмку 10 раз, а ofmutate не был вызван ни разу.",
+      "if": { "type": "object" },
+      "then": { "$ref": "#/$defs/notApplicable" },
+      "else": { "$ref": "#/$defs/mutateOutput" }
     },
     "red_before_green": {
-      "description": "Вывод падения ДО правки. Тест, проходящий только после правки, без записи о падении не доказывает ничего; записью считается вывод прогона, а не утверждение, что прогон был.",
-      "oneOf": [
-        {
-          "type": "object",
-          "required": ["command", "output"],
-          "additionalProperties": false,
-          "properties": {
-            "command": { "$ref": "#/$defs/nonEmptyString" },
-            "output": {
-              "type": "string",
-              "minLength": 20,
-              "description": "Вывод падения дословно (хвоста достаточно)."
-            },
-            "exit_code": { "type": "integer" }
-          }
-        },
-        {
-          "type": "object",
-          "required": ["not_applicable"],
-          "additionalProperties": false,
-          "properties": {
-            "not_applicable": { "type": "string", "minLength": 20 }
-          }
+      "description": "Вывод падения ДО правки. Тест, проходящий только после правки, без записи о падении не доказывает ничего; записью считается вывод прогона, а не утверждение, что прогон был. Вывод прогона многострочен — однострочная строка здесь отклоняется.",
+      "if": { "required": ["not_applicable"] },
+      "then": { "$ref": "#/$defs/notApplicableRed" },
+      "else": {
+        "type": "object",
+        "required": ["command", "output"],
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 8,
+            "allOf": [
+              { "$ref": "#/$defs/notTrivialCommand" },
+              { "pattern": "\\S" }
+            ],
+            "description": "Команда, которой получено падение. Не 'true', не 'echo'."
+          },
+          "output": {
+            "type": "string",
+            "minLength": 20,
+            "allOf": [
+              { "pattern": "\\n" },
+              { "$ref": "#/$defs/notOneCharRepeat" }
+            ],
+            "description": "Вывод падения дословно (хвоста достаточно). Обязан содержать перевод строки: вывод прогона многострочен, однострочная фраза — это пересказ."
+          },
+          "exit_code": { "type": "integer" }
         }
-      ]
+      }
     },
     "claims": {
       "type": "array",
-      "description": "Карта «утверждение → прогон»: для каждой фразы, добавленной в код, докстринг, документ или отчёт, — прогон, который её доказывает. Утверждение, называющее три поверхности, требует трёх прогонов.",
+      "description": "Карта «утверждение → прогон»: для каждой фразы, добавленной в код, докстринг, документ или отчёт, — прогон, который её доказывает. Утверждение, называющее три поверхности, требует трёх прогонов. Пустой массив — заявление, что ни одной новой фразы не добавлено.",
       "items": {
         "type": "object",
         "required": ["claim", "proof_command", "proof_output"],
         "additionalProperties": false,
         "properties": {
-          "claim": { "$ref": "#/$defs/nonEmptyString" },
-          "proof_command": { "$ref": "#/$defs/nonEmptyString" },
-          "proof_output": { "$ref": "#/$defs/nonEmptyString" }
+          "claim": { "$ref": "#/$defs/phrase" },
+          "proof_command": {
+            "type": "string",
+            "minLength": 8,
+            "allOf": [{ "$ref": "#/$defs/notTrivialCommand" }],
+            "description": "Команда, доказывающая фразу. `true`, `:`, `echo` и подобные ничего не доказывают и отклоняются: команда, которая не может не пройти, — это тавтология в другой форме."
+          },
+          "proof_output": {
+            "type": "string",
+            "minLength": 12,
+            "allOf": [
+              { "pattern": "\\S+\\s+\\S+" },
+              { "$ref": "#/$defs/notOneCharRepeat" }
+            ],
+            "description": "Вывод этой команды. 'ок' и 'ага' выводом прогона не являются."
+          }
         }
       }
     },
     "claims_without_proof": {
       "type": "array",
-      "description": "Фразы, добавленные в код, докстринг или документ и НЕ подкреплённые прогоном. Такие фразы удаляются; если оставлены — перечислить здесь. Пустой массив — заявление, что таких фраз нет.",
-      "items": { "$ref": "#/$defs/nonEmptyString" }
+      "description": "Фразы, добавленные в код, докстринг или документ и НЕ подкреплённые прогоном. Их место — удаление; если оставлены, они перечисляются здесь. Непустой список несовместим с done:true: правило «нет прогона — нет фразы» либо действует, либо его нет. Пустой массив — заявление, что таких фраз нет.",
+      "items": { "$ref": "#/$defs/phrase" }
     },
     "findings": {
       "type": "array",
       "description": "Расхождения формулировки задачи и документов с живой системой, найденные по ходу. Источник правды — код и живая система; расхождение возвращается в ответе, а не подгоняется молча.",
-      "items": { "$ref": "#/$defs/nonEmptyString" }
+      "items": { "$ref": "#/$defs/phrase" }
     },
     "tried_and_rejected": {
       "type": "array",
-      "description": "Что пробовал и отверг, с причиной.",
-      "items": { "$ref": "#/$defs/nonEmptyString" }
+      "description": "Что пробовал и отверг, с причиной. Обязательное поле: путь, который агент прошёл и забраковал, ведущий иначе пройдёт заново. Пустой массив — явное заявление, что альтернатив не рассматривалось.",
+      "items": { "$ref": "#/$defs/phrase" }
     },
     "cleanup": {
       "type": "object",
@@ -157,18 +143,18 @@
       "additionalProperties": false,
       "properties": {
         "prefix": {
-          "$ref": "#/$defs/nonEmptyString",
+          "$ref": "#/$defs/nonBlankString",
           "description": "Личный префикс, которым назывались контейнеры и тома этого агента."
         },
         "containers": {
           "type": "array",
           "description": "Созданные контейнеры и что с ними стало.",
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": { "$ref": "#/$defs/nonBlankString" }
         },
         "volumes": {
           "type": "array",
           "description": "Созданные тома и что с ними стало.",
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": { "$ref": "#/$defs/nonBlankString" }
         },
         "worktree_left": {
           "type": "boolean",
@@ -179,12 +165,11 @@
     },
     "unverified": {
       "type": "array",
-      "description": "Чего НЕ проверял — прямым списком. Самый ценный пункт приёмки и самый часто пропускаемый. Пустой список требует поля unverified_empty_because.",
-      "items": { "$ref": "#/$defs/nonEmptyString" }
+      "description": "Чего НЕ проверял — прямым списком. Самый ценный пункт приёмки и самый часто пропускаемый. Пустой список требует поля unverified_empty_because, а при отказавшем ofgate пустым быть не может вовсе: отказ гейта и есть непроверенное.",
+      "items": { "$ref": "#/$defs/phrase" }
     },
     "unverified_empty_because": {
-      "type": "string",
-      "minLength": 20,
+      "$ref": "#/$defs/explanation",
       "description": "Обязателен, если unverified пуст: чем именно доказано, что проверено буквально всё."
     },
     "loop_rule_9": {
@@ -193,30 +178,246 @@
       "required": ["defect_class", "options"],
       "additionalProperties": false,
       "properties": {
-        "defect_class": { "$ref": "#/$defs/nonEmptyString" },
+        "defect_class": { "$ref": "#/$defs/phrase" },
         "options": {
           "type": "array",
           "minItems": 2,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": { "$ref": "#/$defs/phrase" }
         }
       }
     },
     "done": {
       "type": "boolean",
-      "description": "Выполнено ли задание целиком."
+      "description": "Выполнено ли задание целиком. Обязательное поле, и оно связано с остальными: done:true несовместим с красным гейтом, с вердиктом ТАВТОЛОГИЯ или отказом ofmutate и с непустым claims_without_proof. Отчёт, который сам себя объявляет негодным, не может при этом объявить себя выполненным."
     },
-    "summary": { "type": "string" }
+    "summary": {
+      "$ref": "#/$defs/explanation",
+      "description": "Итог первой строкой: что сделано и чем это доказано."
+    }
   },
   "allOf": [
     {
+      "$comment": "Пустой unverified требует явного объяснения.",
       "if": {
         "required": ["unverified"],
         "properties": { "unverified": { "maxItems": 0 } }
       },
       "then": { "required": ["unverified_empty_because"] }
+    },
+    {
+      "$comment": "МЕЖПОЛЕВОЕ 1: done:true несовместим с красным гейтом. Атака «gate = RED (exit 1) + done:true».",
+      "if": {
+        "required": ["done"],
+        "properties": { "done": { "const": true } }
+      },
+      "then": {
+        "properties": {
+          "gate": {
+            "not": {
+              "anyOf": [
+                { "type": "string", "pattern": "\\nresult +: RED" },
+                { "type": "string", "pattern": "\\nexit +: [1-9]" },
+                { "type": "string", "pattern": "\\n--- [a-zA-Z]+ : RED" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "МЕЖПОЛЕВОЕ 2: done:true несовместим с вердиктом ТАВТОЛОГИЯ, ОТКАЗ, passed=0, НЕЯСНО и невосстановленным деревом. Тавтология — самая частая ошибка периода (10 раз за пять спринтов).",
+      "if": {
+        "required": ["done"],
+        "properties": { "done": { "const": true } }
+      },
+      "then": {
+        "properties": {
+          "mutate": {
+            "not": {
+              "anyOf": [
+                { "type": "string", "pattern": "ТАВТОЛОГИЯ" },
+                { "type": "string", "pattern": "ДЕРЕВО НЕ ВОССТАНОВЛЕНО" },
+                { "type": "string", "pattern": "НЕЯСНО \\(" },
+                { "type": "string", "pattern": "ОТКАЗ:" },
+                { "type": "string", "pattern": "passed=0\\)" },
+                { "type": "string", "pattern": "как есть: \\S+ +passed=0" }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "МЕЖПОЛЕВОЕ 3: done:true несовместим с непустым claims_without_proof. «Нет прогона — нет фразы» либо действует, либо его нет.",
+      "if": {
+        "required": ["done"],
+        "properties": { "done": { "const": true } }
+      },
+      "then": {
+        "properties": { "claims_without_proof": { "maxItems": 0 } }
+      }
+    },
+    {
+      "$comment": "МЕЖПОЛЕВОЕ 4: если ofmutate реально прогнан (mutate — строка), то красное ДО правки записано, и red_before_green не может быть not_applicable. Прогон, доказавший красное, и есть эта запись.",
+      "if": {
+        "required": ["mutate"],
+        "properties": { "mutate": { "type": "string" } }
+      },
+      "then": {
+        "properties": {
+          "red_before_green": { "required": ["command", "output"] }
+        }
+      }
+    },
+    {
+      "$comment": "МЕЖПОЛЕВОЕ 5: отказ ofgate (код 2 или 3) означает, что проверки CI не прогонялись. Это непроверенное по определению, поэтому unverified не может быть пустым.",
+      "if": {
+        "required": ["gate"],
+        "properties": {
+          "gate": { "type": "object", "required": ["status"] }
+        }
+      },
+      "then": {
+        "properties": { "unverified": { "minItems": 1 } }
+      }
     }
   ],
   "$defs": {
-    "nonEmptyString": { "type": "string", "minLength": 1 }
+    "nonBlankString": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "$comment": "minLength 1 пропускал строку из одного пробела; pattern \\S её отклоняет."
+    },
+    "notOneCharRepeat": {
+      "not": { "pattern": "^(.)\\1*$" },
+      "$comment": "Отклоняет строку из одного повторённого знака — 'ааааааааааааааааааaa'. Обратная ссылка \\1 поддерживается и в python re, и в ECMA-262."
+    },
+    "notTrivialCommand": {
+      "not": {
+        "pattern": "^\\s*(true|false|:|exit\\b|echo\\b|printf\\b|yes\\b|/bin/true\\b|/bin/echo\\b)"
+      },
+      "$comment": "Команда, которая не может вернуть ненулевой код или не читает систему, ничего не доказывает."
+    },
+    "phrase": {
+      "type": "string",
+      "minLength": 8,
+      "allOf": [
+        { "pattern": "\\S+\\s+\\S+" },
+        { "$ref": "#/$defs/notOneCharRepeat" }
+      ],
+      "$comment": "Пункт списка: не пробел, не одно слово, не повтор одной буквы. Минимум два слова."
+    },
+    "explanation": {
+      "type": "string",
+      "minLength": 20,
+      "allOf": [
+        { "pattern": "\\S+\\s+\\S+\\s+\\S+" },
+        { "$ref": "#/$defs/notOneCharRepeat" }
+      ],
+      "$comment": "Причина или итог: минимум три слова и двадцать знаков. Отписка из одной буквы не проходит."
+    },
+    "notApplicable": {
+      "type": "object",
+      "required": ["not_applicable"],
+      "additionalProperties": false,
+      "properties": {
+        "not_applicable": {
+          "$ref": "#/$defs/explanation",
+          "description": "Причина неприменимости: патч без тестов, правка только CI или документации, отказ инструмента до прогона. Причина, а не 'не применимо'."
+        }
+      }
+    },
+    "notApplicableRed": {
+      "type": "object",
+      "required": ["not_applicable"],
+      "additionalProperties": false,
+      "properties": {
+        "not_applicable": {
+          "allOf": [
+            { "$ref": "#/$defs/explanation" },
+            {
+              "not": {
+                "pattern": "[Кк]расн[а-яё]*\\s+(не\\s+было|вовсе)|не\\s+было\\s+[Кк]расн|[Кк]расн[а-яё]*\\s+не\\s+(зап|дела|прогон|получ)|[Пп]рогон[а-яё]*\\s+не\\s+(было|дела|запус|прогон)|не\\s+(запускал|прогонял|проверял|мерил)|сразу\\s+зелён|[Тт]ест\\s+сразу"
+              },
+              "$comment": "Самоотрицание: причина неприменимости, которая говорит «красного не было вовсе», — это не причина, а признание. Перечисленные обороты отклоняются поимённо; это чёрный список оборотов, а не доказательство отсутствия самоотрицания вообще."
+            }
+          ],
+          "description": "Почему красное до зелёного неприменимо: патч без тестов, правка только документации или CI. НЕ «красного не было» — это признание, а не причина."
+        }
+      }
+    },
+    "gateRefused": {
+      "type": "object",
+      "required": ["status", "exit_code", "output"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "const": "refused" },
+        "exit_code": {
+          "enum": [2, 3],
+          "description": "2 — отказ идти на переднем плане, 3 — отказ по свободному месту. Оба — отказ ИНСТРУМЕНТА, не дефект дерева."
+        },
+        "output": {
+          "type": "string",
+          "minLength": 120,
+          "allOf": [
+            { "pattern": "^ofgate: \\S" },
+            { "pattern": "\\n" }
+          ],
+          "description": "Вывод отказа ДОСЛОВНО. Оба отказа ofgate многострочны и длинны: отказ от переднего плана измерен в 882 знака и 11 строк, отказ по диску — в 464 знака и 5 строк (прогоны 2026-08-21). Строка 'ofgate:' из семи знаков выводом отказа не является."
+        }
+      }
+    },
+    "gateVerdict": {
+      "type": "string",
+      "minLength": 400,
+      "allOf": [
+        {
+          "pattern": "(^|\\n)=== OFGATE VERDICT ===\\n",
+          "$comment": "открывающий маркер"
+        },
+        { "pattern": "\\nworktree +: /\\S" },
+        { "pattern": "\\ncommit +: [0-9a-f]{40} \\(dirty=(yes|no)\\)" },
+        { "pattern": "\\nimage +: \\S+ sha256:[0-9a-f]{64}" },
+        { "pattern": "\\ntoolchain +: \\S" },
+        { "pattern": "\\ntarget-vol +: \\S" },
+        { "pattern": "\\nchecks +: (fmt|clippy|test)\\S*" },
+        { "pattern": "\\nstarted +: [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z" },
+        { "pattern": "\\nlogs +: /\\S+" },
+        {
+          "pattern": "\\n--- [a-zA-Z]+ : (GREEN|RED) +exit=[0-9]+ +[0-9]+s\\n +cmd : \\S[^\\n]*\\n +log : /\\S+ +\\([0-9]+ B, sha256:[0-9a-f]{16}\\)",
+          "$comment": "Хотя бы один шаг целиком: строка шага, её cmd и её log с размером и sha256. Огрызок из четырёх строк сюда не проходит."
+        },
+        { "pattern": "\\nresult +: (GREEN|RED) " },
+        { "pattern": "\\nelapsed +: [0-9]+s" },
+        { "pattern": "\\nexit +: [0-9]+" },
+        {
+          "pattern": "\\n=== END OFGATE VERDICT run=[0-9]{8}T[0-9]{6}Z-[0-9]+ body-sha256=[0-9a-f]{32} ===",
+          "$comment": "закрывающая строка с идентификатором прогона в формате ofgate"
+        },
+        {
+          "not": { "pattern": "body-sha256=(.)\\1{31}" },
+          "$comment": "Тридцать два одинаковых знака (в том числе тридцать два нуля) — не sha256, а заполнитель. Это отклонение ОДНОЙ узнаваемой подделки, а не проверка подлинности: подлинность схема не проверяет, для этого гейт перезапускается."
+        }
+      ]
+    },
+    "mutateOutput": {
+      "type": "string",
+      "minLength": 200,
+      "allOf": [
+        { "pattern": "(^|\\n)# worktree /\\S" },
+        { "pattern": "\\n# HEAD [0-9a-f]{7,}" },
+        { "pattern": "\\n# ханков: [0-9]+ продакшн, [0-9]+ тестовых" },
+        { "pattern": "\\n\\[1/2\\] как есть" },
+        {
+          "pattern": "\\n +как есть: \\S+ +passed=[0-9]+ failed=[0-9]+",
+          "$comment": "строка результата прогона «как есть», которую печатает show()"
+        },
+        {
+          "pattern": "ДОКАЗАНО \\(RED-ASSERT\\)|СЛАБОЕ КРАСНОЕ \\(RED-COMPILE\\)|ТАВТОЛОГИЯ|НЕЯСНО \\(|ОТКАЗ:|ДЕРЕВО НЕ ВОССТАНОВЛЕНО",
+          "$comment": "слово вердикта ofmutate"
+        }
+      ]
+    }
   }
 }
