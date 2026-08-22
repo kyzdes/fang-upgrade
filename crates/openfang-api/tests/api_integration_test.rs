@@ -72,6 +72,7 @@ async fn start_test_server_with_provider(
 
     let state = Arc::new(AppState {
         kernel,
+        passkey_auth: None,
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -917,6 +918,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
 
     let state = Arc::new(AppState {
         kernel,
+        passkey_auth: None,
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -931,13 +933,7 @@ async fn start_test_server_with_auth(api_key: &str) -> TestServer {
     let auth_state = middleware::AuthState {
         api_key: api_key.clone(),
         auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
-        } else {
-            String::new()
-        },
+        passkey_auth: None,
         allow_no_auth: true,
     };
 

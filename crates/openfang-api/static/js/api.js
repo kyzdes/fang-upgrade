@@ -118,7 +118,7 @@ var OpenFangToast = (function() {
 // ── Friendly Error Messages ──
 function friendlyError(status, serverMsg) {
   if (status === 0 || !status) return 'Cannot reach daemon — is openfang running?';
-  if (status === 401) return 'Not authorized — check your API key';
+  if (status === 401) return 'Your session has expired';
   if (status === 403) return 'Permission denied';
   if (status === 404) return serverMsg || 'Resource not found';
   if (status === 429) return 'Rate limited — slow down and try again';
@@ -132,14 +132,19 @@ function friendlyError(status, serverMsg) {
 var OpenFangAPI = (function() {
   var BASE = window.location.origin;
   var WS_BASE = BASE.replace(/^http/, 'ws');
+
+  // Запасной вход: ключ демона, который панель шлёт заголовком Authorization.
+  // Пасскей ходит сессионной кукой и на том же origin отправляется браузером сам,
+  // поэтому эти два пути не мешают друг другу — работает тот, который настроен.
   var _authToken = '';
+
+  function setAuthToken(token) { _authToken = token; }
+  function getToken() { return _authToken; }
 
   // Connection state tracking
   var _connectionState = 'connected';
   var _reconnectAttempt = 0;
   var _connectionListeners = [];
-
-  function setAuthToken(token) { _authToken = token; }
 
   function headers() {
     var h = { 'Content-Type': 'application/json' };
@@ -161,16 +166,21 @@ var OpenFangAPI = (function() {
     return fetch(BASE + path, opts).then(function(r) {
       if (_connectionState !== 'connected') setConnectionState('connected');
       if (!r.ok) {
-        // On 401, auto-show auth prompt so the user can re-enter their key
-        if (r.status === 401 && typeof Alpine !== 'undefined') {
-          try {
-            var store = Alpine.store('app');
-            if (store && !store.showAuthPrompt) {
-              _authToken = '';
-              localStorage.removeItem('openfang-api-key');
-              store.showAuthPrompt = true;
-            }
-          } catch(e2) { /* ignore Alpine errors */ }
+        // Два режима, и различает их не догадка об origin, а то, чем мы вошли.
+        // Ключ был и перестал приниматься — сбросить и спросить заново (локально
+        // и по тайлнету это единственный путь). Ключа не было — значит вход по
+        // пасскею, и это дорога на /login.
+        if (r.status === 401 && window.location.pathname !== '/login') {
+          if (_authToken) {
+            _authToken = '';
+            localStorage.removeItem('openfang-api-key');
+            try {
+              var store = (typeof Alpine !== 'undefined') && Alpine.store('app');
+              if (store) store.showAuthPrompt = true;
+            } catch (e2) { /* Alpine ещё не поднялся — просто не показываем */ }
+          } else {
+            window.location.replace('/login');
+          }
         }
         return r.text().then(function(text) {
           var msg = '';
@@ -223,6 +233,8 @@ var OpenFangAPI = (function() {
   function _doConnect(agentId) {
     try {
       var url = WS_BASE + '/api/agents/' + agentId + '/ws';
+      // WebSocket не умеет заголовков — ключ уходит в query, как и раньше.
+      // При входе по пасскею токена нет, и сокет авторизуется кукой.
       if (_authToken) url += '?token=' + encodeURIComponent(_authToken);
       var socket = new WebSocket(url);
       _ws = socket;
@@ -304,8 +316,6 @@ var OpenFangAPI = (function() {
   function isWsConnected() { return _wsConnected; }
 
   function getConnectionState() { return _connectionState; }
-
-  function getToken() { return _authToken; }
 
   function upload(agentId, file) {
     var hdrs = {};

@@ -34,12 +34,18 @@ tokio-stream = { workspace = true }
 subtle = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
-hmac = { workspace = true }
 hex = { workspace = true }
 socket2 = { workspace = true }
 reqwest = { workspace = true }
-argon2 = { workspace = true }
 rand = { workspace = true }
+webauthn-rs = { workspace = true }
+url = { workspace = true }
+
+# webauthn-rs-core uses OpenSSL for attestation verification. GitHub's Windows
+# runners do not ship a discoverable OpenSSL installation, so build it only on
+# Windows; Linux/macOS continue to use their system libraries.
+[target.'cfg(windows)'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

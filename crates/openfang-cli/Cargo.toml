@@ -13,6 +13,7 @@ path = "src/main.rs"
 openfang-types = { path = "../openfang-types" }
 openfang-kernel = { path = "../openfang-kernel" }
 openfang-api = { path = "../openfang-api" }
+openfang-memory = { path = "../openfang-memory" }
 openfang-migrate = { path = "../openfang-migrate" }
 openfang-skills = { path = "../openfang-skills" }
 openfang-extensions = { path = "../openfang-extensions" }
@@ -32,3 +33,4 @@ uuid = { workspace = true }
 ratatui = { workspace = true }
 colored = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }

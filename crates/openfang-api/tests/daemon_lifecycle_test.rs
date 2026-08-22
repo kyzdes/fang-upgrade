@@ -109,6 +109,7 @@ async fn test_full_daemon_lifecycle() {
 
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        passkey_auth: None,
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),
@@ -236,6 +237,7 @@ async fn test_server_immediate_responsiveness() {
 
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        passkey_auth: None,
         started_at: Instant::now(),
         peer_registry: None,
         bridge_manager: tokio::sync::Mutex::new(None),

@@ -129,6 +129,7 @@ colored = "3"
 # Encryption
 aes-gcm = "0.10"
 argon2 = "0.5"
+webauthn-rs = "0.5.5"
 
 # HTML entity decoding
 html-escape = "0.2"
