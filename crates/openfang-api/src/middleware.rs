@@ -68,6 +68,31 @@ pub struct AuthState {
 /// reported loudly at startup.
 ///
 /// When dashboard auth is enabled, session cookies are also accepted.
+/// Адреса, с которых машинный ключ остаётся законным запасным входом.
+///
+/// Loopback — CLI на той же машине. `100.64.0.0/10` — тайлнет: Tailscale
+/// раздаёт адреса из этого диапазона (у прода `100.91.165.20`), и `fd7a:115c:a1e0::/48`
+/// — его же IPv6-половина.
+///
+/// Всё остальное, включая адрес обратного прокси в docker-сети, доверенным не
+/// считается. Адрес берётся из сокета (`ConnectInfo`); `X-Forwarded-For` в этом
+/// файле не читается нигде, поэтому подделать его заголовком нельзя, а запрос
+/// через Traefik честно выглядит как запрос от Traefik.
+fn is_operator_network(ip: Option<std::net::IpAddr>) -> bool {
+    match ip {
+        Some(std::net::IpAddr::V4(v4)) => {
+            v4.is_loopback() || matches!(v4.octets(), [100, b, _, _] if (64..=127).contains(&b))
+        }
+        Some(std::net::IpAddr::V6(v6)) => {
+            v6.is_loopback() || {
+                let s = v6.segments();
+                s[0] == 0xfd7a && s[1] == 0x115c && s[2] == 0xa1e0
+            }
+        }
+        None => false,
+    }
+}
+
 pub async fn auth(
     axum::extract::State(auth_state): axum::extract::State<AuthState>,
     request: Request<Body>,
@@ -76,11 +101,11 @@ pub async fn auth(
     // SECURITY: Capture method early for method-aware public endpoint checks.
     let method = request.method().clone();
 
-    let is_loopback = request
+    let peer_ip = request
         .extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().is_loopback())
-        .unwrap_or(false); // SECURITY: default-deny; unknown origin is NOT loopback
+        .map(|ci| ci.0.ip());
+    let is_loopback = peer_ip.map(|ip| ip.is_loopback()).unwrap_or(false); // SECURITY: default-deny; unknown origin is NOT loopback
 
     // Shutdown is loopback-only (CLI on same machine). Skip token auth only
     // when the request is from loopback.
@@ -227,8 +252,19 @@ pub async fn auth(
         token.as_bytes().ct_eq(api_key.as_bytes()).into()
     });
 
-    // Accept if either auth method matches
-    if header_auth == Some(true) || query_auth == Some(true) {
+    // Машинный ключ принимается, только когда он и задуман как запасной вход:
+    // с loopback и тайлнета. В режиме пасскея снаружи есть свой путь входа, и
+    // вторая дверь туда не нужна — тем более `?token=`, который по дороге
+    // оседает в логах прокси и в истории браузера.
+    //
+    // Без пасскея ключ остаётся единственной защитой, и сужать его нельзя:
+    // заменить его там нечем.
+    let machine_key_allowed_here = !auth_state.auth_enabled || is_operator_network(peer_ip);
+
+    // Отказ не выходит из функции: запрос снаружи может нести ещё и сессионную
+    // куку, и её проверка ниже — законный путь. Здесь только не срабатывает
+    // короткий путь по ключу.
+    if machine_key_allowed_here && (header_auth == Some(true) || query_auth == Some(true)) {
         return next.run(request).await;
     }
 
@@ -358,6 +394,15 @@ mod tests {
     fn auth_state_passkey_without_session() -> AuthState {
         AuthState {
             api_key: String::new(),
+            auth_enabled: true,
+            passkey_auth: None,
+            allow_no_auth: false,
+        }
+    }
+
+    fn auth_state_passkey_with_machine_key(key: &str) -> AuthState {
+        AuthState {
+            api_key: key.to_string(),
             auth_enabled: true,
             passkey_auth: None,
             allow_no_auth: false,
@@ -524,5 +569,123 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "публичная оболочка не должна открывать доступ к данным"
         );
+    }
+
+    /// Запасной вход по машинному ключу — именно запасной, а не вторая дверь
+    /// в интернет.
+    ///
+    /// Комментарий в `webchat.rs` обещает, что `Authorization: Bearer <api_key>`
+    /// «остаётся запасным входом с локального адреса и тайлнета». До этой правки
+    /// такой проверки в коде не было вовсе: ключ принимался с любого адреса, и
+    /// вдобавок через строку запроса `?token=`, которая оседает в логах прокси,
+    /// в истории браузера и в `Referer`.
+    ///
+    /// Пока демон отвечал только на loopback и тайлнет, это ничего не значило.
+    /// Публичный маршрут на `fang.moone.dev` делает это интернет-доступной
+    /// учёткой, поэтому проверка появляется здесь, а не «когда-нибудь потом».
+    ///
+    /// Адрес берётся из `ConnectInfo`, то есть из сокета. `X-Forwarded-For` не
+    /// читается нигде в этом файле — заголовком его не подделать, а запрос,
+    /// пришедший через обратный прокси, честно выглядит как запрос от прокси.
+    #[tokio::test]
+    async fn machine_key_in_passkey_mode_is_refused_from_outside() {
+        let key = "machine-key-0123456789";
+
+        // Loopback — принимается: это CLI на той же машине.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let mut req = req_from("127.0.0.1");
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::OK,
+            "loopback обязан сохранить запасной вход, иначе чинить демон будет нечем"
+        );
+
+        // Тайлнет — принимается: адрес прода 100.91.165.20 лежит в 100.64.0.0/10.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let mut req = req_from("100.91.165.20");
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::OK,
+            "тайлнет обязан сохранить запасной вход: это рабочий доступ к проду"
+        );
+
+        // IPv6-половина тайлнета — тоже принимается. Ветка есть в коде,
+        // значит обязана иметь прогон: `fd7a:115c:a1e0::/48` — диапазон,
+        // который Tailscale раздаёт под IPv6.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let addr: SocketAddr = "[fd7a:115c:a1e0::1]:40000".parse().unwrap();
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/agents/1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::OK,
+            "IPv6-адрес тайлнета — тот же оператор, что и IPv4"
+        );
+
+        // Публичный IPv6, не тайлнет — отказ.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let addr: SocketAddr = "[2001:db8::1]:40000".parse().unwrap();
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri("/api/agents/1")
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "похожесть на IPv6 не делает адрес тайлнетом"
+        );
+
+        // Публичный адрес — отказ, даже с верным ключом.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let mut req = req_from("203.0.113.5");
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "верный ключ с публичного адреса не должен пускать: снаружи вход только по пасскею"
+        );
+
+        // Та же дверь через строку запроса — тоже отказ.
+        let app = router(auth_state_passkey_with_machine_key(key));
+        let addr: SocketAddr = "203.0.113.5:40000".parse().unwrap();
+        let mut req = Request::builder()
+            .method(Method::GET)
+            .uri(format!("/api/agents/1?token={key}"))
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED,
+            "?token= — та же учётка, и в публичном контексте она хуже заголовка"
+        );
+    }
+
+    /// Без пасскея поведение не меняется: ключ остаётся единственной защитой,
+    /// и сузить его до loopback значило бы закрыть доступ там, где заменить
+    /// его нечем. Правка целится в режим, где есть второй путь входа.
+    #[tokio::test]
+    async fn machine_key_without_passkey_still_works_from_anywhere() {
+        let key = "machine-key-0123456789";
+        let app = router(auth_state_with_key(key));
+        let mut req = req_from("203.0.113.5");
+        req.headers_mut()
+            .insert("authorization", format!("Bearer {key}").parse().unwrap());
+        assert_eq!(app.oneshot(req).await.unwrap().status(), StatusCode::OK);
     }
 }
