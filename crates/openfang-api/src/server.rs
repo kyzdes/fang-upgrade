@@ -1261,7 +1261,7 @@ fn is_daemon_responding(addr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_drain_timeout, SHUTDOWN_DRAIN_TIMEOUT_DEFAULT};
+    use super::{credentialed_passkey_cors, parse_drain_timeout, SHUTDOWN_DRAIN_TIMEOUT_DEFAULT};
     use std::time::Duration;
 
     /// `OPENFANG_SHUTDOWN_DRAIN_SECS` is read at startup, so no value of it may
@@ -1296,8 +1296,6 @@ mod tests {
 
         // Unset.
         assert_eq!(parse_drain_timeout(None), SHUTDOWN_DRAIN_TIMEOUT_DEFAULT);
-
-    use super::credentialed_passkey_cors;
 
     /// Не про wildcard в выводе, а про то, что слой вообще собирается.
     /// `tower-http` паникует ПРИ ПОСТРОЕНИИ, если `allow_credentials(true)`
