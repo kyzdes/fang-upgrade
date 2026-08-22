@@ -480,17 +480,49 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// Оболочка панели публична, данные за ней — нет. Обе половины здесь,
+    /// потому что порознь каждая выглядит как ошибка.
+    ///
+    /// Прежний тест на этом месте требовал от `/` редиректа 303 на `/login`.
+    /// Он описывал замысел, от которого автор отказался в том же коммите:
+    /// `/login` (`webchat::login_page`) отдаёт ТОЛЬКО пасскей и прямо пишет
+    /// «Пароль и API-ключ для браузера не используются», а запасной вход по
+    /// ключу демона живёт в оболочке на `/` — его стережёт отдельный тест в
+    /// `webchat.rs`. Закрыть `/` значит сделать запасной вход недостижимым
+    /// ровно тогда, когда он нужен: при отказе пасскея. Поэтому 200, и это
+    /// решение, а не недосмотр.
     #[tokio::test]
-    async fn unauthenticated_dashboard_navigation_redirects_to_login() {
+    async fn dashboard_shell_is_public_but_the_data_behind_it_is_not() {
+        // Оболочка: браузер на первой навигации не может поставить
+        // Authorization, поэтому страница обязана открыться.
         let app = router(auth_state_passkey_without_session());
-        let request = Request::builder()
+        let shell = Request::builder()
             .method(Method::GET)
             .uri("/")
             .header("accept", "text/html")
             .body(Body::empty())
             .unwrap();
-        let response = app.oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers().get("location").unwrap(), "/login");
+        let response = app.oneshot(shell).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "оболочка панели должна открываться без сессии, иначе запасной вход недостижим"
+        );
+
+        // Данные за оболочкой: тот же посетитель, тот же роутер, но 401.
+        // Без этой половины первая читалась бы как дыра в защите.
+        let app = router(auth_state_passkey_without_session());
+        let data = Request::builder()
+            .method(Method::GET)
+            .uri("/api/agents/1")
+            .header("accept", "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(data).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "публичная оболочка не должна открывать доступ к данным"
+        );
     }
 }
