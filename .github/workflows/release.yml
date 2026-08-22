@@ -1,9 +1,18 @@
 name: Release
 
+# АПСТРИМОВСКИЙ РЕЛИЗ, НЕ НАШ. Триггер сужен до ветки, в которую никто не пушит,
+# по той же причине, что и у ci.yml. Этот workflow собирает Tauri-десктоп под пять
+# платформ с сертификатами подписи, которых у нас нет, и публикует образ в ЧУЖОЙ
+# namespace `ghcr.io/rightnow-ai/openfang`, а затем дёргает API организации
+# RightNow-AI. На наших тегах он падал бы целиком.
+#
+# Наш образ собирает джоба `image` в fork-ci.yml — на каждый зелёный push в main,
+# в ghcr.io/kyzdes/fang-upgrade. Файл оставлен, потому что понадобится, если
+# когда-нибудь будем синхронизироваться с апстримом.
 on:
   push:
-    tags:
-      - "v*"
+    branches: [upstream-sync-only]
+  workflow_dispatch:
 
 permissions:
   contents: write
