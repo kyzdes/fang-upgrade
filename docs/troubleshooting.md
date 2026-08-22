@@ -672,26 +672,28 @@ The default image does not ship `curl`; build the
 [curl-equipped overlay](#curl-equipped-reference-image) if you need
 in-container healthchecks.
 
-### How do I protect the dashboard with a password?
+### How do I protect the dashboard with a passkey?
 
-OpenFang has built-in dashboard authentication. Enable it in `~/.openfang/config.toml`:
+OpenFang has passwordless WebAuthn authentication. Serve it through HTTPS and configure the exact public origin in `~/.openfang/config.toml`:
 
 ```toml
 [auth]
 enabled = true
-username = "admin"
-password_hash = "$argon2id$..."  # see below
+rp_id = "openfang.example.com"
+rp_origin = "https://openfang.example.com"
+rp_name = "OpenFang"
+session_ttl_hours = 168
 ```
 
-Generate the password hash:
+Create one-time registration links in a private file:
 
 ```bash
-openfang auth hash-password
+openfang auth bootstrap --expires-hours 72 --output /secure/path/passkey-invites.txt
 ```
 
-Paste the output into the `password_hash` field and restart the daemon.
+The browser dashboard never accepts or stores the machine API key. Manage passkey slots over SSH with `openfang auth list`, `revoke`, and `reset-slot`.
 
-For public-facing deployments, you should also place a reverse proxy (Caddy, nginx) in front for TLS termination.
+The daemon refuses to start passkey authentication when the origin is incomplete, non-HTTPS, or does not exactly match the RP ID. Place a reverse proxy (Caddy, nginx, Traefik) in front for TLS termination.
 
 ### How do I configure the embedding model for memory?
 

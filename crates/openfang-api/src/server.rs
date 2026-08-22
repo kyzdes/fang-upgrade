@@ -6,6 +6,7 @@ use crate::rate_limiter;
 use crate::routes::{self, AppState};
 use crate::webchat;
 use crate::ws;
+use axum::http::{header, Method};
 use axum::Router;
 use openfang_kernel::OpenFangKernel;
 use std::future::IntoFuture;
@@ -38,6 +39,23 @@ use tracing::{info, warn};
 /// process a different grace period.
 const SHUTDOWN_DRAIN_TIMEOUT_DEFAULT: std::time::Duration = std::time::Duration::from_secs(3);
 
+fn credentialed_passkey_cors(origin: axum::http::HeaderValue) -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(origin)
+        // Credentialed CORS cannot use wildcard methods or headers. Keep
+        // this list explicit so tower-http and browsers both fail closed.
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_credentials(true)
+}
+
 /// Daemon info written to `~/.openfang/daemon.json` so the CLI can find us.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct DaemonInfo {
@@ -62,9 +80,22 @@ pub async fn build_router(
     // Start channel bridges (Telegram, etc.)
     let bridge = channel_bridge::start_channel_bridge(kernel.clone()).await;
 
+    let passkey_auth = if kernel.config.auth.enabled {
+        Some(Arc::new(
+            crate::passkey_auth::PasskeyAuthService::new(
+                &kernel.config.auth,
+                kernel.memory.dashboard_auth().clone(),
+            )
+            .unwrap_or_else(|error| panic!("Invalid passkey auth configuration: {error}")),
+        ))
+    } else {
+        None
+    };
+
     let channels_config = kernel.config.channels.clone();
     let state = Arc::new(AppState {
         kernel: kernel.clone(),
+        passkey_auth: passkey_auth.clone(),
         started_at: Instant::now(),
         peer_registry: kernel.peer_registry.get().map(|r| Arc::new(r.clone())),
         bridge_manager: tokio::sync::Mutex::new(bridge),
@@ -79,9 +110,15 @@ pub async fn build_router(
     // cron job results to all connected WebSocket clients in real-time.
     ws::start_ws_cron_broadcaster(kernel.clone());
 
-    // CORS: allow localhost origins by default. If API key is set, the API
-    // is protected anyway. For development, permissive CORS is convenient.
-    let cors = if state.kernel.config.api_key.trim().is_empty() {
+    // Passkey mode accepts exactly its configured HTTPS origin. Development
+    // mode retains the existing loopback-only CORS convenience.
+    let cors = if let Some(service) = passkey_auth.as_ref() {
+        let origin: axum::http::HeaderValue = service
+            .rp_origin()
+            .parse()
+            .expect("validated passkey RP origin must be a valid header");
+        credentialed_passkey_cors(origin)
+    } else if state.kernel.config.api_key.trim().is_empty() {
         // No auth → restrict CORS to localhost origins (include both 127.0.0.1 and localhost)
         let port = listen_addr.port();
         let mut origins: Vec<axum::http::HeaderValue> = vec![
@@ -129,15 +166,6 @@ pub async fn build_router(
             .allow_headers(tower_http::cors::Any)
     };
 
-    // Warn if dashboard auth is enabled but the password hash is not Argon2id.
-    let ph = &state.kernel.config.auth.password_hash;
-    if state.kernel.config.auth.enabled && !ph.is_empty() && !ph.starts_with("$argon2") {
-        tracing::warn!(
-            "Dashboard auth password_hash is not in Argon2id format. \
-             Login will fail. Regenerate with: openfang auth hash-password"
-        );
-    }
-
     // Trim whitespace so `api_key = ""` or `api_key = "  "` both disable auth.
     let api_key = state.kernel.config.api_key.trim().to_string();
     let allow_no_auth = std::env::var("OPENFANG_ALLOW_NO_AUTH")
@@ -169,19 +197,15 @@ pub async fn build_router(
     let auth_state = crate::middleware::AuthState {
         api_key: api_key.clone(),
         auth_enabled: state.kernel.config.auth.enabled,
-        session_secret: if !api_key.is_empty() {
-            api_key.clone()
-        } else if state.kernel.config.auth.enabled {
-            state.kernel.config.auth.password_hash.clone()
-        } else {
-            String::new()
-        },
+        passkey_auth: passkey_auth.clone(),
         allow_no_auth,
     };
     let gcra_limiter = rate_limiter::create_rate_limiter();
 
     let app = Router::new()
         .route("/", axum::routing::get(webchat::webchat_page))
+        .route("/login", axum::routing::get(webchat::login_page))
+        .route("/register", axum::routing::get(webchat::register_page))
         .route("/logo.png", axum::routing::get(webchat::logo_png))
         .route("/favicon.ico", axum::routing::get(webchat::favicon_ico))
         .route("/manifest.json", axum::routing::get(webchat::manifest_json))
@@ -796,10 +820,42 @@ pub async fn build_router(
             "/v1/models",
             axum::routing::get(crate::openai_compat::list_models),
         )
-        // Dashboard authentication endpoints
-        .route("/api/auth/login", axum::routing::post(routes::auth_login))
-        .route("/api/auth/logout", axum::routing::post(routes::auth_logout))
-        .route("/api/auth/check", axum::routing::get(routes::auth_check))
+        // Passkey-only dashboard authentication endpoints.
+        .route(
+            "/api/auth/passkey/login/start",
+            axum::routing::post(crate::passkey_auth::login_start),
+        )
+        .route(
+            "/api/auth/passkey/login/finish",
+            axum::routing::post(crate::passkey_auth::login_finish),
+        )
+        .route(
+            "/api/auth/passkey/register/start",
+            axum::routing::post(crate::passkey_auth::register_start),
+        )
+        .route(
+            "/api/auth/passkey/register/finish",
+            axum::routing::post(crate::passkey_auth::register_finish),
+        )
+        // Выдача доступа ссылкой. За общей аутентификацией: позвать может тот,
+        // у кого есть ключ демона, или уже открытая сессия по пасскею.
+        .route(
+            "/api/auth/invites",
+            axum::routing::post(crate::passkey_auth::invite_create)
+                .get(crate::passkey_auth::invite_list),
+        )
+        .route(
+            "/api/auth/invites/{slug}",
+            axum::routing::delete(crate::passkey_auth::invite_revoke),
+        )
+        .route(
+            "/api/auth/logout",
+            axum::routing::post(crate::passkey_auth::logout),
+        )
+        .route(
+            "/api/auth/check",
+            axum::routing::get(crate::passkey_auth::auth_check),
+        )
         .layer(axum::middleware::from_fn_with_state(
             auth_state,
             middleware::auth,
@@ -1205,7 +1261,7 @@ fn is_daemon_responding(addr: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_drain_timeout, SHUTDOWN_DRAIN_TIMEOUT_DEFAULT};
+    use super::{credentialed_passkey_cors, parse_drain_timeout, SHUTDOWN_DRAIN_TIMEOUT_DEFAULT};
     use std::time::Duration;
 
     /// `OPENFANG_SHUTDOWN_DRAIN_SECS` is read at startup, so no value of it may
@@ -1240,5 +1296,17 @@ mod tests {
 
         // Unset.
         assert_eq!(parse_drain_timeout(None), SHUTDOWN_DRAIN_TIMEOUT_DEFAULT);
+    }
+
+    /// Не про wildcard в выводе, а про то, что слой вообще собирается.
+    /// `tower-http` паникует ПРИ ПОСТРОЕНИИ, если `allow_credentials(true)`
+    /// встречается с `Any` в методах или заголовках — так требует спецификация
+    /// CORS. Поэтому вызов без паники и есть утверждение: до этой правки
+    /// ветка пасскея роняла роутер на старте демона, а не отдавала плохой
+    /// заголовок.
+    #[test]
+    fn credentialed_passkey_cors_builds_without_panicking() {
+        let origin = "https://denis-openfang.moone.dev".parse().unwrap();
+        let _ = credentialed_passkey_cors(origin);
     }
 }

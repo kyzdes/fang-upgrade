@@ -304,13 +304,13 @@ If you prefer mounting `config.toml`, the file must live at `/data/config.toml` 
 **Security warning.** Once you bind to a non-loopback address, anyone reachable at that address can talk to the API. OpenFang's middleware enforces a fail-closed default on authenticated routes:
 
 - If `api_key` is empty AND dashboard auth is disabled AND the bind address is not loopback, authenticated routes reject non-loopback requests with `401 Unauthorized`.
-- A small set of public routes (health check, static assets, OAuth callback) remain reachable so the dashboard can render its login page. They do not expose agent data or accept commands.
+- With passkey auth enabled, only the basic health check, logo/favicon, login and registration pages, and WebAuthn ceremony endpoints remain public.
 - To run with full open access anyway (not recommended), set `OPENFANG_ALLOW_NO_AUTH=1`. This will be loudly logged.
 
 The supported ways to expose the dashboard safely:
 
-- Set `api_key = "..."` in `config.toml` (or `OPENFANG_API_KEY=...`) and send `Authorization: Bearer <key>` on every request.
-- Or enable the [`[auth]`](#auth) section to require username/password login on the dashboard UI.
+- Set `api_key = "..."` in `config.toml` (or `OPENFANG_API_KEY=...`) and send `Authorization: Bearer <key>` from machine clients. The browser dashboard never asks for or stores this key.
+- Enable the [`[auth]`](#auth) section to require a passkey and server-side session for the dashboard UI.
 - Or keep `api_listen` on `127.0.0.1` and reach the dashboard through an SSH tunnel or reverse proxy that handles authentication for you.
 
 ---
@@ -382,32 +382,32 @@ shared_secret = "my-cluster-secret"
 
 ### `[auth]`
 
-Configures dashboard login with username/password authentication. Disabled by default.
+Configures passwordless WebAuthn/passkey authentication for the dashboard. Disabled by default.
 
 ```toml
 [auth]
 enabled = true
-username = "admin"
-password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."  # generate with: openfang auth hash-password
+rp_id = "openfang.example.com"
+rp_origin = "https://openfang.example.com"
+rp_name = "OpenFang"
 session_ttl_hours = 168
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable username/password authentication for the dashboard. |
-| `username` | string | `"admin"` | Admin username. |
-| `password_hash` | string | `""` (empty) | Argon2id password hash in PHC string format. Generate with `openfang auth hash-password`. |
-| `session_ttl_hours` | u64 | `168` (7 days) | Session token lifetime in hours. |
+| `enabled` | bool | `false` | Enable passkey authentication for the dashboard. |
+| `rp_id` | string | `""` | WebAuthn relying-party domain. It cannot be changed after passkeys are enrolled. |
+| `rp_origin` | string | `""` | Exact public HTTPS origin. Ports, paths, additional origins, and non-HTTPS values are rejected. |
+| `rp_name` | string | `"OpenFang"` | Name shown by the authenticator during registration. |
+| `session_ttl_hours` | u64 | `168` (7 days) | Opaque server-side session lifetime. |
 
-**Generating a password hash:**
+Create the initial one-time invitation links after configuration:
 
 ```bash
-openfang auth hash-password
+openfang auth bootstrap --expires-hours 72 --output /secure/path/passkey-invites.txt
 ```
 
-This prompts for a password and outputs an Argon2id PHC string to paste into `config.toml`.
-
-> **Breaking change (v0.5.0):** Password hashes must be in Argon2id format. Older SHA256 hex hashes from versions prior to v0.5.0 are no longer accepted. Re-run `openfang auth hash-password` to generate a new hash.
+The output file is created with mode `0600`; invitation tokens are never printed. Use `openfang auth list`, `revoke`, and `reset-slot` through SSH for lifecycle management. See the DenisAgency passkey runbook for the production procedure.
 
 ---
 

@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 
 /// Current schema version.
-const SCHEMA_VERSION: u32 = 9;
+const SCHEMA_VERSION: u32 = 10;
 
 /// Run all migrations to bring the database up to date.
 pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -45,6 +45,10 @@ pub fn run_migrations(conn: &Connection) -> Result<(), rusqlite::Error> {
 
     if current_version < 9 {
         migrate_v9(conn)?;
+    }
+
+    if current_version < 10 {
+        migrate_v10(conn)?;
     }
 
     set_schema_version(conn, SCHEMA_VERSION)?;
@@ -383,6 +387,63 @@ fn migrate_v9(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+/// Version 10: persistent passkey credentials, enrollment invitations and
+/// opaque dashboard sessions.
+fn migrate_v10(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS dashboard_auth_users (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            display_name TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS dashboard_auth_passkeys (
+            credential_id BLOB PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            passkey_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            last_used_at INTEGER,
+            revoked_at INTEGER,
+            FOREIGN KEY(user_id) REFERENCES dashboard_auth_users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dashboard_passkeys_user
+            ON dashboard_auth_passkeys(user_id, revoked_at);
+
+        CREATE TABLE IF NOT EXISTS dashboard_auth_invites (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token_hash BLOB NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            consumed_at INTEGER,
+            revoked_at INTEGER,
+            FOREIGN KEY(user_id) REFERENCES dashboard_auth_users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dashboard_invites_user
+            ON dashboard_auth_invites(user_id, expires_at);
+
+        CREATE TABLE IF NOT EXISTS dashboard_auth_sessions (
+            token_hash BLOB PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            credential_id BLOB NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL,
+            revoked_at INTEGER,
+            FOREIGN KEY(user_id) REFERENCES dashboard_auth_users(id),
+            FOREIGN KEY(credential_id) REFERENCES dashboard_auth_passkeys(credential_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_user
+            ON dashboard_auth_sessions(user_id, expires_at, revoked_at);
+
+        INSERT OR IGNORE INTO migrations (version, applied_at, description)
+        VALUES (10, datetime('now'), 'Add passkey dashboard authentication');
+        ",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,7 +496,7 @@ mod tests {
 
         run_migrations(&conn).unwrap();
 
-        assert_eq!(get_schema_version(&conn), 9);
+        assert_eq!(get_schema_version(&conn), 10);
         let (model, input, provider, turn_id, requested, call_index): (
             String,
             i64,

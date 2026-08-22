@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM rust:1-slim-bookworm AS builder
+FROM rust:1.88-slim-bookworm AS builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y pkg-config libssl-dev perl make && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo build --release --bin openfang \
     && cp target/release/openfang /openfang
 
-FROM rust:1-slim-bookworm
+FROM rust:1.88-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     python3 \

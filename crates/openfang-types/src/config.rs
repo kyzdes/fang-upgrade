@@ -1272,7 +1272,7 @@ pub struct KernelConfig {
     /// OAuth client ID overrides for PKCE flows.
     #[serde(default)]
     pub oauth: OAuthConfig,
-    /// Dashboard authentication (username/password login).
+    /// Dashboard passkey authentication.
     #[serde(default)]
     pub auth: AuthConfig,
     /// Directory for auto-loading workflow JSON files on startup.
@@ -1321,18 +1321,19 @@ impl Default for HeartbeatSettings {
     }
 }
 
-/// Dashboard authentication (username/password login).
+/// Dashboard passkey authentication.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AuthConfig {
-    /// Enable username/password authentication for the dashboard.
+    /// Enable passkey authentication for the dashboard.
     pub enabled: bool,
-    /// Admin username.
-    pub username: String,
-    /// Argon2id password hash (PHC string format).
-    /// Generate with: openfang auth hash-password
-    pub password_hash: String,
-    /// Session token lifetime in hours (default: 168 = 7 days).
+    /// WebAuthn relying-party identifier. This must not change after enrollment.
+    pub rp_id: String,
+    /// Exact HTTPS origin that serves the dashboard.
+    pub rp_origin: String,
+    /// Human-readable relying-party name shown by authenticators.
+    pub rp_name: String,
+    /// Server-side dashboard session lifetime in hours (default: 168 = 7 days).
     pub session_ttl_hours: u64,
 }
 
@@ -1340,8 +1341,9 @@ impl Default for AuthConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            username: "admin".to_string(),
-            password_hash: String::new(),
+            rp_id: String::new(),
+            rp_origin: String::new(),
+            rp_name: "OpenFang".to_string(),
             session_ttl_hours: 168,
         }
     }
