@@ -48,9 +48,34 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Версия берётся из rust-toolchain.toml, а не из @stable: плавающий канал
+      # красит гейт новым lint без единой правки кода — так CI и покраснел
+      # 20 августа. Шаг «версии сходятся» ниже не даёт этим двум разъехаться.
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.91"
           components: clippy, rustfmt
+
+      - name: версии тулчейна сходятся во всех четырёх местах
+        # FANG-92: rust-toolchain.toml просил 1.91, Dockerfile был прибит к 1.88,
+        # CI ставил @stable. Собиралось три разными версиями, и сборка образа
+        # упала на MSRV зависимостей ровно тогда, когда это было некстати.
+        # Расхождение теперь не сливается: шаг падает раньше.
+        run: |
+          set -euo pipefail
+          toolchain=$(grep -oP 'channel\s*=\s*"\K[^"]+' rust-toolchain.toml)
+          msrv=$(grep -oP '^rust-version\s*=\s*"\K[^"]+' Cargo.toml)
+          docker_versions=$(grep -oP '^FROM rust:\K[0-9.]+' Dockerfile | sort -u)
+          workflow=$(grep -oP 'toolchain:\s*"\K[^"]+' .github/workflows/fork-ci.yml)
+          echo "rust-toolchain.toml=$toolchain  Cargo.toml=$msrv  workflow=$workflow"
+          echo "Dockerfile=$(echo "$docker_versions" | tr '\n' ' ')"
+          for v in $msrv $workflow $docker_versions; do
+            if [ "$v" != "$toolchain" ]; then
+              echo "::error::версии тулчейна разошлись: ожидалось $toolchain, встретилось $v"
+              exit 1
+            fi
+          done
+          echo "сходятся: $toolchain"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -93,9 +118,16 @@ jobs:
   # не то, что собирался. `:main` движется и годится посмотреть, `:<sha>`
   # неизменен и годится деплоить. Сервер пинит sha.
   image:
+    # Собирается ВСЕГДА, публикуется только с main.
+    #
+    # Раньше джоба запускалась только на пуш в main, и поломка сборки образа
+    # становилась видна уже ПОСЛЕ слияния. Ровно так и вышло: ветка пасскея
+    # прибила Dockerfile к rust 1.88 — ниже MSRV, объявленного в Cargo.toml, —
+    # PR прошёл зелёным (там `cargo test` ставил тулчейн отдельным шагом), а
+    # упало при первой же сборке образа с main. Проверять после слияния то,
+    # что можно проверить до, — это гейт, который приходит с опозданием.
     name: Образ → ghcr.io/kyzdes/fang-upgrade
     needs: [check]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -117,6 +149,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Вход в GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -129,7 +162,9 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          push: true
+          # На PR образ собирается и выбрасывается: доказательство, что Dockerfile
+          # цел, нужно до слияния, а тег в реестре — нет.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
           platforms: linux/amd64
           # Эти три доезжают до /api/version. Без них сборка не может сказать,
           # какая она — ровно то, что чинили в FANG-6.
