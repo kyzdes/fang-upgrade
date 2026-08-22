@@ -1296,6 +1296,7 @@ mod tests {
 
         // Unset.
         assert_eq!(parse_drain_timeout(None), SHUTDOWN_DRAIN_TIMEOUT_DEFAULT);
+    }
 
     /// Не про wildcard в выводе, а про то, что слой вообще собирается.
     /// `tower-http` паникует ПРИ ПОСТРОЕНИИ, если `allow_credentials(true)`
