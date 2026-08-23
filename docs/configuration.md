@@ -398,16 +398,16 @@ session_ttl_hours = 168
 | `enabled` | bool | `false` | Enable passkey authentication for the dashboard. |
 | `rp_id` | string | `""` | WebAuthn relying-party domain. It cannot be changed after passkeys are enrolled. |
 | `rp_origin` | string | `""` | Exact public HTTPS origin. Ports, paths, additional origins, and non-HTTPS values are rejected. |
-| `rp_name` | string | `"OpenFang"` | Name shown by the authenticator during registration. |
+| `rp_name` | string | `"OpenFang"` | Name shown by the authenticator during registration, and above the heading on `/login`. |
 | `session_ttl_hours` | u64 | `168` (7 days) | Opaque server-side session lifetime. |
 
-Create the initial one-time invitation links after configuration:
+Hand out the first one-time enrolment link after configuration — one call per slot, and the slot is created on demand:
 
 ```bash
-openfang auth bootstrap --expires-hours 72 --output /secure/path/passkey-invites.txt
+openfang auth invite alice --name 'Alice' --expires-hours 72 --output /secure/path/alice-invite.txt
 ```
 
-The output file is created with mode `0600`; invitation tokens are never printed. Use `openfang auth list`, `revoke`, and `reset-slot` through SSH for lifecycle management. See [the passkey runbook](passkey-runbook.md) for the production procedure.
+The output file is created with mode `0600` and the command refuses to overwrite an existing one; without `--output` the link is printed instead. Either way it is shown once — only its SHA-256 is stored. Use `openfang auth list`, `revoke`, and `reset-slot` for lifecycle management. See [the passkey runbook](passkey-runbook.md) for the production procedure.
 
 ---
 
