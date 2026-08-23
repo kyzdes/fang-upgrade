@@ -721,7 +721,7 @@ enum AuthCommands {
     /// server or a reverse proxy log, and only its hash is stored — which means
     /// the link is shown once and cannot be recovered afterwards.
     Invite {
-        /// Slot slug, for example `denis`. Lowercase letters, digits and dashes.
+        /// Slot slug, for example `alice`. Lowercase letters, digits and dashes.
         slot: String,
         /// Display name shown in the dashboard. Defaults to the slug.
         #[arg(long)]
@@ -738,7 +738,7 @@ enum AuthCommands {
     },
     /// Revoke a slot's credential, sessions, and pending invitations.
     Revoke {
-        /// Slot slug, for example `denis`.
+        /// Slot slug, for example `alice`.
         slot: String,
         /// Permanently delete the slot after revocation (for ephemeral tests only).
         #[arg(long)]
@@ -746,7 +746,7 @@ enum AuthCommands {
     },
     /// Revoke a slot and issue one replacement invitation.
     ResetSlot {
-        /// Slot slug, for example `denis`.
+        /// Slot slug, for example `alice`.
         slot: String,
         /// Display name. Required only when creating a previously unknown slot.
         #[arg(long)]

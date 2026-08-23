@@ -40,6 +40,7 @@ reqwest = { workspace = true }
 rand = { workspace = true }
 webauthn-rs = { workspace = true }
 url = { workspace = true }
+html-escape = { workspace = true }
 
 # webauthn-rs-core uses OpenSSL for attestation verification. GitHub's Windows
 # runners do not ship a discoverable OpenSSL installation, so build it only on

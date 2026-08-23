@@ -481,13 +481,13 @@ mod tests {
         let auth = memory.dashboard_auth();
         let token_hash = [7u8; 32];
         let invite = auth
-            .create_invite("denis", "Денис", &token_hash, 100, 200)
+            .create_invite("alice", "Alice", &token_hash, 100, 200)
             .unwrap();
         assert!(auth.find_valid_invite(&token_hash, 150).unwrap().is_some());
         let user = auth
             .consume_invite_and_store_passkey(&invite.id, b"credential", "{}", 160)
             .unwrap();
-        assert_eq!(user.slug, "denis");
+        assert_eq!(user.slug, "alice");
         assert!(auth.find_valid_invite(&token_hash, 161).unwrap().is_none());
         assert!(auth
             .consume_invite_and_store_passkey(&invite.id, b"other", "{}", 162)
@@ -496,7 +496,7 @@ mod tests {
         auth.create_session(b"session", &user.id, b"credential", 170, 300)
             .unwrap();
         assert!(auth.validate_session(b"session", 200).unwrap().is_some());
-        assert!(auth.revoke_slot("denis", 210).unwrap());
+        assert!(auth.revoke_slot("alice", 210).unwrap());
         assert!(auth.validate_session(b"session", 211).unwrap().is_none());
     }
 
@@ -504,9 +504,9 @@ mod tests {
     fn replacing_pending_invite_revokes_the_old_one() {
         let memory = store();
         let auth = memory.dashboard_auth();
-        auth.create_invite("reserve", "Резерв", b"one", 100, 200)
+        auth.create_invite("reserve", "Reserve", b"one", 100, 200)
             .unwrap();
-        auth.create_invite("reserve", "Резерв", b"two", 110, 210)
+        auth.create_invite("reserve", "Reserve", b"two", 110, 210)
             .unwrap();
         assert!(auth.find_valid_invite(b"one", 120).unwrap().is_none());
         assert!(auth.find_valid_invite(b"two", 120).unwrap().is_some());

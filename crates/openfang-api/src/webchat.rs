@@ -12,8 +12,11 @@
 //! - WebSocket real-time chat with HTTP fallback
 //! - Agent management, workflows, memory browser, audit log, and more
 
+use crate::routes::AppState;
+use axum::extract::State;
 use axum::http::header;
 use axum::response::IntoResponse;
+use std::sync::Arc;
 
 /// Nonce placeholder in compile-time HTML, replaced at request time.
 const NONCE_PLACEHOLDER: &str = "__NONCE__";
@@ -115,14 +118,33 @@ pub async fn webchat_page() -> impl IntoResponse {
 }
 
 /// GET /login — standalone passkey login page.
-pub async fn login_page() -> impl IntoResponse {
-    auth_html_response(login_html())
+///
+/// The name above the heading comes from `auth.rp_name` in the config, not from
+/// this source file: the same binary serves every installation.
+pub async fn login_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    auth_html_response(login_html(&state.kernel.config.auth.rp_name))
 }
 
 /// GET /register — standalone invitation-based passkey enrollment page.
 /// The invitation remains in the URL fragment and is sent only in the POST body.
 pub async fn register_page() -> impl IntoResponse {
     auth_html_response(register_html())
+}
+
+/// Render the installation name above the heading of an auth page.
+///
+/// Empty or whitespace-only `auth.rp_name` renders nothing at all rather than an
+/// empty box. The value is operator-supplied config, so it is HTML-escaped.
+fn eyebrow(rp_name: &str) -> String {
+    let name = rp_name.trim();
+    if name.is_empty() {
+        String::new()
+    } else {
+        format!(
+            r#"<div class="eyebrow">{}</div>"#,
+            html_escape::encode_text(name)
+        )
+    }
 }
 
 fn auth_html_response(template: String) -> impl IntoResponse {
@@ -165,11 +187,13 @@ async function post(path,body){var r=await fetch(path,{method:'POST',credentials
 function supported(){return window.isSecureContext&&window.PublicKeyCredential&&navigator.credentials}
 "#;
 
-fn login_html() -> String {
+fn login_html(rp_name: &str) -> String {
     [
         r#"<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Вход — OpenFang</title><link rel="icon" href="/favicon.ico"><style>"#,
         AUTH_STYLE,
-        r#"</style></head><body><main class="card"><div class="brand"><img src="/logo.png" alt="">OPENFANG</div><div class="eyebrow">DenisAgency</div><h1>Вход по passkey</h1><p>Используйте Face ID, Touch ID, Windows Hello или PIN доверенного устройства.</p><button class="button" id="action">Войти по passkey</button><div class="status" id="status" role="status"></div><div class="foot">Пароль и API-ключ для браузера не используются.</div></main><script nonce="__NONCE__">"#,
+        r#"</style></head><body><main class="card"><div class="brand"><img src="/logo.png" alt="">OPENFANG</div>"#,
+        eyebrow(rp_name).as_str(),
+        r#"<h1>Вход по passkey</h1><p>Используйте Face ID, Touch ID, Windows Hello или PIN доверенного устройства.</p><button class="button" id="action">Войти по passkey</button><div class="status" id="status" role="status"></div><div class="foot">Пароль и API-ключ для браузера не используются.</div></main><script nonce="__NONCE__">"#,
         AUTH_SCRIPT,
         r#"var button=document.getElementById('action'),status=document.getElementById('status');if(!supported()){button.disabled=true;status.className='status error';status.textContent='Этот браузер или контекст не поддерживает passkey.'}button.addEventListener('click',async function(){button.disabled=true;status.className='status';status.textContent='Подтвердите вход на устройстве…';try{var start=await post('/api/auth/passkey/login/start',{});var credential=await navigator.credentials.get({publicKey:requestOptions(start)});await post('/api/auth/passkey/login/finish',{ceremony_id:start.ceremony_id,credential:authenticationCredential(credential)});window.location.replace('/')}catch(e){status.className='status error';status.textContent=e.message||'Не удалось войти';button.disabled=false}});</script></body></html>"#,
     ]
@@ -266,6 +290,8 @@ const WEBCHAT_HTML: &str = concat!(
 );
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     /// Оба пути входа живут в панели одновременно, и это решение, а не недоделка.
     ///
     /// Пасскей — основной путь и единственный снаружи: он ходит сессионной кукой,
@@ -289,5 +315,47 @@ mod tests {
             api_js.contains("window.location.replace('/login')"),
             "панель не уводит на вход по пасскею при 401 без ключа"
         );
+    }
+
+    /// Страница входа не должна нести имя чьей-то установки: репозиторий
+    /// публичный, и форк поднимают чужие люди. Имя приходит из `auth.rp_name`.
+    #[test]
+    fn login_page_shows_the_configured_rp_name_and_no_hardcoded_brand() {
+        let html = login_html("Acme Robotics");
+        assert!(
+            html.contains(r#"<div class="eyebrow">Acme Robotics</div>"#),
+            "rp_name must reach the page: {html}"
+        );
+
+        assert_eq!(
+            html.matches(r#"<div class="eyebrow">"#).count(),
+            1,
+            "ровно одна надпись над заголовком, и она из конфига"
+        );
+
+        let default_html = login_html("OpenFang");
+        assert!(default_html.contains(r#"<div class="eyebrow">OpenFang</div>"#));
+    }
+
+    /// `auth.rp_name` — значение из конфига оператора, то есть вход, а не
+    /// константа. Без экранирования оно закрывает `<div>` и вносит разметку.
+    #[test]
+    fn rp_name_is_html_escaped() {
+        let html = login_html("</div><script>alert(1)</script>");
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+    }
+
+    /// Пустое имя даёт пустую коробку в вёрстке — рисовать нечего, значит и
+    /// элемента быть не должно.
+    #[test]
+    fn empty_rp_name_renders_no_eyebrow_at_all() {
+        for value in ["", "   "] {
+            let html = login_html(value);
+            assert!(
+                !html.contains(r#"class="eyebrow""#),
+                "{value:?} should render no eyebrow"
+            );
+        }
     }
 }

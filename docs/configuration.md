@@ -407,7 +407,7 @@ Create the initial one-time invitation links after configuration:
 openfang auth bootstrap --expires-hours 72 --output /secure/path/passkey-invites.txt
 ```
 
-The output file is created with mode `0600`; invitation tokens are never printed. Use `openfang auth list`, `revoke`, and `reset-slot` through SSH for lifecycle management. See the DenisAgency passkey runbook for the production procedure.
+The output file is created with mode `0600`; invitation tokens are never printed. Use `openfang auth list`, `revoke`, and `reset-slot` through SSH for lifecycle management. See [the passkey runbook](passkey-runbook.md) for the production procedure.
 
 ---
 
