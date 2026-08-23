@@ -46,10 +46,11 @@ Two counters, and they do not mean the same thing, which is why both exist:
 counted before, and a field that quietly changes meaning is worse than a field with an awkward
 name.
 
-**Do not read `auth_status: missing` as "42 dead entries".** The local providers (ollama, vllm,
-lmstudio, lemonade) need no key at all and report `not_required`, not `missing`. An earlier
-version of this narrowing treated only `configured` as real and dropped them, which removed a
-working local ollama and its models from both endpoints.
+**Do not read `auth_status: missing` as "42 dead entries".** Several builtins need no key at all
+and report `not_required` rather than `missing` — the local ones (`ollama`, `vllm`, `lmstudio`,
+`lemonade`) among them; `grep -B4 'key_required: false'` over `builtin_providers()` lists which.
+An earlier version of this narrowing treated only `configured` as real and dropped them, which
+removed a working local ollama and its models from both endpoints.
 
 | Provider id | Base URL | Key env var | Models live |
 |---|---|---|---|
@@ -228,7 +229,7 @@ substitution happened, and the only trace is in the daemon log.
 
 ---
 
-## 5. Setting up a second instance against the same routers
+## 5. Setting up an instance against these routers
 
 1. Put the two keys in the environment as `HYPERFUSION_API_KEY` and `Y7ROUTER_API_KEY`. Do not put
    them in `config.toml`; `api_key_env` exists so the value stays out of the file.
@@ -258,7 +259,7 @@ version of this file quoted were one instance's, and quoting them invited people
 against somebody else's machine instead of their own.
 
 Expect the two routers as `configured`. **Do not** expect only two lines — the local providers
-(ollama, vllm, lmstudio, lemonade) report `not_required` because they need no key, and an
+report `not_required` because they need no key, and an
 earlier version of this section said "anything else `configured` means a key leaked", which
 would have sent you hunting a leak that is not there. What to actually check: nothing
 unexpected is `configured`. A stray `configured` — anthropic, openai, gemini — is the empty-key

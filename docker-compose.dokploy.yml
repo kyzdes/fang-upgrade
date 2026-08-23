@@ -53,11 +53,11 @@ services:
     networks:
       - dokploy-network
     labels:
-      # The middleware name below is what a Dokploy domain must reference, as
+      # A Dokploy domain must reference this middleware by the name below, as
       # `openfang-basic-auth@docker`. If your Dokploy install already names it
-      # something else, change the domain and both labels together — a domain
-      # pointing at a middleware name that does not exist serves the dashboard
-      # with no BasicAuth at all. Only the password hash is injected here.
+      # something else, change the domain and both labels together: the name is
+      # what ties them, and it is not derived from anything else here. Only the
+      # password hash is injected.
       traefik.http.middlewares.openfang-basic-auth.basicauth.users: "${OPENFANG_BASIC_AUTH:?OPENFANG_BASIC_AUTH is required}"
       traefik.http.middlewares.openfang-basic-auth.basicauth.removeheader: "true"
     healthcheck:
