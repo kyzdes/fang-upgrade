@@ -1,16 +1,17 @@
 name: Fork CI (ours)
 
 # This is a SEPARATE workflow from the upstream `ci.yml`. It intentionally does not
-# touch `ci.yml`, whose triggers were narrowed to a branch nothing pushes to (see its
-# header) once `ours` was renamed to `main` — `main` and `ours` are now two names for
-# the same commit, both our real trunk, and neither is an upstream mirror anymore.
+# touch `ci.yml`, whose push/PR triggers were narrowed to a branch nothing pushes to
+# (see its header) once `ours` was renamed to `main`. `ours` was deleted on
+# 2026-08-23 as a duplicate of `main`, so it is gone from the triggers below too: a
+# branch filter naming a branch that does not exist reads as coverage and is none.
 # `ours` had no CI at all before this file existed — 4,116 lines across 35 .rs files
 # and 53 new tests were unguarded for three sprints.
 on:
   push:
-    branches: [main, ours]
+    branches: [main]
   pull_request:
-    branches: [main, ours]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always

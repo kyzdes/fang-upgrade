@@ -1,25 +1,33 @@
-# Providers, models and fallbacks as actually deployed
+# Two OpenAI-compatible routers: `y7router` and `hyperfusion`
 
-Read this before pointing a second OpenFang instance at the same routers. Everything below was
-read off a running instance, not copied from a vendor page — where the two disagree, the running
-instance won.
+Notes on two third-party routers that OpenFang can be pointed at. They exist because the
+failure modes in section 3 are not in either router's own documentation, and each of them
+returns HTTP 200 while doing the wrong thing.
 
-Two dates, kept apart on purpose. The router behaviour in section 3 and the model tables in
-section 2 were measured on **2026-08-16** and are not re-measured here. The counts, the provider
-list, the agent roster and every command in section 5 were re-run against this instance on
-**2026-08-17**; where that run disagreed with the text, the text was changed and the disagreement
-is named rather than quietly fixed.
+**What used to be here and is not any more.** An earlier version of this file opened with
+"read off a running instance" and carried the inventory of one: its agent roster with each
+agent's model and fallback chain, its provider and model counts, and its deployed
+`config.toml`. That is a map of somebody's working system, and a public repository is the
+wrong place for it — it is more sensitive than a hostname, because it says what is worth
+attacking and where. It was removed rather than obfuscated. What is left is about the two
+routers, which are public services, and about how to configure any instance against them.
+
+**Dates.** The router behaviour in section 3 and the model tables in section 2 were measured
+on **2026-08-16** and are not re-measured here. Catalogues change without notice: treat both
+tables as a starting point and re-run section 5 rather than trusting them.
 
 **No credentials here.** Keys live in environment variables named below; the values are not in
 this file, this repository, or any log it tells you to read.
 
 ---
 
-## 1. The two providers that are actually configured
+## 1. Configuring the two routers
 
-OpenFang ships a catalogue of 44 providers here — 42 builtin plus the two added by
-`[provider_urls]` below. Two are ours by key. Most of the rest sit with `auth_status: missing`
-and no key, which is harmless but made `/api/providers` misleading at a glance.
+OpenFang ships **42 builtin providers** (`builtin_providers()` in
+`crates/openfang-runtime/src/model_catalog.rs` — `grep -c 'id: "'` over that function returns
+42). Neither router below is one of them; both are added by `[provider_urls]`. Most builtins
+sit with `auth_status: missing` and no key, which is harmless but made `/api/providers`
+misleading at a glance.
 
 **This branch narrows both catalogue endpoints instead.** `/api/providers` and `/api/models`
 now return the providers you actually have — the ones named in `config.toml`, the ones with a
@@ -38,20 +46,21 @@ Two counters, and they do not mean the same thing, which is why both exist:
 counted before, and a field that quietly changes meaning is worse than a field with an awkward
 name. Measured on this instance before the change: `total: 229`, `available: 32`.
 
-**Do not read `auth_status: missing` as "42 dead entries".** Four providers here need no key at
-all and report `not_required`, not `missing` — see the measured output in section 5. An earlier
+**Do not read `auth_status: missing` as "42 dead entries".** The local providers (ollama, vllm,
+lmstudio, lemonade) need no key at all and report `not_required`, not `missing`. An earlier
 version of this narrowing treated only `configured` as real and dropped them, which removed a
-working local ollama and its 6 models from both endpoints.
+working local ollama and its models from both endpoints.
 
 | Provider id | Base URL | Key env var | Models live |
 |---|---|---|---|
 | `hyperfusion` | `https://api.hyperfusion.io/v1` | `HYPERFUSION_API_KEY` | 9 |
 | `y7router` | `https://router.y7.hk/v1` | `Y7ROUTER_API_KEY` | 15 |
 
-Both are declared under `[provider_urls]`. The whole of the deployed `config.toml` is 23 lines:
+Both are declared under `[provider_urls]`. A config pointed at them looks like this — it is an
+example to copy, not a transcript of anyone's deployment:
 
 ```toml
-api_key = "<the instance's own API key — not a provider key>"
+api_key = "<this instance's own dashboard/API key — not a provider key>"
 
 [default_model]
 provider = "hyperfusion"
@@ -66,7 +75,7 @@ y7router = "https://router.y7.hk/v1"
 
 Everything else — which agent runs on which model, what it falls back to — lives in the agent
 manifests, not in `config.toml`. That is the first thing people get wrong when they try to
-reproduce this setup by copying the config file.
+reproduce a setup by copying the config file.
 
 ### Two traps in this file specifically
 
@@ -157,8 +166,9 @@ rely on it.
 
 > `opencode/` here is a **y7router model-id prefix**, not a provider. Worth stating because the
 > confusion has already cost something: a first attempt at narrowing the catalogue (section 1)
-> put `"opencode"` in its list of provider ids, where it matched nothing at all — `grep -r
-> opencode crates/` returns zero hits in this tree. A dead id in a filter list is invisible: it
+> put `"opencode"` in its list of provider ids, where it matched no builtin provider at all. It
+> is out of that list now: `grep -rn opencode crates/` returns a single hit, and it is the
+> comment on the regression test that keeps it out. A dead id in a filter list is invisible: it
 > never errors, it just quietly makes the list mean less than it reads.
 
 **`kimi/k3` is the one model here with measured behaviour:** needle-in-haystack retrieved at start,
@@ -173,19 +183,13 @@ and one with streaming, and look at what actually came back — not at the statu
 
 ---
 
-## 4. Fallbacks as deployed
+## 4. Fallbacks
 
-13 agents. The pattern in use is deliberately simple: **primary on y7router, fallback to
-hyperfusion.** The reasoning is in section 3 — y7 is fast and free-form but unpredictable, so the
-safety net is the router that publishes real limits.
-
-| Agents | Primary | Fallback chain |
-|---|---|---|
-| `AgentGLM52`, `AgentGLM52B`, `AgentGLM52C`, `AgentRAG`…`AgentRAG4` (7 agents) | `y7router` / `ark/glm-5.2` | → `hyperfusion` / `openai/gpt-oss-120b` |
-| `AgentKimi3` | `y7router` / `kimi/k3` | → `hyperfusion` / `openai/gpt-oss-120b` → `y7router` / `ark/deepseek-v4-pro` |
-| `AgentDeepSeek4` | `y7router` / `ark/deepseek-v4-pro` | none |
-| `AgentGemma4`, `assistant`, `youtube-insights` | `hyperfusion` / `google/gemma-4-31b-it` | none |
-| `AgentGptOss` | `hyperfusion` / `openai/gpt-oss-120b` | none |
+The roster that used to be here — which named agents ran which models with which fallback
+chains — was the inventory this file no longer publishes. The **pattern** is worth keeping and
+gives nothing away: **primary on y7router, fallback to hyperfusion.** The reasoning is in
+section 3 — y7 is fast and free-form but unpredictable, so the safety net is the router that
+publishes real limits. An agent that must not be substituted quietly gets no fallback at all.
 
 A fallback entry names **both** provider and model. In a manifest:
 
@@ -244,41 +248,31 @@ curl -s -H "Authorization: Bearer $API_KEY" localhost:4200/api/providers \
 
 The earlier version of this command iterated `json.load(sys.stdin)` directly. `/api/providers`
 returns an object, not a list, so it iterated the object's keys and died with
-`TypeError: string indices must be integers`. It was never run. Verified output on this
-instance, 2026-08-17 — and read the `total` carefully, because this instance is running a build
-from **before** the narrowing in section 1, so it still answers with the whole catalogue. Once a
-build carrying that change is deployed, `total` here drops to the focused set and `catalog_total`
-becomes the 44; the six lines below do not change, because every one of them is either
-`configured` or `not_required` and both stay visible by construction:
+`TypeError: string indices must be integers`. It was never run.
 
-```
-total: 44
-  ollama not_required 6
-  vllm not_required 1
-  lmstudio not_required 1
-  lemonade not_required 0
-  y7router configured 15
-  hyperfusion configured 9
-```
+Read *your own* output, and read `total` carefully: on a build from before the narrowing in
+section 1 it counts the whole catalogue, and on a build carrying it `total` is this response
+while `catalog_total` is the catalogue. Neither number is restated here — the counts an earlier
+version of this file quoted were one instance's, and quoting them invited people to check
+against somebody else's machine instead of their own.
 
-Expect the two routers as `configured`. **Do not** expect only two lines — the four local
-providers above report `not_required` because they need no key, and an earlier version of this
-section said "anything else `configured` means a key leaked", which would have sent you hunting a
-leak that is not there. What to actually check: nothing unexpected is `configured`. A stray
-`configured` — anthropic, openai, gemini — is the empty-key trap in section 1.
+Expect the two routers as `configured`. **Do not** expect only two lines — the local providers
+(ollama, vllm, lmstudio, lemonade) report `not_required` because they need no key, and an
+earlier version of this section said "anything else `configured` means a key leaked", which
+would have sent you hunting a leak that is not there. What to actually check: nothing
+unexpected is `configured`. A stray `configured` — anthropic, openai, gemini — is the empty-key
+trap in section 1.
 
 5. Then send one real message per model you intend to use, with tools enabled, and read the body.
    Section 3 exists because status codes lie on this router.
 
 ---
 
-*Router behaviour and model tables read off a live instance on 2026-08-16; counts, provider list,
-agent roster and the section 5 commands re-run on 2026-08-17. Model catalogues change without
-notice — re-run the checks in section 5 rather than trusting this table a month from now.*
+*Router behaviour and the model tables were measured on 2026-08-16 and have not been re-measured
+since. Model catalogues change without notice — run the checks in section 5 against your own
+instance rather than trusting these tables a month from now.*
 
-*What was re-run, and what came back: `/api/providers` → `total: 44`, six providers not `missing`
-(the four `not_required` locals plus the two routers, at 15 and 9 models). `/api/models` →
-`total: 229`, `available: 32`. `/api/agents` → 13 agents, the names in section 4. Deployed
-`config.toml` → 23 lines. Section 5's verification command → fixed, because the previous one
-raised `TypeError` and could never have been run. Not re-run, and so not restated as current:
-every per-model measurement in sections 2 and 3.*
+*Removed on 2026-08-23, deliberately and without replacement: the agent roster, the provider and
+model counts of a specific instance, and its deployed `config.toml`. Those described one running
+system; this file is published, and what is published should be about the routers, not about
+somebody's deployment.*
