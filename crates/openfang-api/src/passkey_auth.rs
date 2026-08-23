@@ -676,9 +676,9 @@ mod tests {
     fn config() -> AuthConfig {
         AuthConfig {
             enabled: true,
-            rp_id: "denis-openfang.moone.dev".into(),
-            rp_origin: "https://denis-openfang.moone.dev".into(),
-            rp_name: "OpenFang DenisAgency".into(),
+            rp_id: "openfang.example.test".into(),
+            rp_origin: "https://openfang.example.test".into(),
+            rp_name: "OpenFang Example".into(),
             session_ttl_hours: 168,
         }
     }
@@ -687,13 +687,13 @@ mod tests {
     fn rejects_non_https_or_non_exact_origins() {
         let memory = MemorySubstrate::open_in_memory(0.1).unwrap();
         let mut invalid = config();
-        invalid.rp_origin = "http://denis-openfang.moone.dev".into();
+        invalid.rp_origin = "http://openfang.example.test".into();
         assert!(PasskeyAuthService::new(&invalid, memory.dashboard_auth().clone()).is_err());
 
-        invalid.rp_origin = "https://extra.denis-openfang.moone.dev".into();
+        invalid.rp_origin = "https://extra.openfang.example.test".into();
         assert!(PasskeyAuthService::new(&invalid, memory.dashboard_auth().clone()).is_err());
 
-        invalid.rp_origin = "https://denis-openfang.moone.dev/path".into();
+        invalid.rp_origin = "https://openfang.example.test/path".into();
         assert!(PasskeyAuthService::new(&invalid, memory.dashboard_auth().clone()).is_err());
     }
 
@@ -708,8 +708,8 @@ mod tests {
             32
         );
         assert_eq!(
-            registration_url("https://denis-openfang.moone.dev", &token),
-            format!("https://denis-openfang.moone.dev/register#{token}")
+            registration_url("https://openfang.example.test", &token),
+            format!("https://openfang.example.test/register#{token}")
         );
     }
 
@@ -718,7 +718,7 @@ mod tests {
         let memory = MemorySubstrate::open_in_memory(0.1).unwrap();
         let store = memory.dashboard_auth().clone();
         let invite = store
-            .create_invite("slava", "Слава", b"invite", 100, 200)
+            .create_invite("alice", "Alice", b"invite", 100, 200)
             .unwrap();
         let user = store
             .consume_invite_and_store_passkey(&invite.id, b"credential", "{}", 110)

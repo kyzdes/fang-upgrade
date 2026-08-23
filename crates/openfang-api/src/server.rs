@@ -1306,7 +1306,7 @@ mod tests {
     /// заголовок.
     #[test]
     fn credentialed_passkey_cors_builds_without_panicking() {
-        let origin = "https://denis-openfang.moone.dev".parse().unwrap();
+        let origin = "https://openfang.example.test".parse().unwrap();
         let _ = credentialed_passkey_cors(origin);
     }
 }

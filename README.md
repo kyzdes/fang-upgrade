@@ -1,520 +1,202 @@
-<p align="center">
-  <img src="public/assets/openfang-logo.png" width="160" alt="OpenFang Logo" />
-</p>
+# fang-upgrade — a patched OpenFang v0.6.9
 
-<h1 align="center">OpenFang</h1>
-<h3 align="center">The Agent Operating System</h3>
+This is a fork of [RightNow-AI/openfang](https://github.com/RightNow-AI/openfang) at
+**v0.6.9** (`version = "0.6.9"` in the workspace `Cargo.toml`), with defects fixed
+and kept fixed by CI.
 
-<p align="center">
-  Open-source Agent OS built in Rust. 137K LOC. 14 crates. 1,767+ tests. Zero clippy warnings.<br/>
-  <strong>One binary. Battle-tested. Agents that actually work for you.</strong>
-</p>
+It is not a rewrite and not a new product. Same crates, same binary name, same
+config file. The difference is that a list of things v0.6.9 got wrong are no
+longer wrong here.
 
-<p align="center">
-  <a href="https://openfang.sh/docs">Documentation</a> &bull;
-  <a href="https://openfang.sh/docs/getting-started">Quick Start</a> &bull;
-  <a href="https://x.com/openfangg">Twitter / X</a>
-</p>
+## Why this exists
 
-<p align="center">
-  <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square" alt="Rust" />
-  <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT" />
-  <img src="https://img.shields.io/badge/version-0.6.9-green?style=flat-square" alt="v0.6.9" />
-  <img src="https://img.shields.io/badge/tests-2,696%2B%20passing-brightgreen?style=flat-square" alt="Tests" />
-  <img src="https://img.shields.io/badge/clippy-0%20warnings-brightgreen?style=flat-square" alt="Clippy" />
-  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=flat-square&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" /></a>
-</p>
+Upstream's `main` has not moved since **2026-05-12** — its newest commit is
+`acf2587 bump v0.6.9`. This fork's base commit `f6e8539 bump v0.6.9` has the
+identical tree (`git diff acf2587 f6e8539` is empty); everything after it here is
+the fork's own work. **43 pull requests** were open against upstream when this was
+last checked — 2026-08-23,
+`gh api 'search/issues?q=repo:RightNow-AI/openfang+is:pr+is:open' --jq .total_count`.
 
----
+A defect found downstream therefore has nowhere upstream to go. It gets fixed here.
 
-> **v0.5.10 (April 2026)**
->
-> OpenFang is feature complete but still pre-1.0. Expect rough edges and breaking changes between minor versions. We ship fast and fix fast. Pin to a specific commit for production use until v1.0. [Report issues here.](https://github.com/RightNow-AI/openfang/issues)
+## What is fixed
 
----
-
-## What is OpenFang?
-
-OpenFang is an **open-source Agent Operating System**. Not a chatbot framework. Not a Python wrapper around an LLM. Not a "multi-agent orchestrator." A full operating system for autonomous agents, built from scratch in Rust.
-
-Traditional agent frameworks wait for you to type something. OpenFang runs **autonomous agents that work for you**: on schedules, 24/7, building knowledge graphs, monitoring targets, generating leads, managing your social media, and reporting results to your dashboard.
-
-The entire system compiles to a **single ~32MB binary**. One install, one command, your agents are live.
+The authoritative list is not a paragraph — it is a registry that prints itself:
 
 ```bash
-curl -fsSL https://openfang.sh/install | sh
-openfang init
-openfang start
-# Dashboard live at http://localhost:4200
+bash tests/fang/run.sh --list
 ```
 
-<details>
-<summary><strong>Windows</strong></summary>
+Each row names the defect, its reproduction script, and whether it is fixed at all.
+`FANG-9` is listed as `NO FIX`: the agent can still report a write it never
+performed, and the phantom-action guard covers channels only. That row is in the
+list on purpose. **[`FORK-NOTES.md`](FORK-NOTES.md)** explains each fix with its
+before/after measurement.
 
-```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
-```
+Measured, not estimated: **77 commits** since the v0.6.9 base (`f6e8539`), of which
+**34** are `fix(...)`/`feat(...)` (`git log --oneline --no-merges f6e8539..main`).
+No headline "N defects fixed" number appears in this README, for the reason
+`FORK-NOTES.md` gives: an earlier copy of these notes carried one, and it went
+stale while the work continued.
 
-</details>
+The themes, each traceable to commits in `git log`:
 
----
+- **Usage is metered per LLM call, not per agent turn**, and the response says
+  which model actually answered — a fallback-served turn no longer bills the model
+  that answered nothing (`ad1fdbf`; reproduction `A-6`).
+- **A fallback model resolves its own `base_url`** instead of inheriting the
+  primary's, so provider B's key stops being sent to provider A (`cf1a8cf`).
+- **A turn that exhausts `max_iterations` hands back its work** instead of an
+  HTTP 500 carrying none of it (`c2a7fe9`, `927793b`, `9281436`).
+- **An empty-but-valid provider response fails the turn** instead of succeeding
+  with a sentence the runtime wrote itself (`f05a1f9`, `16902f3`).
+- **`file_read` discloses truncation and supports `offset`/`limit` paging**
+  (`07924e9`).
+- **Secrets stop leaking**: the Telegram bot token out of network-error logs
+  (`c25cf2a`), out of the LLM prompt and the on-disk session (reproduction
+  `FANG-43`), and out of `reqwest` error bodies in six more adapters (`45dd243`).
+- **Routes that cannot work say so**: `PUT /api/agents/{id}/update` returns 501 and
+  names the routes that do work, instead of a 200-shaped no-op (`5aa1992`,
+  `f23c058`).
+- **Shutdown is bounded** and eleven other spin loops were fixed with it
+  (`24714d3`); channel adapters are actually stopped and Telegram is drained
+  before restart (`418c298`).
+- **Passkey login for the dashboard**, handed out by one-time link (`5cd4234`),
+  with the machine API key scoped back to being a fallback entrance rather than a
+  second door to the internet (`deba852`).
 
-## Hands: Agents That Actually Do Things
+## Running it
 
-<p align="center"><em>"Traditional agents wait for you to type. Hands work <strong>for</strong> you."</em></p>
-
-**Hands** are OpenFang's core innovation. Pre-built autonomous capability packages that run independently, on schedules, without you having to prompt them. This is not a chatbot. This is an agent that wakes up at 6 AM, researches your competitors, builds a knowledge graph, scores the findings, and delivers a report to your Telegram before you've had coffee.
-
-Each Hand bundles:
-- **HAND.toml**: manifest declaring tools, settings, requirements, and dashboard metrics.
-- **System Prompt**: multi-phase operational playbook. Not a one-liner. These are 500+ word expert procedures.
-- **SKILL.md**: domain expertise reference injected into context at runtime.
-- **Guardrails**: approval gates for sensitive actions (e.g. Browser Hand requires approval before any purchase).
-
-All compiled into the binary. No downloading, no pip install, no Docker pull.
-
-### The 7 Bundled Hands
-
-| Hand | What It Actually Does |
-|------|----------------------|
-| **Clip** | Takes a YouTube URL, downloads it, identifies the best moments, cuts them into vertical shorts with captions and thumbnails, optionally adds AI voice-over, and publishes to Telegram and WhatsApp. 8-phase pipeline. FFmpeg + yt-dlp + 5 STT backends. |
-| **Lead** | Runs daily. Discovers prospects matching your ICP, enriches them with web research, scores 0-100, deduplicates against your existing database, and delivers qualified leads in CSV/JSON/Markdown. Builds ICP profiles over time. |
-| **Collector** | OSINT grade intelligence. You give it a target (company, person, topic). It monitors continuously: change detection, sentiment tracking, knowledge graph construction, and critical alerts when something important shifts. |
-| **Predictor** | Superforecasting engine. Collects signals from multiple sources, builds calibrated reasoning chains, makes predictions with confidence intervals, and tracks its own accuracy using Brier scores. Has a contrarian mode that deliberately argues against consensus. |
-| **Researcher** | Deep autonomous researcher. Cross-references multiple sources, evaluates credibility using CRAAP criteria (Currency, Relevance, Authority, Accuracy, Purpose), generates cited reports with APA formatting, supports multiple languages. |
-| **Twitter** | Autonomous Twitter/X account manager. Creates content in 7 rotating formats, schedules posts for optimal engagement, responds to mentions, tracks performance metrics. Has an approval queue, so nothing posts without your OK. |
-| **Browser** | Web automation agent. Navigates sites, fills forms, clicks buttons, handles multi-step workflows. Uses Playwright bridge with session persistence. **Mandatory purchase approval gate**: it will never spend your money without explicit confirmation. |
+The image is `ghcr.io/kyzdes/fang-upgrade`. It is built by CI only after
+`fmt + clippy + test` passes, and published only from `main`.
 
 ```bash
-# Activate the Researcher Hand. It starts working immediately.
-openfang hand activate researcher
-
-# Check its progress anytime
-openfang hand status researcher
-
-# Activate lead generation on a daily schedule
-openfang hand activate lead
-
-# Pause without losing state
-openfang hand pause lead
-
-# See all available Hands
-openfang hand list
+docker run -d --name openfang \
+  -e OPENFANG_LISTEN=0.0.0.0:4200 \
+  -p 127.0.0.1:4200:4200 \
+  -v openfang-data:/data \
+  ghcr.io/kyzdes/fang-upgrade:main
 ```
 
-**Build your own.** Define a `HAND.toml` with tools, settings, and a system prompt. Publish to FangHub.
+`OPENFANG_LISTEN` is not optional here, and this is v0.6.9 behaviour rather than
+something the fork introduced: without it the daemon binds `127.0.0.1:50051`
+*inside* the container, where a published port cannot reach it. Measured on
+`:1009ed23…` — the log line reads `OpenFang API server listening on
+http://127.0.0.1:50051` and `curl` against the published port answers nothing.
+With the variable set, `GET /api/health` returns `{"status":"ok","version":"0.6.9"}`.
 
----
+The image exposes `4200`, stores everything under `/data` (`OPENFANG_HOME=/data`,
+declared `VOLUME`), and its entrypoint is `openfang start`.
 
-## OpenFang vs The Landscape
+A fork build says which build it is — `GET /api/version` on the same container:
 
-<p align="center">
-  <img src="public/assets/openfang-vs-claws.png" width="600" alt="OpenFang vs OpenClaw vs ZeroClaw" />
-</p>
-
-### Benchmarks: Measured, Not Marketed
-
-All data from official documentation and public repositories, February 2026.
-
-#### Cold Start Time (lower is better)
-
-```
-ZeroClaw   ██░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10 ms
-OpenFang   ██████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  180 ms    ★
-LangGraph  █████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  2.5 sec
-CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░  3.0 sec
-AutoGen    ██████████████████████████░░░░░░░░░░░░░░░░░  4.0 sec
-OpenClaw   █████████████████████████████████████████░░  5.98 sec
+```json
+{"name":"openfang","version":"0.6.9","git_sha":"1009ed230dcbbc86afd81d0dd17c5cd83e1b7231",
+ "git_describe":"fang-v1-19-g1009ed2","build_date":"2026-08-23T08:14:31Z",
+ "rust_version":"rustc 1.91.1 (ed61e7d7e 2025-11-07)","platform":"linux","arch":"x86_64"}
 ```
 
-#### Idle Memory Usage (lower is better)
+Two tags exist, and only two:
 
-```
-ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    5 MB
-OpenFang   ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   40 MB    ★
-LangGraph  ██████████████████░░░░░░░░░░░░░░░░░░░░░░░░░  180 MB
-CrewAI     ████████████████████░░░░░░░░░░░░░░░░░░░░░░░  200 MB
-AutoGen    █████████████████████████░░░░░░░░░░░░░░░░░░  250 MB
-OpenClaw   ████████████████████████████████████████░░░░  394 MB
-```
+| Tag | Moves? | Use it for |
+|---|---|---|
+| `:main` | yes | looking at the current tip |
+| `:<full-sha>` | no | deploying |
 
-#### Install Size (lower is better)
+**There is no `latest`, deliberately.** A moving tag is a way to ship something
+other than what you tested; a server that pins a sha ships what it tested. The
+reasoning is in `.github/workflows/fork-ci.yml` next to the `tags:` block.
+Verified: `docker run --rm --entrypoint openfang
+ghcr.io/kyzdes/fang-upgrade:1009ed230dcbbc86afd81d0dd17c5cd83e1b7231 --version`
+prints `openfang 0.6.9`.
 
-```
-ZeroClaw   █░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  8.8 MB
-OpenFang   ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   32 MB    ★
-CrewAI     ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  100 MB
-LangGraph  ████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  150 MB
-AutoGen    ████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░  200 MB
-OpenClaw   ████████████████████████████████████████░░░░  500 MB
-```
+## Passkey login
 
-#### Security Systems (higher is better)
+The dashboard can be closed behind a WebAuthn passkey — Face ID, Touch ID,
+Windows Hello or a device PIN — with access handed out as a one-time link whose
+token lives in the URL fragment and is stored only as a SHA-256 hash.
 
-```
-OpenFang   ████████████████████████████████████████████   16      ★
-ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░    6
-OpenClaw   ████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    3
-AutoGen    █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
-LangGraph  █████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    2
-CrewAI     ███░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    1
-```
+**It is off by default.** `AuthConfig::default()` in
+`crates/openfang-types/src/config.rs` sets `enabled: false`, and with it off the
+server behaves exactly as v0.6.9 did. Turning it on requires `rp_id`, `rp_origin`
+and `rp_name`; an incomplete or non-HTTPS configuration is refused at startup
+rather than half-applied.
 
-#### Channel Adapters (higher is better)
+The name shown above the heading on `/login` comes from `auth.rp_name`, not from
+the source — this is a general-purpose fork, and no installation's brand is
+compiled into it.
 
-```
-OpenFang   ████████████████████████████████████████████   40      ★
-ZeroClaw   ███████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░   15
-OpenClaw   █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   13
-CrewAI     ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-AutoGen    ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-LangGraph  ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    0
-```
+- Operating procedure: [`docs/passkey-runbook.md`](docs/passkey-runbook.md)
+- Configuration reference: [`docs/configuration.md`](docs/configuration.md)
 
-#### LLM Providers (higher is better)
+## Building it yourself
 
-```
-ZeroClaw   ████████████████████████████████████████████   28
-OpenFang   ██████████████████████████████████████████░░   27      ★
-LangGraph  ██████████████████████░░░░░░░░░░░░░░░░░░░░░   15
-CrewAI     ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-OpenClaw   ██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░   10
-AutoGen    ███████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    8
-```
+The whole toolchain version lives in one place and CI refuses to start if the four
+copies of it disagree (`rust-toolchain.toml`, `Cargo.toml`'s `rust-version`, both
+`FROM` lines in `Dockerfile`, and the workflow). It is currently **1.91**.
 
-### Feature-by-Feature Comparison
-
-| Feature | OpenFang | OpenClaw | ZeroClaw | CrewAI | AutoGen | LangGraph |
-|---------|----------|----------|----------|--------|---------|-----------|
-| **Language** | **Rust** | TypeScript | **Rust** | Python | Python | Python |
-| **Autonomous Hands** | **7 built-in** | None | None | None | None | None |
-| **Security Layers** | **16 discrete** | 3 basic | 6 layers | 1 basic | Docker | AES enc. |
-| **Agent Sandbox** | **WASM dual-metered** | None | Allowlists | None | Docker | None |
-| **Channel Adapters** | **40** | 13 | 15 | 0 | 0 | 0 |
-| **Built-in Tools** | **53 + MCP + A2A** | 50+ | 12 | Plugins | MCP | LC tools |
-| **Memory** | **SQLite + vector** | File-based | SQLite FTS5 | 4-layer | External | Checkpoints |
-| **Desktop App** | **Tauri 2.0** | None | None | None | Studio | None |
-| **Audit Trail** | **Merkle hash-chain** | Logs | Logs | Tracing | Logs | Checkpoints |
-| **Cold Start** | **<200ms** | ~6s | ~10ms | ~3s | ~4s | ~2.5s |
-| **Install Size** | **~32 MB** | ~500 MB | ~8.8 MB | ~100 MB | ~200 MB | ~150 MB |
-| **License** | MIT | MIT | MIT | MIT | Apache 2.0 | MIT |
-
----
-
-## 16 Security Systems: Defense in Depth
-
-OpenFang doesn't bolt security on after the fact. Every layer is independently testable and operates without a single point of failure.
-
-| # | System | What It Does |
-|---|--------|-------------|
-| 1 | **WASM Dual-Metered Sandbox** | Tool code runs in WebAssembly with fuel metering + epoch interruption. A watchdog thread kills runaway code. |
-| 2 | **Merkle Hash-Chain Audit Trail** | Every action is cryptographically linked to the previous one. Tamper with one entry and the entire chain breaks. |
-| 3 | **Information Flow Taint Tracking** | Labels propagate through execution. Secrets are tracked from source to sink. |
-| 4 | **Ed25519 Signed Agent Manifests** | Every agent identity and capability set is cryptographically signed. |
-| 5 | **SSRF Protection** | Blocks private IPs, cloud metadata endpoints, and DNS rebinding attacks. |
-| 6 | **Secret Zeroization** | `Zeroizing<String>` auto-wipes API keys from memory the instant they're no longer needed. |
-| 7 | **OFP Mutual Authentication** | HMAC-SHA256 nonce-based, constant-time verification for P2P networking. |
-| 8 | **Capability Gates** | Role based access control. Agents declare required tools, the kernel enforces it. |
-| 9 | **Security Headers** | CSP, X-Frame-Options, HSTS, X-Content-Type-Options on every response. |
-| 10 | **Health Endpoint Redaction** | Public health check returns minimal info. Full diagnostics require authentication. |
-| 11 | **Subprocess Sandbox** | `env_clear()` + selective variable passthrough. Process tree isolation with cross-platform kill. |
-| 12 | **Prompt Injection Scanner** | Detects override attempts, data exfiltration patterns, and shell reference injection in skills. |
-| 13 | **Loop Guard** | SHA256-based tool call loop detection with circuit breaker. Handles ping-pong patterns. |
-| 14 | **Session Repair** | 7-phase message history validation and automatic recovery from corruption. |
-| 15 | **Path Traversal Prevention** | Canonicalization with symlink escape prevention. ``../`` doesn't work here. |
-| 16 | **GCRA Rate Limiter** | Cost-aware token bucket rate limiting with per-IP tracking and stale cleanup. |
-
----
-
-## Architecture
-
-14 Rust crates. 137,728 lines of code. Modular kernel design.
-
-```
-openfang-kernel      Orchestration, workflows, metering, RBAC, scheduler, budget tracking
-openfang-runtime     Agent loop, 3 LLM drivers, 53 tools, WASM sandbox, MCP, A2A
-openfang-api         140+ REST/WS/SSE endpoints, OpenAI-compatible API, dashboard
-openfang-channels    40 messaging adapters with rate limiting, DM/group policies
-openfang-memory      SQLite persistence, vector embeddings, canonical sessions, compaction
-openfang-types       Core types, taint tracking, Ed25519 manifest signing, model catalog
-openfang-skills      60 bundled skills, SKILL.md parser, FangHub marketplace
-openfang-hands       7 autonomous Hands, HAND.toml parser, lifecycle management
-openfang-extensions  25 MCP templates, AES-256-GCM credential vault, OAuth2 PKCE
-openfang-wire        OFP P2P protocol with HMAC-SHA256 mutual authentication
-openfang-cli         CLI with daemon management, TUI dashboard, MCP server mode
-openfang-desktop     Tauri 2.0 native app (system tray, notifications, global shortcuts)
-openfang-migrate     OpenClaw, LangChain, AutoGPT migration engine
-xtask                Build automation
-```
-
----
-
-## 40 Channel Adapters
-
-Connect your agents to every platform your users are on.
-
-**Core:** Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Email (IMAP/SMTP)
-**Enterprise:** Microsoft Teams, Mattermost, Google Chat, Webex, Feishu/Lark, Zulip
-**Social:** LINE, Viber, Facebook Messenger, Mastodon, Bluesky, Reddit, LinkedIn, Twitch
-**Community:** IRC, XMPP, Guilded, Revolt, Keybase, Discourse, Gitter
-**Privacy:** Threema, Nostr, Mumble, Nextcloud Talk, Rocket.Chat, Ntfy, Gotify
-**Workplace:** Pumble, Flock, Twist, DingTalk, Zalo, Webhooks
-
-Each adapter supports per-channel model overrides, DM/group policies, rate limiting, and output formatting.
-
----
-
-## WhatsApp Web Gateway (QR Code)
-
-Connect your personal WhatsApp account to OpenFang via QR code, just like WhatsApp Web. No Meta Business account required.
-
-### Prerequisites
-
-- **Node.js >= 18** installed ([download](https://nodejs.org/))
-- OpenFang installed and initialized
-
-### Setup
-
-**1. Install the gateway dependencies:**
+The supported path is the multi-stage `Dockerfile` (`rust:1.91-slim-bookworm` for
+both stages). Its builder stage runs `cargo build --release --bin openfang`:
 
 ```bash
-cd packages/whatsapp-gateway
-npm install
+docker build -t fang-upgrade \
+  --build-arg GIT_SHA=$(git rev-parse HEAD) \
+  --build-arg GIT_DESCRIBE=$(git describe --tags --always --dirty) \
+  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 ```
 
-**2. Configure `config.toml`:**
-
-```toml
-[channels.whatsapp]
-mode = "web"
-default_agent = "assistant"
-```
-
-**3. Set the gateway URL (choose one):**
-
-Add to your shell profile for persistence:
-
-```bash
-# macOS / Linux
-echo 'export WHATSAPP_WEB_GATEWAY_URL="http://127.0.0.1:3009"' >> ~/.zshrc
-source ~/.zshrc
-```
-
-Or set it inline when starting the gateway:
-
-```bash
-export WHATSAPP_WEB_GATEWAY_URL="http://127.0.0.1:3009"
-```
-
-**4. Start the gateway:**
-
-```bash
-node packages/whatsapp-gateway/index.js
-```
-
-The gateway listens on port `3009` by default. Override with `WHATSAPP_GATEWAY_PORT`.
-
-**5. Start OpenFang:**
-
-```bash
-openfang start
-# Dashboard at http://localhost:4200
-```
-
-**6. Scan the QR code:**
-
-Open the dashboard → **Channels** → **WhatsApp**. A QR code will appear. Scan it with your phone:
-
-> **WhatsApp** → **Settings** → **Linked Devices** → **Link a Device**
-
-Once scanned, the status changes to `connected` and incoming messages are routed to your configured agent.
-
-### Gateway Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `WHATSAPP_WEB_GATEWAY_URL` | Gateway URL for OpenFang to connect to | _(empty = disabled)_ |
-| `WHATSAPP_GATEWAY_PORT` | Port the gateway listens on | `3009` |
-| `OPENFANG_URL` | OpenFang API URL the gateway reports to | `http://127.0.0.1:4200` |
-| `OPENFANG_DEFAULT_AGENT` | Agent that handles incoming messages | `assistant` |
-
-### Gateway API Endpoints
-
-| Method | Route | Description |
-|--------|-------|-------------|
-| `POST` | `/login/start` | Generate QR code (returns base64 PNG) |
-| `GET` | `/login/status` | Connection status (`disconnected`, `qr_ready`, `connected`) |
-| `POST` | `/message/send` | Send a message (`{ "to": "5511999999999", "text": "Hello" }`) |
-| `GET` | `/health` | Health check |
-
-### Alternative: WhatsApp Cloud API
-
-For production workloads, use the [WhatsApp Cloud API](https://developers.facebook.com/docs/whatsapp/cloud-api) with a Meta Business account. See the [Cloud API configuration docs](https://openfang.sh/docs/channels/whatsapp).
-
-
-
----
-
-## 27 LLM Providers, 123+ Models
-
-3 native drivers (Anthropic, Gemini, OpenAI-compatible) route to 27 providers:
-
-Anthropic, Gemini, OpenAI, Groq, DeepSeek, OpenRouter, Together, Mistral, Fireworks, Cohere, Perplexity, xAI, AI21, Cerebras, SambaNova, HuggingFace, Replicate, Ollama, vLLM, LM Studio, Qwen, MiniMax, Zhipu, Moonshot, Qianfan, Bedrock, and more.
-
-Intelligent routing with task complexity scoring, automatic fallback, cost tracking, and per-model pricing.
-
----
-
-## Migrate from OpenClaw
-
-Already running OpenClaw? One command:
-
-```bash
-# Migrate everything: agents, memory, skills, configs.
-openfang migrate --from openclaw
-
-# Migrate from a specific path
-openfang migrate --from openclaw --path ~/.openclaw
-
-# Dry run first to see what would change
-openfang migrate --from openclaw --dry-run
-```
-
-The migration engine imports your agents, conversation history, skills, and configuration. OpenFang reads SKILL.md natively and is compatible with the ClawHub marketplace.
-
----
-
-## OpenAI-Compatible API
-
-Drop-in replacement. Point your existing tools at OpenFang:
-
-```bash
-curl -X POST localhost:4200/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "researcher",
-    "messages": [{"role": "user", "content": "Analyze Q4 market trends"}],
-    "stream": true
-  }'
-```
-
-140+ REST/WS/SSE endpoints covering agents, memory, workflows, channels, models, skills, A2A, Hands, and more.
-
----
-
-## Quick Start
-
-```bash
-# 1. Install (macOS/Linux)
-curl -fsSL https://openfang.sh/install | sh
-
-# 2. Initialize. Walks you through provider setup.
-openfang init
-
-# 3. Start the daemon
-openfang start
-
-# 4. Dashboard is live at http://localhost:4200
-
-# 5. Activate a Hand. It starts working for you.
-openfang hand activate researcher
-
-# 6. Chat with an agent
-openfang chat researcher
-> "What are the emerging trends in AI agent frameworks?"
-
-# 7. Spawn a pre-built agent
-openfang agent spawn coder
-```
-
-<details>
-<summary><strong>Windows (PowerShell)</strong></summary>
-
-```powershell
-irm https://openfang.sh/install.ps1 | iex
-openfang init
-openfang start
-```
-
-</details>
-
----
-
-## Development
-
-```bash
-# Build the workspace
-cargo build --workspace --lib
-
-# Run all tests (1,767+)
-cargo test --workspace
-
-# Lint (must be 0 warnings)
-cargo clippy --workspace --all-targets -- -D warnings
-
-# Format
-cargo fmt --all -- --check
-```
-
----
-
-## Stability Notice
-
-OpenFang v0.5.10 is pre-1.0. The architecture is solid, the test suite is comprehensive, and the security model is deep. That said:
-
-- **Breaking changes** may occur between minor versions until v1.0.
-- **Some Hands** are more mature than others. Browser and Researcher are the most battle tested.
-- **Edge cases** exist. If you find one, [open an issue](https://github.com/RightNow-AI/openfang/issues).
-- **Pin to a specific commit** for production deployments until v1.0.
-
-We ship fast and fix fast. The goal is a rock solid v1.0 by mid 2026.
-
----
-
-## Security
-
-To report a security vulnerability, email **jaber@rightnowai.co**. We take all reports seriously and will respond within 48 hours.
-
----
+Those three build args are what `/api/version` reports. Without them the build
+still succeeds and honestly answers `"git_sha":"unknown"`.
+
+Building on a host instead needs the system libraries the automated builds
+install, and they are listed in exactly two places rather than described here:
+`pkg-config libssl-dev perl make` in the `Dockerfile`'s builder stage, and the
+Tauri libraries in the `Install Tauri system deps` step of `fork-ci.yml` — the
+desktop crate is a workspace member, so `--workspace` pulls it in even when you
+only want the daemon.
+
+## How the checks run
+
+`.github/workflows/fork-ci.yml` runs on pushes to `main` (and `ours`) and on pull
+requests into them. Two gates, both required:
+
+1. **`fmt + clippy + test`**
+
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace -- --test-threads=2
+   ```
+
+2. **The image build.** The Dockerfile is built on every pull request and thrown
+   away; only a push to `main` publishes it. This gate exists because a broken
+   Dockerfile used to surface *after* a merge — that is how a `rust 1.88` builder
+   stage, below the declared MSRV, once reached `main`.
+
+Upstream's own `ci.yml` and `release.yml` are kept in the tree but triggered only
+on a branch named `upstream-sync-only`, which does not exist on this remote — so
+they do not run.
+
+The registry rows carry `fix <sha>` references inherited from an earlier copy of
+this work; several of those shas (`cbb0660`, `acc85d7`, `b86e65b`, …) do not
+resolve in this repository. Trust the row's description and its script, not its
+sha.
+
+Shell reproduction scripts under `tests/fang/` need a Docker daemon and named
+containers; they are run by hand, not by CI, and `run.sh --list` says which ones
+cost a real provider call.
+
+## Layout notes
+
+- [`FORK-NOTES.md`](FORK-NOTES.md) — what was wrong, what changed, measured
+  before/after.
+- [`docs/upstream-README.md`](docs/upstream-README.md) — upstream's README, kept
+  verbatim as heritage. It describes upstream's install script, website and
+  release channels, none of which this fork controls; none of its claims have been
+  re-verified here.
+- [`CLAUDE.md`](CLAUDE.md) and [`docs/subagent-task-template.md`](docs/subagent-task-template.md)
+  — how work on this fork is actually run and accepted.
 
 ## License
 
-MIT. Use it however you want.
-
----
-
-## Links
-
-- [Website & Documentation](https://openfang.sh)
-- [Quick Start Guide](https://openfang.sh/docs/getting-started)
-- [GitHub](https://github.com/RightNow-AI/openfang)
-- [Discord](https://discord.gg/sSJqgNnq6X)
-- [Twitter / X](https://x.com/openfangg)
-
----
-
-## Built by RightNow
-
-<p align="center">
-  <a href="https://www.rightnowai.co/">
-    <img src="public/assets/rightnow-logo.webp" width="60" alt="RightNow Logo" />
-  </a>
-</p>
-
-<p align="center">
-  OpenFang is built and maintained by <a href="https://x.com/Akashi203"><strong>Jaber</strong></a>, Founder of <a href="https://www.rightnowai.co/"><strong>RightNow</strong></a>.
-</p>
-
-<p align="center">
-  <a href="https://www.rightnowai.co/">Website</a> &bull;
-  <a href="https://x.com/Akashi203">Twitter / X</a> &bull;
-  <a href="https://www.buymeacoffee.com/openfang" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
-</p>
-
----
-
-<p align="center">
-  <strong>Built with Rust. Secured with 16 layers. Agents that actually work for you.</strong>
-</p>
+Unchanged from upstream: Apache-2.0 OR MIT (`license` in `[workspace.package]`).

@@ -685,10 +685,10 @@ rp_name = "OpenFang"
 session_ttl_hours = 168
 ```
 
-Create one-time registration links in a private file:
+Hand out a one-time registration link, one call per slot, into a private file:
 
 ```bash
-openfang auth bootstrap --expires-hours 72 --output /secure/path/passkey-invites.txt
+openfang auth invite alice --name 'Alice' --expires-hours 72 --output /secure/path/alice-invite.txt
 ```
 
 The browser dashboard never accepts or stores the machine API key. Manage passkey slots over SSH with `openfang auth list`, `revoke`, and `reset-slot`.
