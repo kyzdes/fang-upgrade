@@ -29,7 +29,7 @@ OpenFang ships **42 builtin providers** (`builtin_providers()` in
 sit with `auth_status: missing` and no key, which is harmless but made `/api/providers`
 misleading at a glance.
 
-**This branch narrows both catalogue endpoints instead.** `/api/providers` and `/api/models`
+**This fork narrows both catalogue endpoints instead.** `/api/providers` and `/api/models`
 now return the providers you actually have — the ones named in `config.toml`, the ones with a
 credential detected, the local ones that need no credential — plus a short curated list of
 well-known providers kept visible so they can still be set up from the dashboard. Pass
@@ -44,7 +44,7 @@ Two counters, and they do not mean the same thing, which is why both exist:
 
 `/api/models` keeps `total` and `available` counting the catalogue because that is what they
 counted before, and a field that quietly changes meaning is worse than a field with an awkward
-name. Measured on this instance before the change: `total: 229`, `available: 32`.
+name.
 
 **Do not read `auth_status: missing` as "42 dead entries".** The local providers (ollama, vllm,
 lmstudio, lemonade) need no key at all and report `not_required`, not `missing`. An earlier
@@ -110,7 +110,8 @@ what the routers publish, not a claim that inference is free — cost accounting
 | `qwen/qwen3-30b-a3b` | 131 072 | 131 072 |
 | `qwen/qwen3-32b` | 40 960 | 40 960 |
 
-These carry **real limits published by the router**, which is why they are the ones we default to.
+These carry **real limits published by the router**, which is why `[default_model]` above points
+here rather than at y7.
 
 ### `y7router` — 15 models
 
