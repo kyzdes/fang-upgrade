@@ -1,6 +1,8 @@
 # OpenFang — Agent Instructions
 
-## ЭТА МАШИНА, ветка `ours` — прочитать до всего остального
+## ЭТА МАШИНА — прочитать до всего остального
+
+Ветки `ours` больше нет (удалена 23 августа как дубликат `main`); ствол — `main`.
 
 Всё, что ниже «Project Overview», унаследовано от апстрима и написано под Windows.
 Намерение тех разделов верное — юнит-тесты проходят и на мёртвом коде, поэтому живая
@@ -18,8 +20,8 @@
 22 ГБ полной цели сборки):
 
 ```bash
-sh /root/.claude/skills/openfang/scripts/ofgate <worktree> [--only fmt,clippy,test] [--wait]
-python3 /root/.claude/skills/openfang/scripts/ofmutate <worktree> --test <ф> -p <крейт>
+sh /root/.claude/skills/fang-upgrade/scripts/ofgate <worktree> [--only fmt,clippy,test] [--wait]
+python3 /root/.claude/skills/fang-upgrade/scripts/ofmutate <worktree> --test <ф> -p <крейт>
 ```
 
 `ofgate` гоняет то же, что Fork CI, и в порядке CI: `cargo fmt --all -- --check`,
@@ -59,9 +61,9 @@ python3 /root/.claude/skills/openfang/scripts/ofmutate <worktree> --test <ф> -p
 3. **Три круга с одним классом дефекта — решение о подходе, а не четвёртый круг.**
 
 Прод — контейнер `openfang-openfang-1` на `127.0.0.1:4200`, **не трогать**. Стенд —
-`openfang-staging` на `127.0.0.1:4201`. На 2026-08-17 у них **один image ID**
-(`cbbebc3f9e38`): `openfang-openfang:latest` и `openfang:sprint3` — два тега одной
-сборки, то есть стенд изолирует порт и данные, но не код. Проверять
+`openfang-staging` на `127.0.0.1:4201`. На 2026-08-23 у них **один и тот же image ID**
+(`sha256:49d9ba8b274a…`), оба тегированы `ghcr.io/kyzdes/fang-upgrade:1009ed230dcb…`
+(из GHCR, не локальная сборка) — стенд изолирует порт и данные, но не код. Проверять
 `docker inspect --format '{{.Image}}'`, а не имя тега.
 
 ## Project Overview
