@@ -398,7 +398,7 @@ session_ttl_hours = 168
 | `enabled` | bool | `false` | Enable passkey authentication for the dashboard. |
 | `rp_id` | string | `""` | WebAuthn relying-party domain. It cannot be changed after passkeys are enrolled. |
 | `rp_origin` | string | `""` | Exact public HTTPS origin. Ports, paths, additional origins, and non-HTTPS values are rejected. |
-| `rp_name` | string | `"OpenFang"` | Name shown by the authenticator during registration, and above the heading on `/login`. |
+| `rp_name` | string | `"OpenFang"` | Name shown by the authenticator during registration, and above the heading on `/login` and `/register`. At the default value it matches the wordmark already on the card and is not drawn a second time. |
 | `session_ttl_hours` | u64 | `168` (7 days) | Opaque server-side session lifetime. |
 
 Hand out the first one-time enrolment link after configuration — one call per slot, and the slot is created on demand:

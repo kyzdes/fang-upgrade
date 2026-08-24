@@ -127,17 +127,31 @@ pub async fn login_page(State(state): State<Arc<AppState>>) -> impl IntoResponse
 
 /// GET /register — standalone invitation-based passkey enrollment page.
 /// The invitation remains in the URL fragment and is sent only in the POST body.
-pub async fn register_page() -> impl IntoResponse {
-    auth_html_response(register_html())
+///
+/// The name above the heading comes from `auth.rp_name`, exactly as on `/login`:
+/// the same binary serves every installation, and both entrances say the same
+/// thing about which one this is.
+pub async fn register_page(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    auth_html_response(register_html(&state.kernel.config.auth.rp_name))
 }
+
+/// Словесный знак продукта в шапке карточки входа. Тот же литерал стоит в
+/// разметке обеих страниц; что они не разошлись, проверяет
+/// `brand_wordmark_matches_the_markup`.
+const BRAND_WORDMARK: &str = "OPENFANG";
 
 /// Render the installation name above the heading of an auth page.
 ///
-/// Empty or whitespace-only `auth.rp_name` renders nothing at all rather than an
-/// empty box. The value is operator-supplied config, so it is HTML-escaped.
+/// Two cases render nothing at all rather than a box:
+/// * empty or whitespace-only `auth.rp_name` — there is nothing to draw;
+/// * a name equal to [`BRAND_WORDMARK`] (the default `auth.rp_name` is
+///   `OpenFang`) — the wordmark is already on the card, and a second storey
+///   repeating it carries no information.
+///
+/// The value is operator-supplied config, so it is HTML-escaped.
 fn eyebrow(rp_name: &str) -> String {
     let name = rp_name.trim();
-    if name.is_empty() {
+    if name.is_empty() || name.eq_ignore_ascii_case(BRAND_WORDMARK) {
         String::new()
     } else {
         format!(
@@ -200,11 +214,13 @@ fn login_html(rp_name: &str) -> String {
     .concat()
 }
 
-fn register_html() -> String {
+fn register_html(rp_name: &str) -> String {
     [
         r#"<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Регистрация passkey — OpenFang</title><link rel="icon" href="/favicon.ico"><style>"#,
         AUTH_STYLE,
-        r#"</style></head><body><main class="card"><div class="brand"><img src="/logo.png" alt="">OPENFANG</div><div class="eyebrow">Доверенное устройство</div><h1>Привязать passkey</h1><p>Ссылка одноразовая и действует 72 часа. После регистрации вы сразу попадёте в админку.</p><div class="slot" id="slot">Проверим приглашение после нажатия.</div><button class="button" id="action">Создать passkey</button><div class="status" id="status" role="status"></div><div class="foot">Для подтверждения потребуется биометрия или PIN устройства.</div></main><script nonce="__NONCE__">"#,
+        r#"</style></head><body><main class="card"><div class="brand"><img src="/logo.png" alt="">OPENFANG</div>"#,
+        eyebrow(rp_name).as_str(),
+        r#"<h1>Привязать passkey</h1><p>Ссылка одноразовая и действует 72 часа. После регистрации вы сразу попадёте в админку.</p><div class="slot" id="slot">Проверим приглашение после нажатия.</div><button class="button" id="action">Создать passkey</button><div class="status" id="status" role="status"></div><div class="foot">Для подтверждения потребуется биометрия или PIN устройства.</div></main><script nonce="__NONCE__">"#,
         AUTH_SCRIPT,
         r#"var token='';try{token=decodeURIComponent(window.location.hash.slice(1))}catch(e){}if(token)history.replaceState(null,'','/register');var button=document.getElementById('action'),status=document.getElementById('status'),slot=document.getElementById('slot');if(!supported()){button.disabled=true;status.className='status error';status.textContent='Этот браузер или контекст не поддерживает passkey.'}else if(!token){button.disabled=true;status.className='status error';status.textContent='В ссылке нет токена приглашения.'}button.addEventListener('click',async function(){button.disabled=true;status.className='status';status.textContent='Проверяем приглашение…';try{var start=await post('/api/auth/passkey/register/start',{token:token});slot.innerHTML='<strong></strong><span></span>';slot.querySelector('strong').textContent=start.display_name;slot.querySelector('span').textContent='Слот: '+start.slot;status.textContent='Подтвердите создание passkey на устройстве…';var credential=await navigator.credentials.create({publicKey:creationOptions(start)});await post('/api/auth/passkey/register/finish',{ceremony_id:start.ceremony_id,credential:registrationCredential(credential)});token='';window.location.replace('/')}catch(e){status.className='status error';status.textContent=e.message||'Не удалось создать passkey';button.disabled=false}});</script></body></html>"#,
     ]
@@ -332,9 +348,6 @@ mod tests {
             1,
             "ровно одна надпись над заголовком, и она из конфига"
         );
-
-        let default_html = login_html("OpenFang");
-        assert!(default_html.contains(r#"<div class="eyebrow">OpenFang</div>"#));
     }
 
     /// `auth.rp_name` — значение из конфига оператора, то есть вход, а не
@@ -346,11 +359,69 @@ mod tests {
         assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
     }
 
+    /// Умолчание `auth.rp_name` — «OpenFang», и словесный знак в шапке карточки
+    /// тоже «OPENFANG». На установке, которая имя не меняла, страница печатала
+    /// его дважды: знак и под ним eyebrow. Второй этаж не несёт информации.
+    #[test]
+    fn the_product_name_is_not_printed_twice_by_default() {
+        for value in ["OpenFang", "openfang", "  OPENFANG  "] {
+            let html = login_html(value);
+            assert!(
+                !html.contains(r#"class="eyebrow""#),
+                "{value:?} совпадает со словесным знаком — eyebrow лишний"
+            );
+        }
+    }
+
+    /// `/register` — вторая страница входа и такой же публичный экран, как
+    /// `/login`. Имя на ней было прибито строкой, то есть `auth.rp_name`
+    /// оператора туда не доходил вовсе.
+    #[test]
+    fn register_page_carries_the_configured_rp_name() {
+        let html = register_html("Acme Robotics");
+        assert!(
+            !html.contains("Доверенное устройство"),
+            "имя на /register прибито в исходник, а не взято из auth.rp_name"
+        );
+        assert!(
+            html.contains(r#"<div class="eyebrow">Acme Robotics</div>"#),
+            "rp_name must reach /register: {html}"
+        );
+        assert_eq!(
+            html.matches(r#"<div class="eyebrow">"#).count(),
+            1,
+            "ровно одна надпись над заголовком, и она из конфига"
+        );
+        // Экранирование и умолчание — те же правила, что на /login.
+        assert!(!register_html("</div><script>alert(1)</script>").contains("<script>alert(1)"));
+        for value in ["", "   ", "OpenFang"] {
+            assert!(
+                !register_html(value).contains(r#"class="eyebrow""#),
+                "{value:?} should render no eyebrow on /register"
+            );
+        }
+    }
+
+    /// Правило «не печатать имя дважды» сравнивает `rp_name` с константой.
+    /// Если разметку поменяют, а константу нет, правило замолчит.
+    #[test]
+    fn brand_wordmark_matches_the_markup() {
+        let needle = format!(r#"alt="">{BRAND_WORDMARK}</div>"#);
+        assert!(
+            login_html("Acme").contains(&needle),
+            "/login разошёлся с BRAND_WORDMARK"
+        );
+        assert!(
+            register_html("Acme").contains(&needle),
+            "/register разошёлся с BRAND_WORDMARK"
+        );
+    }
+
     /// Пустое имя даёт пустую коробку в вёрстке — рисовать нечего, значит и
     /// элемента быть не должно.
     #[test]
     fn empty_rp_name_renders_no_eyebrow_at_all() {
-        for value in ["", "   "] {
+        for value in ["", "   ", "\t"] {
             let html = login_html(value);
             assert!(
                 !html.contains(r#"class="eyebrow""#),

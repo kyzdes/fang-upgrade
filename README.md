@@ -33,11 +33,20 @@ performed, and the phantom-action guard covers channels only. That row is in the
 list on purpose. **[`FORK-NOTES.md`](FORK-NOTES.md)** explains each fix with its
 before/after measurement.
 
-Measured, not estimated: **77 commits** since the v0.6.9 base (`f6e8539`), of which
-**34** are `fix(...)`/`feat(...)` (`git log --oneline --no-merges f6e8539..main`).
-No headline "N defects fixed" number appears in this README, for the reason
-`FORK-NOTES.md` gives: an earlier copy of these notes carried one, and it went
-stale while the work continued.
+Measured, not estimated — and pinned to a commit, because a count taken against a
+moving `main` is stale the next time anyone merges. This README once said 77 while
+the command beside it answered 78. At `03b9772`:
+
+```bash
+git log --oneline --no-merges f6e8539..03b9772 | wc -l                        # 80
+git log --oneline --no-merges f6e8539..03b9772 |
+  grep -cE '^[0-9a-f]+ (fix|feat)[(:]'                                        # 34
+```
+
+Swap `03b9772` for `main` to see today's; both numbers only grow. No headline
+"N defects fixed" number appears in this README, for the reason `FORK-NOTES.md`
+gives: an earlier copy of these notes carried one, and it went stale while the
+work continued.
 
 The themes, each traceable to commits in `git log`:
 
@@ -105,7 +114,9 @@ Two tags exist, and only two:
 
 **There is no `latest`, deliberately.** A moving tag is a way to ship something
 other than what you tested; a server that pins a sha ships what it tested. The
-reasoning is in `.github/workflows/fork-ci.yml` next to the `tags:` block.
+`tags:` block of the `image` job in `.github/workflows/fork-ci.yml` is the whole
+list — two entries, neither of them `latest` — and the reasoning is in that job's
+header comment.
 Verified: `docker run --rm --entrypoint openfang
 ghcr.io/kyzdes/fang-upgrade:1009ed230dcbbc86afd81d0dd17c5cd83e1b7231 --version`
 prints `openfang 0.6.9`.
@@ -122,18 +133,22 @@ server behaves exactly as v0.6.9 did. Turning it on requires `rp_id`, `rp_origin
 and `rp_name`; an incomplete or non-HTTPS configuration is refused at startup
 rather than half-applied.
 
-The name shown above the heading on `/login` comes from `auth.rp_name`, not from
-the source — this is a general-purpose fork, and no installation's brand is
-compiled into it.
+The name shown above the heading on `/login` and `/register` comes from
+`auth.rp_name`, not from the source — this is a general-purpose fork, and no
+installation's brand is compiled into it. Left at its default (`OpenFang`, the
+same word as the wordmark on the card) it renders nothing at all rather than
+printing the product name twice.
 
 - Operating procedure: [`docs/passkey-runbook.md`](docs/passkey-runbook.md)
 - Configuration reference: [`docs/configuration.md`](docs/configuration.md)
 
 ## Building it yourself
 
-The whole toolchain version lives in one place and CI refuses to start if the four
-copies of it disagree (`rust-toolchain.toml`, `Cargo.toml`'s `rust-version`, both
-`FROM` lines in `Dockerfile`, and the workflow). It is currently **1.91**.
+The whole toolchain version lives in one place, and CI fails before it compiles
+anything if the four places that repeat it disagree (`rust-toolchain.toml`,
+`Cargo.toml`'s `rust-version`, `Dockerfile`'s two `FROM` lines, and the workflow's
+own `toolchain:`) — the step is named `версии тулчейна сходятся во всех четырёх
+местах` and runs directly after `actions/checkout`. It is currently **1.91**.
 
 The supported path is the multi-stage `Dockerfile` (`rust:1.91-slim-bookworm` for
 both stages). Its builder stage runs `cargo build --release --bin openfang`:
@@ -157,8 +172,8 @@ only want the daemon.
 
 ## How the checks run
 
-`.github/workflows/fork-ci.yml` runs on pushes to `main` (and `ours`) and on pull
-requests into them. Two gates, both required:
+`.github/workflows/fork-ci.yml` runs on pushes to `main` and on pull requests into
+it. Two gates, both required:
 
 1. **`fmt + clippy + test`**
 
@@ -173,9 +188,12 @@ requests into them. Two gates, both required:
    Dockerfile used to surface *after* a merge — that is how a `rust 1.88` builder
    stage, below the declared MSRV, once reached `main`.
 
-Upstream's own `ci.yml` and `release.yml` are kept in the tree but triggered only
-on a branch named `upstream-sync-only`, which does not exist on this remote — so
-they do not run.
+Upstream's own `ci.yml` and `release.yml` are kept in the tree with their push and
+pull-request triggers narrowed to a branch named `upstream-sync-only`, which does
+not exist on this remote — so nothing anyone pushes here starts them. Both also
+declare `workflow_dispatch`, so both can still be started **by hand from any
+branch**, which is the point: the files stay runnable for the day this fork syncs
+with upstream. "Narrowed" is not "disabled".
 
 The registry rows carry `fix <sha>` references inherited from an earlier copy of
 this work; several of those shas (`cbb0660`, `acc85d7`, `b86e65b`, …) do not
@@ -190,6 +208,9 @@ cost a real provider call.
 
 - [`FORK-NOTES.md`](FORK-NOTES.md) — what was wrong, what changed, measured
   before/after.
+- [`docs/router-notes-y7-hyperfusion.md`](docs/router-notes-y7-hyperfusion.md) —
+  measured failure modes of two OpenAI-compatible routers, and how to configure
+  an instance against them.
 - [`docs/upstream-README.md`](docs/upstream-README.md) — upstream's README, kept
   verbatim as heritage. It describes upstream's install script, website and
   release channels, none of which this fork controls; none of its claims have been

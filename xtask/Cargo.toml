@@ -4,3 +4,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Build automation for the OpenFang workspace"
+
+# Только для теста-стража xtask/tests/no_installation_identifiers.rs: он хранит
+# имена установки хэшами, а не текстом, и SHA-256 нужен, чтобы владелец имени мог
+# проверить покрытие обычным `sha256sum`, не заглядывая в код.
+[dev-dependencies]
+sha2.workspace = true
