@@ -1,192 +1,454 @@
-//! Страж имени установки.
+//! Страж значений, привязанных к одной установке.
 //!
-//! Форк публичный: его исходники читают и поднимают у себя чужие люди. Строка,
-//! называющая конкретную установку — её бренд, её домен, её тайлнет-адрес, её
-//! WebAuthn-личность, — попав в исходник, уезжает к каждому, кто соберёт этот
-//! код. Так и случилось: страница входа несла бренд оператора, фикстуры тестов —
-//! живой домен, а `docker-compose.dokploy.yml` — имя traefik-мидлвари и адрес
-//! прода. Одной вычистки мало, потому что следующая правка занесёт заново;
-//! поэтому запрет живёт тестом, а не памятью.
+//! Форк публичный: его исходники читают и поднимают у себя чужие люди. Значение,
+//! называющее конкретную установку — её домен, её адрес, её WebAuthn-личность, —
+//! попав в исходник, уезжает к каждому, кто соберёт этот код. Так уже случалось:
+//! страница входа несла бренд оператора, фикстуры тестов — живой домен, а
+//! `docker-compose.dokploy.yml` — адрес прода. Одной вычистки мало, потому что
+//! следующая правка занесёт заново; поэтому запрет живёт тестом, а не памятью.
 //!
-//! # Страж не содержит того, что ищет
+//! # Почему здесь нет ни имён, ни их хэшей
 //!
-//! Предыдущая версия хранила имена открытым текстом и исключала себя из обхода.
-//! Итогом обезличивания было не ноль вхождений имени в публичном репозитории, а
-//! тринадцать — и десять из них лежали ровно в том файле, который заведён это
-//! имя не пускать. Здесь имён нет: хранятся только длина токена и два его хэша
-//! (FNV-1a 64 для быстрого просеивания, SHA-256 для подтверждения). Обход
-//! сравнивает хэши окон, а не строки, и **этот файл из обхода не исключён**.
+//! Две предыдущие редакции пытались «обнаружить строку, не содержа её». Первая
+//! хранила имена открытым текстом (и исключала себя из обхода — итогом
+//! обезличивания были тринадцать вхождений имени, десять из них в самом страже).
+//! Вторая заменила их на тройки `(длина, FNV-1a, SHA-256)` и утверждала в
+//! докстринге, что «обратно из таблицы имя не читается». **Утверждение было
+//! ложным и опровергнуто прогоном:** словарь из 1603 кандидатов восстановил все
+//! четыре токена за долю секунды. Несолёный хэш от короткой угадываемой строки с
+//! ОПУБЛИКОВАННОЙ длиной — учебниковый перебор, а секретной соли в публичном
+//! файле не бывает. Такая таблица хуже открытого текста: она создаёт видимость
+//! защиты.
 //!
-//! Проверить, что конкретное имя покрыто, может любой, кто это имя знает, —
-//! стандартной командой, не заглядывая в код:
+//! Поэтому подход сменён: **страж проверяет форму значения, а не список имён.**
+//! Ему нечего скрывать, он не исключает себя из обхода, и всё, что в нём
+//! написано открытым текстом, — это РАЗРЕШЁННЫЕ значения.
 //!
-//! ```text
-//! $ printf '%s' "<имя в нижнем регистре>" | sha256sum
-//! ```
+//! # Форма: что считается привязанным к установке
 //!
-//! и сравнить с колонкой `sha256` в [`FORBIDDEN_TOKEN_HASHES`]. Обратно —
-//! из таблицы имя не читается. Тот же вопрос задаётся и прогоном, без
-//! записи имени в файл:
+//! ## Класс 1. Литерал адреса хоста
 //!
-//! ```text
-//! $ OFGUARD_PROBE='<имя>' cargo test -p xtask --test no_installation_identifiers \
-//!       -- --ignored --nocapture probe_token_coverage
-//! ```
+//! Адрес-литерал называет одну машину. Диапазон (запись с длиной префикса,
+//! `10.0.0.0/8`, `fd7a:115c:a1e0::/48`) называет КЛАСС адресов и машины не
+//! называет — поэтому диапазоны пропускаются, а host-литералы разбираются.
+//! Проверка идёт двумя порогами:
 //!
-//! # Что именно ловится
+//! * **везде** красное, если адрес маршрутизируется в публичной сети. Не
+//!   маршрутизируются и молча пропускаются: `0.0.0.0/8`, `10/8`, `100.64/10`
+//!   (RFC 6598), `127/8`, `169.254/16`, `172.16/12`, `192.168/16`, диапазоны
+//!   документации RFC 5737 (`192.0.2/24`, `198.51.100/24`, `203.0.113/24`),
+//!   `224/4`, `240/4`; в IPv6 — `::/8` (включая `::` и `::1`), ULA `fc00::/7`,
+//!   link-local `fe80::/10`, документация `2001:db8::/32` (RFC 3849), `ff00::/8`;
+//! * **в файле конфигурации** (`*.toml`, `*.yml`, `*.yaml`, `*.json`, `*.ini`,
+//!   `*.conf`, `*.env`/`.env*`, `*.service`, `*.nix`, `*.example`, `Dockerfile*`,
+//!   `docker-compose*`) порог выше: там законны только loopback, `0.0.0.0` и
+//!   диапазоны документации. Приватный адрес в опубликованном конфиге — это
+//!   привязка к чьей-то одной сети; ровно так адрес прода и уехал в
+//!   `docker-compose.dokploy.yml`.
 //!
-//! 1. **Имена оператора.** Закрытый список токенов (по хэшам), сравнение
-//!    регистронезависимое, совпадение ищется в любом месте строки. Списком, а не
-//!    эвристикой: слово «резерв» встречается в русской локали
-//!    (`agents.none_fallback`) как обычное слово, и общий поиск по именам людей
-//!    покраснел бы на нём.
-//! 2. **WebAuthn relying party.** `rp_id`, `rp_origin` и `rp_name` — это и есть
-//!    личность установки по определению: RP ID обязан совпадать с публичным
-//!    доменом. Правило: если за ключом (с необязательной закрывающей кавычкой,
-//!    как в JSON) идёт `:`, `=` или `(`, а за ними — **строковый литерал в
-//!    кавычках**, то этот литерал обязан быть либо пустым, либо зарезервированным
-//!    именем (RFC 2606/6761), либо нейтральным названием продукта. Литерал
-//!    ищется через необязательную обёртку из идентификаторов и скобок
-//!    (`String::from("…")`, `Some("…")`), через перевод строки и в форме
-//!    raw-строки (`r"…"`, `r#"…"#`). Значение **без кавычек** (голый скаляр
-//!    YAML/TOML, `${VAR}`, вызов функции) этим правилом не разбирается — такие
-//!    случаи ловятся только классом 1.
+//! Два вида ложных срабатываний сняты формой, а не списком: `Chrome/131.0.0.0`
+//! — это версия (четвёрка, приклеенная одним `/` к имени продукта, перед которым
+//! нет слэша), а `${x:0:2}` и случайные байты в png дают две шестнадцатеричные
+//! группы вокруг `::`. Поэтому сокращённая запись IPv6 разбирается только от
+//! трёх групп. Цена сказана прямо: адрес, уместившийся в две группы, этой
+//! проверкой не ловится, и тайлнет-адрес установки не ловится тоже — тайлнет
+//! живёт в приватном пространстве (`100.64/10`, ULA), которое законно
+//! встречается в коде FANG-95 и в тестах, и по виду одно от другого не
+//! отличается.
+//!
+//! ## Класс 2. Личность WebAuthn (`rp_*`)
+//!
+//! `rp_id`, `rp_origin` и `rp_name` — это и есть личность установки по
+//! определению: RP ID обязан совпадать с публичным доменом. Если за ключом (с
+//! необязательной закрывающей кавычкой, как в JSON) идёт `:`, `=` или `(`, то
+//! значение обязано быть либо пустым, либо зарезервированным именем (RFC
+//! 2606/6761), либо нейтральным названием продукта. Разбираются: `"…"`, `'…'`
+//! (литеральная строка TOML, скаляр YAML, Python, sh), raw-строка `r"…"` /
+//! `r#"…"#`, обёртка из идентификаторов и скобок (`String::from("…")`,
+//! `Some("…")`, `&"…"`), перенос значения на следующую строку — и, **только в
+//! файле конфигурации**, скаляр без кавычек (`rp_id = dash.acme.tld`). Без
+//! кавычек и не в конфиге разбора нет намеренно: в Rust `rp_id: cfg.auth.host`
+//! — это выражение, а не значение, и общий разбор красил бы такие строки.
+//!
+//! Чего класс 2 не видит и видеть не может: значение, собранное в рантайме
+//! (`format!`, переменная окружения, чтение файла). Текстовый страж читает
+//! текст.
+//!
+//! # Чего страж не ловит вообще
+//!
+//! **Бренд.** Слово вроде «Acme» ничем по форме не отличается от любого другого
+//! слова; поймать его можно только списком имён, а список имён в публичном
+//! репозитории ничего не прячет. Поэтому здесь такого правила нет, и обещания
+//! тоже нет. Бренд оператора держится из конфигурации (`auth.rp_name`), и это
+//! свойство защищено тестами в `crates/openfang-api`, а не этим файлом.
 //!
 //! # Что обходится
 //!
 //! Всё рабочее дерево, кроме `.git`, `target` и `node_modules`. Не по списку
-//! расширений: разбор подсадил `.py` внутрь `crates/` и прошёл мимо списка.
-//! Читается любой файл, который целиком разбирается как UTF-8 и не содержит
-//! нулевого байта; остальное (png, ico, wasm) пропускается.
+//! расширений: файл без расширения, вложенный каталог, двоичный файл — всё
+//! читается. Не-UTF-8 читается как байты (`from_utf8_lossy`): формы, которые
+//! ищет страж, целиком в ASCII, и пропускать такой файл значило бы оставить
+//! дыру шириной в один `iconv`. Символическая ссылка не разыменовывается (цикл
+//! ссылок повесил бы обход), но её ЦЕЛЬ разбирается как текст: путь, в котором
+//! записан адрес установки, — такая же утечка, как строка в файле.
 //!
 //! # Что печатается при падении
 //!
-//! Путь и номер строки, номер токена в таблице — и ничего из содержимого.
-//! Логи Actions публичного репозитория публичны, и страж, печатающий найденное
-//! имя, вернул бы утечку через свой же отчёт.
+//! Путь, номер строки, форма и длина найденного — и ни одного его байта. Логи
+//! Actions публичного репозитория публичны, и страж, печатающий найденное
+//! значение, вернул бы утечку через свой же отчёт.
 
 use std::path::{Path, PathBuf};
 
-use sha2::{Digest, Sha256};
+// ── что законно ─────────────────────────────────────────────────────────────
 
-/// Имена конкретной установки: `(длина в байтах, FNV-1a 64, SHA-256 hex)`
-/// от токена в нижнем регистре.
-///
-/// Пополняется так — имя остаётся в командной строке и не попадает в файл:
-///
-/// ```text
-/// $ printf '%s' "<имя>" | sha256sum
-/// ```
-///
-/// FNV-1a считает `fnv1a64`: он в этом же файле и покрыт тестом
-/// `fnv_matches_its_published_vector`.
-const FORBIDDEN_TOKEN_HASHES: &[(usize, u64, &str)] = &[
+/// `(сеть, длина префикса)` — IPv4, не маршрутизируемые в публичной сети.
+const V4_NOT_ROUTABLE: &[([u8; 4], u32)] = &[
+    ([0, 0, 0, 0], 8),       // «этот хост», RFC 1122
+    ([10, 0, 0, 0], 8),      // RFC 1918
+    ([100, 64, 0, 0], 10),   // RFC 6598, shared address space (CGNAT, тайлнет)
+    ([127, 0, 0, 0], 8),     // loopback
+    ([169, 254, 0, 0], 16),  // link-local, включая IMDS 169.254.169.254
+    ([172, 16, 0, 0], 12),   // RFC 1918
+    ([192, 168, 0, 0], 16),  // RFC 1918
+    ([192, 0, 2, 0], 24),    // RFC 5737, TEST-NET-1
+    ([198, 51, 100, 0], 24), // RFC 5737, TEST-NET-2
+    ([203, 0, 113, 0], 24),  // RFC 5737, TEST-NET-3
+    ([224, 0, 0, 0], 4),     // multicast
+    ([240, 0, 0, 0], 4),     // reserved + 255.255.255.255
+];
+
+/// IPv4, допустимые в файле конфигурации: только заглушки и loopback.
+const V4_IN_CONFIG: &[([u8; 4], u32)] = &[
+    ([0, 0, 0, 0], 8),
+    ([127, 0, 0, 0], 8),
+    ([192, 0, 2, 0], 24),
+    ([198, 51, 100, 0], 24),
+    ([203, 0, 113, 0], 24),
+];
+
+/// `(сеть, длина префикса)` — IPv6, не маршрутизируемые в публичной сети.
+const V6_NOT_ROUTABLE: &[([u16; 8], u32)] = &[
+    ([0, 0, 0, 0, 0, 0, 0, 0], 8), // ::/8 — резерв IETF, сюда попадают :: и ::1
+    ([0xfc00, 0, 0, 0, 0, 0, 0, 0], 7), // ULA, RFC 4193 (в нём живёт тайлнет)
+    ([0xfe80, 0, 0, 0, 0, 0, 0, 0], 10), // link-local
+    ([0x2001, 0x0db8, 0, 0, 0, 0, 0, 0], 32), // RFC 3849, документация
+    ([0xff00, 0, 0, 0, 0, 0, 0, 0], 8), // multicast
+];
+
+/// IPv6, допустимые в файле конфигурации.
+const V6_IN_CONFIG: &[([u16; 8], u32)] = &[
+    ([0, 0, 0, 0, 0, 0, 0, 0], 8),
+    ([0x2001, 0x0db8, 0, 0, 0, 0, 0, 0], 32),
+];
+
+/// Адреса-исключения: маршрутизируемые литералы, которые не могут быть ничьей
+/// установкой. Это не список «наших» значений — наоборот, список ЧУЖИХ констант,
+/// и каждая строка обязана называть, чья она и зачем лежит в дереве. Новый
+/// публичный адрес краснит гейт до тех пор, пока кто-нибудь не напишет здесь
+/// такую же строку — это и есть цена правила, и она взята сознательно.
+const EXEMPT_ADDRESSES: &[(&str, &str)] = &[
     (
-        11,
-        0xe90c_cfd0_a795_06eb,
-        "24e8e0cb761028670185cb8a3b527ead0da0a4e76db9ab5ade6068be7913fccc",
+        "8.8.8.8",
+        "Google Public DNS — пример «не приватного» адреса в тестах SSRF",
+    ),
+    ("1.1.1.1", "Cloudflare DNS — там же и за тем же"),
+    (
+        "100.100.100.200",
+        "IMDS Alibaba Cloud — константа протокола, одна на всех",
     ),
     (
-        14,
-        0x3546_8d30_7c73_2fa5,
-        "bcab5c096ab43b29a840e35251d079d1245149878317c54202d162a79c41dcfa",
+        "192.0.0.192",
+        "IMDS Azure (альтернативный) — то же самое",
     ),
     (
-        9,
-        0xba13_4e61_75a8_dc22,
-        "637a2faae1b6c2dbaa4a44254ec3e53565f7eb65c83e5872b355234f594ad2f2",
+        "149.154.166.110",
+        "дата-центр Telegram в снятом baseline FANG-31: адрес удалённой стороны, а не машины установки",
     ),
     (
-        13,
-        0x25a7_81df_370e_7a24,
-        "cede268ef9e2c40ab9cade1624dada397b784f29748d6fe1d778674cb5ecdc1f",
+        "11.0.0.1",
+        "адрес сразу за 10.0.0.0/8 — пример «снаружи диапазона» в тесте",
+    ),
+    (
+        "172.15.0.1",
+        "сразу перед 172.16.0.0/12 — тот же приём в тесте границы",
+    ),
+    (
+        "172.32.0.1",
+        "сразу за 172.16.0.0/12 — тот же приём в тесте границы",
+    ),
+    (
+        "1.2.3.4",
+        "учебная заглушка в примере переменной OLLAMA_BASE_URL",
     ),
 ];
 
-/// Значения `rp_*`, которые не называют ничьей установки.
+/// Значения `rp_name`, которые не называют ничьей установки.
 const NEUTRAL_RP_NAMES: &[&str] = &["OpenFang", "OpenFang Example"];
 
-/// Зарезервированные и локальные имена хостов (RFC 2606 / RFC 6761).
-const RESERVED_HOST_MARKERS: &[&str] = &[
-    "example.test",
-    "example.com",
-    "example.org",
-    "example.net",
+/// Суффиксы имён, зарезервированных под примеры и локальное имя (RFC 2606/6761).
+const RESERVED_HOST_SUFFIXES: &[&str] = &[
+    ".test",
+    ".example",
     ".invalid",
-    "localhost",
-    "127.0.0.1",
+    ".localhost",
+    ".example.com",
+    ".example.org",
+    ".example.net",
 ];
+
+/// Имена хостов целиком, законные сами по себе.
+const RESERVED_HOST_NAMES: &[&str] = &["localhost", "example.com", "example.org", "example.net"];
 
 /// Каталоги, которых в обходе нет ни при каких условиях.
 const SKIPPED_DIRS: &[&str] = &[".git", "target", "node_modules"];
 
-// ── хэши ────────────────────────────────────────────────────────────────────
+/// Расширения файлов, которые считаются конфигурацией развёртывания.
+const CONFIG_EXTENSIONS: &[&str] = &[
+    "toml", "yml", "yaml", "json", "ini", "conf", "env", "service", "nix", "example",
+];
 
-fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+// ── разбор адресов ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Addr {
+    V4([u8; 4]),
+    V6([u16; 8]),
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push(HEX[usize::from(byte >> 4)] as char);
-        out.push(HEX[usize::from(byte & 0x0f)] as char);
-    }
-    out
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FileKind {
+    /// Конфигурация развёртывания: порог выше.
+    Config,
+    Other,
 }
 
-/// Номер токена в [`FORBIDDEN_TOKEN_HASHES`], если байты — это он.
-/// FNV просеивает, SHA-256 подтверждает: на FNV полагаться как на
-/// единственное сравнение нельзя, потому что 64 бита без ключа
-/// подбираются.
-fn token_index(window: &[u8]) -> Option<usize> {
-    for (index, (len, fnv, sha)) in FORBIDDEN_TOKEN_HASHES.iter().enumerate() {
-        if window.len() == *len && fnv1a64(window) == *fnv && &sha256_hex(window) == sha {
-            return Some(index);
+fn glued_left(bytes: &[u8], at: usize, colon_too: bool) -> bool {
+    if at == 0 {
+        return false;
+    }
+    let prev = bytes[at - 1];
+    prev.is_ascii_alphanumeric() || prev == b'_' || prev == b'.' || (colon_too && prev == b':')
+}
+
+fn glued_right(bytes: &[u8], at: usize) -> bool {
+    bytes
+        .get(at)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'.')
+}
+
+/// Четвёрка IPv4, начинающаяся ровно в `at`. Возвращает `(октеты, конец)`.
+fn v4_at(bytes: &[u8], at: usize) -> Option<([u8; 4], usize)> {
+    if glued_left(bytes, at, false) {
+        return None;
+    }
+    let mut octets = [0u8; 4];
+    let mut i = at;
+    for (k, slot) in octets.iter_mut().enumerate() {
+        if k > 0 {
+            if bytes.get(i) != Some(&b'.') {
+                return None;
+            }
+            i += 1;
+        }
+        let start = i;
+        let mut value: u32 = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() && i - start < 3 {
+            value = value * 10 + u32::from(bytes[i] - b'0');
+            i += 1;
+        }
+        if i == start || value > 255 {
+            return None;
+        }
+        *slot = value as u8;
+    }
+    if glued_right(bytes, i) {
+        return None;
+    }
+    Some((octets, i))
+}
+
+/// Литерал IPv6, начинающийся ровно в `at`. Возвращает `(группы, конец)`.
+fn v6_at(bytes: &[u8], at: usize) -> Option<([u16; 8], usize)> {
+    if glued_left(bytes, at, true) {
+        return None;
+    }
+    let mut i = at;
+    while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || bytes[i] == b':') {
+        i += 1;
+    }
+    if glued_right(bytes, i) {
+        return None;
+    }
+    let run = std::str::from_utf8(&bytes[at..i]).ok()?;
+    Some((parse_v6(run)?, i))
+}
+
+/// Разбор текстовой записи IPv6. Сокращение `::` принимается от трёх групп:
+/// две группы вокруг `::` — это ещё и `${x:0:2}`, и случайные байты png.
+fn parse_v6(run: &str) -> Option<[u16; 8]> {
+    if run.contains(":::") {
+        return None;
+    }
+    let (head, tail, shortened) = match run.split_once("::") {
+        Some((h, t)) => (h, t, true),
+        None => (run, "", false),
+    };
+    if tail.contains("::") {
+        return None;
+    }
+    let split = |part: &str| -> Vec<String> {
+        if part.is_empty() {
+            Vec::new()
+        } else {
+            part.split(':').map(str::to_owned).collect()
+        }
+    };
+    let head_groups = split(head);
+    let tail_groups = split(tail);
+    let ok = |g: &String| !g.is_empty() && g.len() <= 4 && g.bytes().all(|c| c.is_ascii_hexdigit());
+    if !head_groups.iter().all(ok) || !tail_groups.iter().all(ok) {
+        return None;
+    }
+    let total = head_groups.len() + tail_groups.len();
+    if shortened {
+        if !(3..=7).contains(&total) {
+            return None;
+        }
+    } else if total != 8 {
+        return None;
+    }
+    let mut out = [0u16; 8];
+    for (k, g) in head_groups.iter().enumerate() {
+        out[k] = u16::from_str_radix(g, 16).ok()?;
+    }
+    for (k, g) in tail_groups.iter().enumerate() {
+        out[8 - tail_groups.len() + k] = u16::from_str_radix(g, 16).ok()?;
+    }
+    Some(out)
+}
+
+fn parse_addr(text: &str) -> Option<Addr> {
+    let bytes = text.as_bytes();
+    if let Some((octets, end)) = v4_at(bytes, 0) {
+        if end == bytes.len() {
+            return Some(Addr::V4(octets));
         }
     }
-    None
+    let (groups, end) = v6_at(bytes, 0)?;
+    (end == bytes.len()).then_some(Addr::V6(groups))
 }
 
-// ── класс 1: имена оператора ────────────────────────────────────────────────
+fn v4_in(octets: [u8; 4], nets: &[([u8; 4], u32)]) -> bool {
+    let value = u32::from_be_bytes(octets);
+    nets.iter().any(|(net, bits)| {
+        let mask = if *bits == 0 {
+            0
+        } else {
+            u32::MAX << (32 - bits)
+        };
+        value & mask == u32::from_be_bytes(*net) & mask
+    })
+}
 
-/// Возвращает `(номер строки, номер токена)` — без единого байта найденного.
-fn forbidden_tokens_in(text: &str) -> Vec<(usize, usize)> {
-    let mut lengths: Vec<usize> = FORBIDDEN_TOKEN_HASHES
+fn v6_in(groups: [u16; 8], nets: &[([u16; 8], u32)]) -> bool {
+    let value = groups
         .iter()
-        .map(|(len, _, _)| *len)
-        .collect();
-    lengths.sort_unstable();
-    lengths.dedup();
+        .fold(0u128, |acc, g| (acc << 16) | u128::from(*g));
+    nets.iter().any(|(net, bits)| {
+        let mask = if *bits == 0 {
+            0
+        } else {
+            u128::MAX << (128 - bits)
+        };
+        let net = net
+            .iter()
+            .fold(0u128, |acc, g| (acc << 16) | u128::from(*g));
+        value & mask == net & mask
+    })
+}
 
+fn address_is_exempt(addr: Addr) -> bool {
+    EXEMPT_ADDRESSES
+        .iter()
+        .any(|(text, _)| parse_addr(text) == Some(addr))
+}
+
+/// Законен ли литерал этого адреса в файле такого рода.
+fn address_is_legitimate(addr: Addr, kind: FileKind) -> bool {
+    if address_is_exempt(addr) {
+        return true;
+    }
+    match (addr, kind) {
+        (Addr::V4(o), FileKind::Config) => v4_in(o, V4_IN_CONFIG),
+        (Addr::V4(o), FileKind::Other) => v4_in(o, V4_NOT_ROUTABLE),
+        (Addr::V6(g), FileKind::Config) => v6_in(g, V6_IN_CONFIG),
+        (Addr::V6(g), FileKind::Other) => v6_in(g, V6_NOT_ROUTABLE),
+    }
+}
+
+/// `true`, если сразу за адресом стоит `/<цифры>` — это диапазон, а не машина.
+fn is_range(bytes: &[u8], end: usize) -> bool {
+    bytes.get(end) == Some(&b'/') && bytes.get(end + 1).is_some_and(u8::is_ascii_digit)
+}
+
+/// `true`, если четвёрка — хвост версии: `Chrome/131.0.0.0`. Версия приклеена
+/// одним `/` к ИМЕНИ ПРОДУКТА, а не к сегменту пути, поэтому перед именем не
+/// должно быть слэша: в `/srv/203.0.113.7/data` и в `https://host/1.2.3.4`
+/// четвёрка остаётся адресом и разбирается как адрес.
+fn is_version_tail(bytes: &[u8], at: usize) -> bool {
+    if at < 2 || bytes[at - 1] != b'/' || !bytes[at - 2].is_ascii_alphanumeric() {
+        return false;
+    }
+    let mut start = at - 1;
+    while start > 0
+        && matches!(bytes[start - 1], b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-')
+    {
+        start -= 1;
+    }
+    start == 0 || bytes[start - 1] != b'/'
+}
+
+// ── класс 1: адреса ─────────────────────────────────────────────────────────
+
+fn addresses_in(text: &str, kind: FileKind) -> Vec<(usize, String)> {
+    let bytes = text.as_bytes();
     let mut hits = Vec::new();
-    for (index, line) in text.lines().enumerate() {
-        let lower = line.to_ascii_lowercase();
-        let bytes = lower.as_bytes();
-        for len in &lengths {
-            if bytes.len() < *len {
+    let mut line = 1usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            line += 1;
+            i += 1;
+            continue;
+        }
+        if bytes[i].is_ascii_digit() {
+            if let Some((octets, end)) = v4_at(bytes, i) {
+                if !is_range(bytes, end)
+                    && !is_version_tail(bytes, i)
+                    && !address_is_legitimate(Addr::V4(octets), kind)
+                {
+                    hits.push((line, format!("литерал адреса IPv4, {} знаков", end - i)));
+                }
+                i = end;
                 continue;
             }
-            for window in bytes.windows(*len) {
-                if let Some(token) = token_index(window) {
-                    hits.push((index + 1, token));
+        }
+        if bytes[i].is_ascii_hexdigit() || bytes[i] == b':' {
+            if let Some((groups, end)) = v6_at(bytes, i) {
+                if !is_range(bytes, end) && !address_is_legitimate(Addr::V6(groups), kind) {
+                    hits.push((line, format!("литерал адреса IPv6, {} знаков", end - i)));
                 }
+                i = end;
+                continue;
             }
         }
+        i += 1;
     }
-    hits.sort_unstable();
-    hits.dedup();
     hits
 }
 
-// ── класс 2: строковый литерал `rp_*` ───────────────────────────────────────
+// ── класс 2: значение `rp_*` ────────────────────────────────────────────────
 
 const RP_KEYS: &[&str] = &["rp_id", "rp_origin", "rp_name"];
 
@@ -201,25 +463,28 @@ fn is_wrapper_byte(byte: u8) -> bool {
         || byte.is_ascii_whitespace()
 }
 
-/// Строковый литерал сразу за `at`, если он там есть: обычный `"…"` или
-/// raw-строка `r"…"` / `r#"…"#`. Возвращает `(литерал, смещение начала)`.
-fn string_literal_at(bytes: &[u8], at: usize) -> Option<(String, usize)> {
+/// Строковый литерал сразу за `at`: `"…"`, `'…'`, `r"…"` или `r#"…"#`.
+fn string_literal_at(bytes: &[u8], at: usize) -> Option<String> {
     if at >= bytes.len() {
         return None;
     }
-    if bytes[at] == b'"' {
+    if bytes[at] == b'"' || bytes[at] == b'\'' {
+        let quote = bytes[at];
+        // В одинарных кавычках экранирования нет (литеральная строка TOML,
+        // одинарный скаляр YAML), в двойных — есть.
+        let escapes = quote == b'"';
         let mut i = at + 1;
         let mut out = Vec::new();
         while i < bytes.len() {
             match bytes[i] {
-                b'\\' => {
+                b'\\' if escapes => {
                     if let Some(next) = bytes.get(i + 1) {
                         out.push(*next);
                     }
                     i += 2;
                 }
-                b'"' => return Some((String::from_utf8_lossy(&out).into_owned(), at)),
                 b'\n' => return None,
+                c if c == quote => return Some(String::from_utf8_lossy(&out).into_owned()),
                 other => {
                     out.push(other);
                     i += 1;
@@ -245,7 +510,7 @@ fn string_literal_at(bytes: &[u8], at: usize) -> Option<(String, usize)> {
         let mut j = start;
         while j + close.len() <= bytes.len() {
             if &bytes[j..j + close.len()] == close.as_slice() {
-                return Some((String::from_utf8_lossy(&bytes[start..j]).into_owned(), at));
+                return Some(String::from_utf8_lossy(&bytes[start..j]).into_owned());
             }
             j += 1;
         }
@@ -254,8 +519,49 @@ fn string_literal_at(bytes: &[u8], at: usize) -> Option<(String, usize)> {
     None
 }
 
-/// Класс 2: строковый литерал, присвоенный `rp_id` / `rp_origin` / `rp_name`.
-fn rp_literals_in(text: &str) -> Vec<(usize, String)> {
+/// Скаляр без кавычек сразу за `at` — только в файле конфигурации.
+/// Берётся до пробела, запятой, комментария или закрывающей скобки и принимается
+/// лишь тогда, когда выглядит как имя хоста: метки LDH, последняя — буквенная.
+/// Так `rp_id = dash.acme.tld` разбирается, а `rp_id: cfg.auth.host` в Rust —
+/// нет, потому что Rust конфигурацией не считается.
+fn bare_scalar_at(bytes: &[u8], at: usize) -> Option<String> {
+    let mut i = at;
+    while i < bytes.len()
+        && !matches!(
+            bytes[i],
+            b' ' | b'\t' | b'\r' | b'\n' | b',' | b'#' | b';' | b')' | b'}' | b']'
+        )
+    {
+        i += 1;
+    }
+    let text = std::str::from_utf8(&bytes[at..i]).ok()?.trim_matches('"');
+    if !looks_like_hostname(text) {
+        return None;
+    }
+    Some(text.to_owned())
+}
+
+fn looks_like_hostname(text: &str) -> bool {
+    let labels: Vec<&str> = text.split('.').collect();
+    if labels.len() < 2 {
+        return false;
+    }
+    let label_ok = |l: &&str| {
+        !l.is_empty()
+            && l.len() <= 63
+            && l.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    if !labels.iter().all(label_ok) {
+        return false;
+    }
+    let tld = labels[labels.len() - 1];
+    tld.len() >= 2 && tld.bytes().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Класс 2: значение, присвоенное `rp_id` / `rp_origin` / `rp_name`.
+fn rp_values_in(text: &str, kind: FileKind) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
     let mut hits = Vec::new();
 
@@ -302,24 +608,30 @@ fn rp_literals_in(text: &str) -> Vec<(usize, String)> {
 
             // Обёртка: `String::from(`, `Some(`, `&`, перевод строки.
             let limit = (i + RP_LOOKAHEAD).min(bytes.len());
-            let found = loop {
-                if i >= limit {
-                    break None;
+            let mut found = None;
+            let mut probe = i;
+            while probe < limit {
+                if let Some(literal) = string_literal_at(bytes, probe) {
+                    found = Some((literal, probe));
+                    break;
                 }
-                if let Some(hit) = string_literal_at(bytes, i) {
-                    break Some(hit);
+                if kind == FileKind::Config && probe > i {
+                    if let Some(scalar) = bare_scalar_at(bytes, probe) {
+                        found = Some((scalar, probe));
+                        break;
+                    }
                 }
-                if is_wrapper_byte(bytes[i]) {
-                    i += 1;
+                if is_wrapper_byte(bytes[probe]) {
+                    probe += 1;
                 } else {
-                    break None;
+                    break;
                 }
-            };
-            let Some((literal, offset)) = found else {
+            }
+            let Some((value, offset)) = found else {
                 continue;
             };
-            if !rp_literal_is_neutral(&literal) {
-                hits.push((line_of(text, offset), literal));
+            if !rp_value_is_neutral(&value) {
+                hits.push((line_of(text, offset), value));
             }
         }
     }
@@ -336,15 +648,42 @@ fn line_of(text: &str, byte_offset: usize) -> usize {
         + 1
 }
 
-fn rp_literal_is_neutral(literal: &str) -> bool {
-    let trimmed = literal.trim();
+/// Хост из значения: `https://x.example.test:8443/path` → `x.example.test`.
+fn host_of(value: &str) -> String {
+    let without_scheme = value.split_once("://").map_or(value, |(_, rest)| rest);
+    let host = without_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(without_scheme);
+    let host = host.rsplit_once('@').map_or(host, |(_, h)| h);
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    // Порт отрезается только у имени: у IPv6 двоеточий много.
+    let host = if host.matches(':').count() == 1 {
+        host.split(':').next().unwrap_or(host)
+    } else {
+        host
+    };
+    host.trim().to_ascii_lowercase()
+}
+
+fn rp_value_is_neutral(value: &str) -> bool {
+    let trimmed = value.trim();
     if trimmed.is_empty() || NEUTRAL_RP_NAMES.contains(&trimmed) {
         return true;
     }
-    let lower = trimmed.to_ascii_lowercase();
-    RESERVED_HOST_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
+    let host = host_of(trimmed);
+    if host.is_empty() {
+        return true;
+    }
+    if RESERVED_HOST_NAMES.contains(&host.as_str())
+        || RESERVED_HOST_SUFFIXES
+            .iter()
+            .any(|suffix| host.ends_with(suffix))
+    {
+        return true;
+    }
+    // Адрес в rp_* судится тем же порогом, что класс 1 вне конфигурации.
+    parse_addr(&host).is_some_and(|addr| address_is_legitimate(addr, FileKind::Other))
 }
 
 // ── обход дерева ────────────────────────────────────────────────────────────
@@ -365,7 +704,8 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Все файлы дерева, кроме [`SKIPPED_DIRS`]. Символические ссылки не
-/// разыменовываются: цикл ссылок повесил бы обход.
+/// разыменовываются: цикл ссылок повесил бы обход, — но и не пропускаются:
+/// их цель разбирается как текст, см. [`text_of`].
 fn all_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -382,12 +722,9 @@ fn all_files(root: &Path) -> Vec<PathBuf> {
                 continue;
             }
             let file_type = entry.file_type().expect("file type");
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
+            if file_type.is_dir() && !file_type.is_symlink() {
                 stack.push(entry.path());
-            } else if file_type.is_file() {
+            } else {
                 out.push(entry.path());
             }
         }
@@ -396,19 +733,72 @@ fn all_files(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// Текст файла, если он читается как UTF-8 и не двоичный.
-fn text_of(path: &Path) -> Option<String> {
-    let bytes = std::fs::read(path).ok()?;
-    if bytes.contains(&0) {
-        return None;
+fn file_kind(path: &Path) -> FileKind {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.starts_with("dockerfile")
+        || name.starts_with("docker-compose")
+        || name.starts_with(".env")
+    {
+        return FileKind::Config;
     }
-    String::from_utf8(bytes).ok()
+    let extension = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    if CONFIG_EXTENSIONS.contains(&extension.as_str()) {
+        FileKind::Config
+    } else {
+        FileKind::Other
+    }
+}
+
+/// Текст файла: не-UTF-8 читается как байты с заменой, потому что искомые формы
+/// целиком в ASCII. Ссылка отдаёт не содержимое цели, а сам путь цели.
+fn text_of(path: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(path).ok()?;
+        return Some(target.to_string_lossy().into_owned());
+    }
+    let bytes = std::fs::read(path).ok()?;
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Обход дерева. Возвращает `(сколько файлов прочитано, находки)`.
+/// Находка — строка `путь:строка: форма`, без единого байта найденного значения.
+fn scan_tree(root: &Path) -> (usize, Vec<String>) {
+    let mut failures = Vec::new();
+    let mut read = 0usize;
+    for file in all_files(root) {
+        let Some(text) = text_of(&file) else {
+            continue;
+        };
+        read += 1;
+        let kind = file_kind(&file);
+        let shown = file.strip_prefix(root).unwrap_or(&file).display();
+        for (line, what) in addresses_in(&text, kind) {
+            failures.push(format!("{shown}:{line}: {what}"));
+        }
+        for (line, value) in rp_values_in(&text, kind) {
+            failures.push(format!(
+                "{shown}:{line}: rp_* — значение длиной {} символов; нужен \
+                 example.test / localhost / нейтральное имя (RFC 2606). \
+                 Значение не печатается: логи Actions публичны",
+                value.chars().count()
+            ));
+        }
+    }
+    failures.sort();
+    (read, failures)
 }
 
 // ── сами проверки ───────────────────────────────────────────────────────────
 
 #[test]
-fn no_installation_specific_strings_anywhere_in_the_tree() {
+fn no_installation_specific_values_anywhere_in_the_tree() {
     let root = workspace_root();
     let files = all_files(&root);
     assert!(
@@ -416,13 +806,14 @@ fn no_installation_specific_strings_anywhere_in_the_tree() {
         "обход вернул {} файлов — дерево так не выглядит, значит обход сломан",
         files.len()
     );
-    // Каталоги, попадание которых в обход и было дефектом: корень (не только
-    // *.md), `.github`, `scripts`, `deploy`, `tests`. Проверяем, что они там.
+    // Файлы, мимо которых страж ходил в прошлых редакциях: корень (не только
+    // *.md), `.github`, `scripts`, `deploy`, `tests` — и он сам.
     for must in [
         "docker-compose.dokploy.yml",
         "openfang.toml.example",
         ".github/workflows/fork-ci.yml",
         "README.md",
+        "scripts/ofrelease",
         "xtask/tests/no_installation_identifiers.rs",
     ] {
         let path = root.join(must);
@@ -432,181 +823,345 @@ fn no_installation_specific_strings_anywhere_in_the_tree() {
         );
     }
 
-    let mut failures = Vec::new();
-    let mut read = 0usize;
-    for file in &files {
-        let Some(text) = text_of(file) else {
-            continue;
-        };
-        read += 1;
-        let shown = file.strip_prefix(&root).unwrap_or(file).display();
-        for (line, token) in forbidden_tokens_in(&text) {
-            failures.push(format!("{shown}:{line}: имя установки, токен #{token}"));
-        }
-        for (line, literal) in rp_literals_in(&text) {
-            failures.push(format!(
-                "{shown}:{line}: rp_* — литерал длиной {} символов; нужен \
-                 example.test / localhost / нейтральное имя (RFC 2606). \
-                 Значение не печатается: логи Actions публичны",
-                literal.chars().count()
-            ));
-        }
-    }
+    let (read, failures) = scan_tree(&root);
     assert!(
         read > 200,
-        "прочитано всего {read} текстовых файлов — сниффер съел дерево"
+        "прочитано всего {read} файлов — сниффер съел дерево"
     );
-
     assert!(
         failures.is_empty(),
-        "в публичном форке остались строки конкретной установки:\n  {}",
+        "в публичном форке остались значения одной установки:\n  {}",
         failures.join("\n  ")
     );
 }
 
-/// Страж бесполезен, если его матчер ничего не находит: тогда зелёное ничего не
-/// значит. Матчер проверяется на канарейке — на токене, которого в таблице
-/// установки нет, — потому что подсадить сюда настоящее имя значило бы вернуть
-/// ровно тот дефект, ради которого таблица стала хэшами.
+/// Страж бесполезен, если ловит только то, что уже видел. Здесь ему
+/// подсаживаются ЧУЖИЕ значения, которых в этом проекте никогда не было, — и
+/// каждое обязано покраснеть. Значения собираются в рантайме: этот файл из
+/// обхода не исключён, и литерал в нём покраснил бы прогон по дереву.
 #[test]
-fn the_matcher_itself_is_not_blind() {
-    const CANARY: &str = "adv-canary-9f31";
-    const CANARY_FNV: u64 = 0x62dc_d952_ca07_7feb;
-    const CANARY_SHA: &str = "442db2a48908bde917cf5974464c3d64d2de1d047c8cdf6c50252132b64577a6";
+fn foreign_values_are_caught_by_shape() {
+    let v4 = |a: u8, b: u8, c: u8, d: u8| format!("{a}.{b}.{c}.{d}");
+    let host = |labels: &[&str]| labels.join(".");
 
-    // Тот же матчер, но по таблице из одной канарейки.
-    let find = |text: &str| -> Vec<usize> {
-        let mut out = Vec::new();
-        for (index, line) in text.lines().enumerate() {
-            let lower = line.to_ascii_lowercase();
-            for window in lower.as_bytes().windows(CANARY.len()) {
-                if fnv1a64(window) == CANARY_FNV && sha256_hex(window) == CANARY_SHA {
-                    out.push(index + 1);
-                }
-            }
-        }
-        out
-    };
+    let public = v4(198, 18, 44, 7); // 198.18/15 — benchmarking, маршрутизируемый
+    let another = v4(77, 90, 43, 8);
+    let v6 = ["2606", "4700", "", "1111"].join(":");
+    let foreign_host = host(&["dash", "acme", "tld"]);
 
-    assert_eq!(
-        find(&format!("<div class=\"eyebrow\">{CANARY}</div>")),
-        vec![1]
-    );
-    // Регистронезависимо и в середине слова.
-    assert_eq!(
-        find(&format!(
-            "x\nhttps://{}.example.test/",
-            CANARY.to_uppercase()
-        )),
-        vec![2]
-    );
-    assert!(find("ничего похожего тут нет").is_empty());
-    // Соседний токен не совпадает: хэш, а не префикс.
-    assert!(find("adv-canary-9f30").is_empty());
-
-    // Хэш-функция в этом файле — та же, что считала таблицу.
-    assert_eq!(fnv1a64(CANARY.as_bytes()), CANARY_FNV);
-    assert_eq!(sha256_hex(CANARY.as_bytes()), CANARY_SHA);
-}
-
-/// Таблица токенов — единственное, чем страж отличает имя установки от любого
-/// другого текста. Пустая или битая таблица делает обход зелёным всегда.
-#[test]
-fn the_token_table_is_well_formed() {
-    assert!(
-        FORBIDDEN_TOKEN_HASHES.len() >= 4,
-        "таблица усохла до {} записей",
-        FORBIDDEN_TOKEN_HASHES.len()
-    );
-    for (index, (len, fnv, sha)) in FORBIDDEN_TOKEN_HASHES.iter().enumerate() {
-        assert!(
-            *len >= 6,
-            "токен #{index}: длина {len} — слишком коротко, будет ловить случайный текст"
-        );
-        assert_ne!(*fnv, 0, "токен #{index}: пустой FNV");
-        assert_eq!(sha.len(), 64, "токен #{index}: SHA-256 не 64 знака");
-        assert!(
-            sha.bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
-            "токен #{index}: SHA-256 не hex в нижнем регистре"
-        );
-    }
-    // Ни один токен не должен совпасть с безобидным текстом той же длины.
-    assert!(token_index(b"example.test").is_none());
-    assert!(token_index(b"openfang").is_none());
-}
-
-/// FNV-1a здесь свой, без зависимости. Опубликованный вектор из спецификации
-/// доказывает, что это именно FNV-1a 64, а не «похожая» петля: пересчитать
-/// таблицу сторонним инструментом можно только зная это.
-#[test]
-fn fnv_matches_its_published_vector() {
-    assert_eq!(fnv1a64(b""), 0xcbf2_9ce4_8422_2325);
-    assert_eq!(fnv1a64(b"a"), 0xaf63_dc4c_8601_ec8c);
-    assert_eq!(fnv1a64(b"foobar"), 0x8594_4171_f739_67e8);
-}
-
-/// Правило `rp_*` обязано покрывать те формы, которыми его обходили: обёртку
-/// `String::from`, raw-строку и литерал на следующей строке. Все три —
-/// воспроизведённые атаки, а не гипотезы.
-#[test]
-fn rp_rule_covers_the_forms_that_slipped_past_it() {
-    // Ключ и хвост держатся ПОРОЗНЬ и склеиваются в рантайме. Иначе фикстура
-    // краснела бы на собственном обходе: этот файл из обхода не исключён, а
-    // ключ, двоеточие и литерал одной строкой — ровно то, что правило и ловит.
-    let caught: &[(&str, &str)] = &[
-        ("rp_id", ": \"probe-a.net\","),
-        ("rp_id", ": String::from(\"probe-b.net\"),"),
-        ("rp_origin", ": r#\"https://probe-c.net\"#,"),
-        ("rp_name", ":\n    \"Probe Agency\","),
-        ("rp_id", " = \"probe-e.net\""),
-        ("rp_id", "\": \"probe-f.net\""),
-        ("rp_origin", ": Some(\"https://probe-g.net\")"),
-        ("rp_id", ": &\"probe-h.net\""),
-    ];
-    for (key, tail) in caught {
-        let case = format!("{key}{tail}");
+    // Адрес в обычном файле.
+    for text in [
+        format!("ALLOWED_IP={public}"),
+        format!("  ssh root@{another} # deploy"),
+        format!("https://[{v6}]:8443/api"),
+    ] {
         assert_eq!(
-            rp_literals_in(&case).len(),
+            addresses_in(&text, FileKind::Other).len(),
             1,
-            "форма прошла мимо правила: {case:?} -> {:?}",
-            rp_literals_in(&case)
+            "чужой адрес прошёл мимо: {text:?}"
         );
     }
 
-    let innocent = [
-        r#""agents.none_fallback": "Нет — добавить цепочку резервов","#,
-        r#"rp_name: "OpenFang".to_string(),"#,
-        r#"rp_origin: "https://openfang.example.test".into(),"#,
-        r#"corp_id: "test_corp".to_string(),"#,
-        "let host = config.auth.rp_id.trim();",
-        r#""auth.rp_origin must be an exact HTTPS origin".into(),"#,
-        "pub rp_id: String,\n    pub other: &'static str = \"anything\",",
-        r#"rp_name: format!("{brand} Ltd"),"#,
-        r#"if cfg.rp_id == "example.test" { }"#,
-        r#"rp_id: "","#,
+    // Приватный адрес: в обычном файле законен, в конфигурации — нет.
+    let private = v4(10, 8, 4, 2);
+    assert!(addresses_in(&private, FileKind::Other).is_empty());
+    assert_eq!(addresses_in(&private, FileKind::Config).len(), 1);
+
+    // Личность WebAuthn в формах, из которых TOML в одинарных кавычках и
+    // скаляр без кавычек мимо прошлой редакции проходили.
+    let key_id = ["rp", "id"].join("_");
+    let key_origin = ["rp", "origin"].join("_");
+    let key_name = ["rp", "name"].join("_");
+    let cases: Vec<(String, FileKind)> = vec![
+        (format!("{key_id} = '{foreign_host}'"), FileKind::Config),
+        (format!("{key_id} = \"{foreign_host}\""), FileKind::Other),
+        (format!("{key_id}: {foreign_host}"), FileKind::Config),
+        (
+            format!("{key_origin}: String::from(\"https://{foreign_host}\"),"),
+            FileKind::Other,
+        ),
+        (format!("\"{key_name}\": \"Acme Agency\""), FileKind::Other),
+        (
+            format!("{key_origin}: r#\"https://{foreign_host}\"#,"),
+            FileKind::Other,
+        ),
+        (
+            format!("{key_name}:\n    \"Acme Agency\","),
+            FileKind::Other,
+        ),
+        (
+            format!("{key_origin}: Some(\"https://{foreign_host}\")"),
+            FileKind::Other,
+        ),
+        (format!("{key_id}: &\"{foreign_host}\""), FileKind::Other),
     ];
-    for case in innocent {
-        assert!(
-            rp_literals_in(case).is_empty(),
-            "ложное срабатывание на {case:?}: {:?}",
-            rp_literals_in(case)
+    for (text, kind) in cases {
+        assert_eq!(
+            rp_values_in(&text, kind).len(),
+            1,
+            "форма прошла мимо правила rp_*: {text:?}"
         );
     }
+
+    // Подсадка «имя-в-подмене»: суффикс example.com внутри чужого домена —
+    // не резервное имя. Слабое место прошлой редакции: она сравнивала `contains`.
+    let lookalike = host(&["example", "com", "acme", "tld"]);
+    assert_eq!(
+        rp_values_in(&format!("{key_id} = \"{lookalike}\""), FileKind::Other).len(),
+        1
+    );
 }
 
-/// Ответ на вопрос «покрыто ли имя X» без записи X в репозиторий.
-/// Запускается вручную:
-/// `OFGUARD_PROBE='<имя>' cargo test -p xtask --test no_installation_identifiers
-///  -- --ignored --nocapture probe_token_coverage`
+/// То, что в дереве законно, обязано оставаться зелёным. Список не выдуман: это
+/// формы, которые реально лежат в коде FANG-95, в тестах SSRF и в документации.
 #[test]
-#[ignore = "ручная проба: имя приходит через OFGUARD_PROBE"]
-fn probe_token_coverage() {
-    let probe =
-        std::env::var("OFGUARD_PROBE").expect("OFGUARD_PROBE не задан: пробе нечего проверять");
-    let lower = probe.to_ascii_lowercase();
-    match token_index(lower.as_bytes()) {
-        Some(index) => println!("OFGUARD_PROBE: покрыт, токен #{index}"),
-        None => println!("OFGUARD_PROBE: НЕ покрыт (длина {})", lower.len()),
+fn legitimate_values_stay_green() {
+    let legitimate_anywhere = [
+        "let addr = \"127.0.0.1:4200\";",
+        "OPENFANG_LISTEN=0.0.0.0:4200",
+        "// Тайлнет — принимается: адрес из 100.64.0.0/10.",
+        "req_from(\"100.64.0.1\")",
+        "\"fd7a:115c:a1e0::/48\"",
+        "\"fd7a:115c:a1e0::1\"",
+        "\"2001:db8::1\"",
+        "assert!(is_private_ip(&\"172.16.0.1\".parse().unwrap()));",
+        "\"--user-agent=... Chrome/131.0.0.0 Safari/537.36\"",
+        "http://169.254.169.254/latest/meta-data/",
+        "https://example.test/api",
+        "203.0.113.5:40000",
+        "${OPENFANG_HOST:0:2}",
+        "0.0.0.0/0",
+        "8.8.8.8",
+    ];
+    for text in legitimate_anywhere {
+        assert!(
+            addresses_in(text, FileKind::Other).is_empty(),
+            "ложное срабатывание на {text:?}: {:?}",
+            addresses_in(text, FileKind::Other)
+        );
     }
+
+    let legitimate_in_config = [
+        "OPENFANG_LISTEN: \"0.0.0.0:4200\"",
+        "- \"127.0.0.1:4200:4200\"",
+        "url = \"http://203.0.113.5:4200\"",
+        "allow = \"10.0.0.0/8\"",
+    ];
+    for text in legitimate_in_config {
+        assert!(
+            addresses_in(text, FileKind::Config).is_empty(),
+            "ложное срабатывание в конфигурации на {text:?}: {:?}",
+            addresses_in(text, FileKind::Config)
+        );
+    }
+
+    let key_id = ["rp", "id"].join("_");
+    let key_name = ["rp", "name"].join("_");
+    let key_origin = ["rp", "origin"].join("_");
+    let innocent = [
+        "\"agents.none_fallback\": \"Нет — добавить цепочку резервов\",".to_owned(),
+        format!("{key_name}: \"OpenFang\".to_string(),"),
+        format!("{key_origin}: \"https://openfang.example.test\".into(),"),
+        "corp_id: \"test_corp\".to_string(),".to_owned(),
+        format!("let host = config.auth.{key_id}.trim();"),
+        format!("\"auth.{key_origin} must be an exact HTTPS origin\".into(),"),
+        format!("pub {key_id}: String,\n    pub other: &'static str = \"anything\","),
+        format!("{key_name}: format!(\"{{brand}} Ltd\"),"),
+        format!("if cfg.{key_id} == \"example.test\" {{ }}"),
+        format!("{key_id}: \"\","),
+        format!("{key_id}: \"localhost\","),
+        format!("{key_origin}: \"https://127.0.0.1:4200\","),
+        format!("Defaults to auth.{key_origin} from config.toml."),
+        format!("{key_id}_source: \"config\","),
+    ];
+    for text in innocent {
+        assert!(
+            rp_values_in(&text, FileKind::Other).is_empty(),
+            "ложное срабатывание на {text:?}: {:?}",
+            rp_values_in(&text, FileKind::Other)
+        );
+    }
+    // В Rust скаляр без кавычек — выражение, а не значение.
+    assert!(rp_values_in(&format!("{key_id}: cfg.auth.host"), FileKind::Other).is_empty());
+}
+
+/// Обход обязан доходить до всех видов файлов. Прошлая редакция пропускала семь
+/// подсадок из девяти: мимо шли файлы без расширения, символические ссылки,
+/// не-UTF-8 и вложенные каталоги. Здесь каждое из этих мест получает чужое
+/// значение — и обход обязан его найти.
+#[test]
+fn the_walk_reaches_every_kind_of_file() {
+    use std::io::Write as _;
+
+    let stamp = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(format!("ofguard-walk-{stamp}"));
+    let deep = root.join("a").join("b").join("c");
+    std::fs::create_dir_all(&deep).unwrap();
+
+    let public = format!("{}.{}.{}.{}", 198, 18, 44, 7);
+    let foreign_host = ["dash", "acme", "tld"].join(".");
+    let key_id = ["rp", "id"].join("_");
+
+    // 1. файл без расширения
+    std::fs::write(root.join("Makefile-ish"), format!("HOST={public}\n")).unwrap();
+    // 2. вложенный каталог
+    std::fs::write(deep.join("notes.md"), format!("ssh {public}\n")).unwrap();
+    // 3. не-UTF-8: латинская 1 вокруг ASCII-значения
+    let mut raw = std::fs::File::create(root.join("legacy.txt")).unwrap();
+    raw.write_all(&[0xE9, 0xE8, b' ']).unwrap();
+    raw.write_all(public.as_bytes()).unwrap();
+    raw.write_all(&[0xFF, b'\n']).unwrap();
+    drop(raw);
+    // 4. двоичный файл с нулевыми байтами
+    let mut bin = std::fs::File::create(root.join("blob.bin")).unwrap();
+    bin.write_all(&[0, 1, 2, 0]).unwrap();
+    bin.write_all(public.as_bytes()).unwrap();
+    bin.write_all(&[0, 0]).unwrap();
+    drop(bin);
+    // 5. конфигурация: приватный адрес и скаляр в одинарных кавычках
+    std::fs::write(
+        root.join("deploy.toml"),
+        format!("listen = \"10.8.4.2:4200\"\n{key_id} = '{foreign_host}'\n"),
+    )
+    .unwrap();
+    // 6. символическая ссылка: значение записано в ЦЕЛИ, не в содержимом
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(format!("/srv/{public}/data"), root.join("stand-data")).unwrap();
+    // 7. законный файл: краснеть не должен
+    std::fs::write(root.join("clean.txt"), "127.0.0.1 and 0.0.0.0 are fine\n").unwrap();
+
+    let (read, failures) = scan_tree(&root);
+    let planted: Vec<&str> = vec![
+        "Makefile-ish",
+        "a/b/c/notes.md",
+        "legacy.txt",
+        "blob.bin",
+        "deploy.toml",
+        #[cfg(unix)]
+        "stand-data",
+    ];
+    for place in &planted {
+        assert!(
+            failures.iter().any(|f| f.starts_with(place)),
+            "подсадка в {place} прошла мимо обхода; найдено: {failures:?}"
+        );
+    }
+    assert!(
+        !failures.iter().any(|f| f.starts_with("clean.txt")),
+        "законный файл покраснел: {failures:?}"
+    );
+    // deploy.toml краснеет дважды: приватный адрес в конфиге и значение rp_*.
+    assert_eq!(
+        failures
+            .iter()
+            .filter(|f| f.starts_with("deploy.toml"))
+            .count(),
+        2,
+        "{failures:?}"
+    );
+    assert!(read >= 6, "прочитано {read} файлов из подсаженных семи");
+
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// Разбор адресов — то место, где страж может стать слепым молча. Векторы
+/// проверяют границы диапазонов, а не «похоже на адрес».
+#[test]
+fn the_address_parser_knows_its_boundaries() {
+    assert_eq!(parse_addr("127.0.0.1"), Some(Addr::V4([127, 0, 0, 1])));
+    assert_eq!(parse_addr("256.0.0.1"), None);
+    assert_eq!(parse_addr("1.2.3"), None);
+    assert_eq!(parse_addr("::1"), None); // одна группа — форма слишком слабая
+    assert_eq!(
+        parse_addr("2001:db8::1"),
+        Some(Addr::V6([0x2001, 0x0db8, 0, 0, 0, 0, 0, 1]))
+    );
+    assert_eq!(parse_addr("00:32:54"), None); // это время, а не адрес
+    assert_eq!(parse_addr("gggg::1"), None);
+
+    // Хвост версии — не адрес; сегмент пути — адрес.
+    assert!(addresses_in("Chrome/131.0.0.0 Safari/537.36", FileKind::Other).is_empty());
+    assert_eq!(
+        addresses_in(
+            &format!(
+                "/srv/{}/data",
+                [198, 18, 44, 7].map(|o| o.to_string()).join(".")
+            ),
+            FileKind::Other
+        )
+        .len(),
+        1
+    );
+
+    // Границы диапазонов: снаружи — красное, внутри — зелёное.
+    assert!(!address_is_legitimate(
+        Addr::V4([9, 255, 255, 255]),
+        FileKind::Other
+    ));
+    assert!(address_is_legitimate(
+        Addr::V4([10, 0, 0, 0]),
+        FileKind::Other
+    ));
+    assert!(address_is_legitimate(
+        Addr::V4([10, 255, 255, 255]),
+        FileKind::Other
+    ));
+    assert!(!address_is_legitimate(
+        Addr::V4([100, 63, 255, 255]),
+        FileKind::Other
+    ));
+    assert!(address_is_legitimate(
+        Addr::V4([100, 64, 0, 0]),
+        FileKind::Other
+    ));
+    assert!(address_is_legitimate(
+        Addr::V4([100, 127, 255, 255]),
+        FileKind::Other
+    ));
+    assert!(!address_is_legitimate(
+        Addr::V4([100, 128, 0, 0]),
+        FileKind::Other
+    ));
+    // Тот же адрес в конфигурации — красное.
+    assert!(!address_is_legitimate(
+        Addr::V4([10, 0, 0, 0]),
+        FileKind::Config
+    ));
+    assert!(address_is_legitimate(
+        Addr::V4([127, 0, 0, 1]),
+        FileKind::Config
+    ));
+}
+
+/// Таблица исключений — единственное место, где страж пропускает
+/// маршрутизируемый адрес. Пустая строка причины делает её списком «просто так».
+#[test]
+fn the_exemption_ledger_is_readable_and_justified() {
+    for (text, why) in EXEMPT_ADDRESSES {
+        assert!(
+            parse_addr(text).is_some(),
+            "исключение {text:?} не разбирается как адрес — оно никогда не сработает"
+        );
+        assert!(
+            why.chars().count() >= 20,
+            "исключение {text:?} без внятной причины: {why:?}"
+        );
+    }
+    // Исключение действует, а не украшает.
+    assert!(address_is_legitimate(
+        Addr::V4([8, 8, 8, 8]),
+        FileKind::Other
+    ));
+    // И не расползается на соседей.
+    assert!(!address_is_legitimate(
+        Addr::V4([8, 8, 8, 9]),
+        FileKind::Other
+    ));
 }

@@ -57,7 +57,7 @@ PROD_PORT=4200
 # ------------------------------------------------------------------ config --
 STATE_DIR="${OFRELEASE_STATE_DIR:-/var/lib/ofrelease}"
 BACKUP_ROOT="${OFRELEASE_BACKUP_ROOT:-/srv/backups/ofrelease}"
-OFBACKUP="${OFBACKUP:-/root/.claude/skills/openfang/scripts/ofbackup}"
+OFBACKUP="${OFBACKUP:-/root/.claude/skills/fang-upgrade/scripts/ofbackup}"
 HEALTH_TIMEOUT="${OFRELEASE_HEALTH_TIMEOUT:-90}"
 STOP_TIMEOUT="${OFRELEASE_STOP_TIMEOUT:-30}"
 MIN_FREE_GB="${OFRELEASE_MIN_FREE_GB:-1}"
