@@ -278,20 +278,42 @@ fn branch_filter_failures(root: &Path) -> Vec<String> {
             .unwrap_or(&path)
             .display()
             .to_string();
-        for (index, line) in text.lines().enumerate() {
+        let lines: Vec<&str> = text.lines().collect();
+        for (index, line) in lines.iter().enumerate() {
             let Some((_, list)) = line.split_once("branches:") else {
                 continue;
             };
-            for name in list.split(['[', ']', ',', '"', '\'', ' ']) {
-                let name = name.trim();
-                if name.is_empty() || name == "-" {
-                    continue;
+            // YAML пишет список двумя способами. Инлайн — `branches: [main]`.
+            // Блоком — `branches:` и дальше строки `- main`. Разбирать только
+            // первый значило бы завести правило с тихой дырой ровно того вида,
+            // против которого оно и написано.
+            let mut names: Vec<(String, usize)> = list
+                .split(['[', ']', ',', '"', '\'', ' '])
+                .map(str::trim)
+                .filter(|n| !n.is_empty() && *n != "-")
+                .map(|n| (n.to_owned(), index + 1))
+                .collect();
+            if list.trim().is_empty() {
+                for (offset, next) in lines.iter().enumerate().skip(index + 1) {
+                    let trimmed = next.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    let Some(item) = trimmed.strip_prefix("- ") else {
+                        break;
+                    };
+                    let item = item.trim().trim_matches(['"', '\'']);
+                    if item.is_empty() {
+                        break;
+                    }
+                    names.push((item.to_owned(), offset + 1));
                 }
-                if !DECLARED_BRANCHES.contains(&name) {
+            }
+            for (name, at) in names {
+                if !DECLARED_BRANCHES.contains(&name.as_str()) {
                     failures.push(format!(
-                        "{shown}:{}: триггер называет ветку '{name}', которой нет в списке \
-                         объявленных (правило 4)",
-                        index + 1
+                        "{shown}:{at}: триггер называет ветку '{name}', которой нет в списке \
+                         объявленных (правило 4)"
                     ));
                 }
             }
@@ -395,6 +417,12 @@ fn the_check_goes_red_on_each_kind_of_dead_reference() {
         "on:\n  push:\n    branches: [main, ours]\n",
     )
     .unwrap();
+    // ...и та же ветка, записанная блоком: инлайн-разбор её не видит.
+    std::fs::write(
+        root.join(".github").join("workflows").join("block.yml"),
+        "on:\n  push:\n    branches:\n      - main\n      - ours\n",
+    )
+    .unwrap();
 
     let red = {
         let mut f = textual_failures(&root);
@@ -414,7 +442,12 @@ fn the_check_goes_red_on_each_kind_of_dead_reference() {
     assert!(
         red.iter()
             .any(|f| f.contains("stale.yml") && f.contains("правило 4")),
-        "правило 4 промолчало: {red:?}"
+        "правило 4 промолчало на инлайн-списке: {red:?}"
+    );
+    assert!(
+        red.iter()
+            .any(|f| f.contains("block.yml:5") && f.contains("правило 4")),
+        "правило 4 промолчало на списке блоком: {red:?}"
     );
     assert!(
         !red.iter().any(|f| f.contains("docs/guide.md")),
