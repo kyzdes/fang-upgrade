@@ -429,4 +429,34 @@ mod tests {
             );
         }
     }
+
+    /// До этой правки весь зазор между строкой логотипа и заголовком держался
+    /// на `margin-top` у `.eyebrow`. При умолчании `rp_name = "OpenFang"`
+    /// `eyebrow()` возвращает пустую строку, и разметка схлопывалась: у
+    /// `.brand` не было ни `margin-bottom`, ни `padding-bottom`, у `h1` —
+    /// `margin: 0 0 12px`. Зазор обязан идти от `.brand`, а не от элемента,
+    /// который на дефолтной установке не рисуется вовсе.
+    #[test]
+    fn brand_carries_its_own_spacing_so_the_gap_survives_without_an_eyebrow() {
+        let brand_rule = AUTH_STYLE
+            .split(".brand{")
+            .nth(1)
+            .expect(".brand rule must exist in AUTH_STYLE")
+            .split('}')
+            .next()
+            .unwrap();
+        assert!(
+            brand_rule.contains("margin-bottom") || brand_rule.contains("padding-bottom"),
+            ".brand must carry its own bottom spacing: {brand_rule}"
+        );
+    }
+
+    /// Обе страницы входа видит чужой оператор форка, который может не знать
+    /// русский: разметка и текст обязаны быть на английском, как остальной
+    /// продукт (`static/index_head.html` несёт `lang="en"`).
+    #[test]
+    fn login_and_register_pages_declare_english() {
+        assert!(login_html("Acme").starts_with(r#"<!doctype html><html lang="en">"#));
+        assert!(register_html("Acme").starts_with(r#"<!doctype html><html lang="en">"#));
+    }
 }
