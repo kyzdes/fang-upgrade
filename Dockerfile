@@ -59,6 +59,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
+# yt-dlp для конвейера youtube-insights. Нужен агенту `youtube-insights`, который
+# зовёт /data/workspaces/youtube-insights/bin/ytwatch.py через shell_exec.
+#
+# ПОЧЕМУ В ОБРАЗЕ, А НЕ pip В ЖИВОЙ КОНТЕЙНЕР. Именно так он и стоял — в
+# записываемом слое — и исчез при первой же замене контейнера на образ из CI
+# 2026-08-23. Скрипт уцелел (он в томе /data), бинарь нет. Тот же класс, что
+# «hand vanishes after docker restart»: всё, что не в образе и не в томе,
+# живёт до следующего `up -d`.
+#
+# ПОЧЕМУ pip, А НЕ apt. Пакет из Debian отстаёт, а YouTube ломает старые версии
+# за недели.
+#
+# ПОЧЕМУ ЗАКРЕПЛЁННАЯ ВЕРСИЯ. Плавающая даёт разный образ на одном коммите — это
+# ровно то, на чём 23 августа встала сборка (rust 1.88 против объявленного 1.91).
+# Здесь цена та же: воспроизводимость важнее свежести, а свежесть достигается
+# осознанным подъёмом одной строки.
+#
+# КОГДА ПОДНИМАТЬ. Когда `ytwatch.py fetch` начнёт возвращать ошибку разбора
+# вместо субтитров — это YouTube сменил формат, и нужна новая версия.
+#
+# ffmpeg НЕ нужен: конвейер тянет субтитры (--write-auto-subs --sub-format json3
+# --skip-download), а не медиа. Проверено: вхождений ffmpeg в ytwatch.py — ноль.
+ARG YTDLP_VERSION=2026.8.19
+RUN pip3 install --break-system-packages --no-cache-dir "yt-dlp==${YTDLP_VERSION}" \
+    && yt-dlp --version
+
 COPY --from=builder /openfang /usr/local/bin/openfang
 COPY --from=builder /build/agents /opt/openfang/agents
 EXPOSE 4200
