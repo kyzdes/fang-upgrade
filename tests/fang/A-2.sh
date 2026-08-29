@@ -31,7 +31,7 @@ set -uo pipefail
 
 BASE="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 export OPENFANG_URL="$BASE"
-export PATH="/root/.claude/skills/openfang/scripts:$PATH"
+export PATH="/root/.claude/skills/fang-upgrade/scripts:$PATH"
 
 PROVIDER="${A2_PROVIDER:-hyperfusion}"
 MODEL_ID="${A2_MODEL_ID:-test-a2/drift-probe}"

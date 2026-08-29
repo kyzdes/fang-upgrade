@@ -24,10 +24,17 @@ sh /root/.claude/skills/fang-upgrade/scripts/ofgate <worktree> [--only fmt,clipp
 python3 /root/.claude/skills/fang-upgrade/scripts/ofmutate <worktree> --test <ф> -p <крейт>
 ```
 
-`ofgate` гоняет то же, что Fork CI, и в порядке CI: `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo test --workspace -- --test-threads=2`. Его блок вердикта идёт в отчёт дословно —
-закрывающая строка несёт sha256 блока, строки шагов — размеры и sha256 логов.
+**Гейт — Fork CI на пул-реквесте, а не `ofgate`.** Ветка → PR → зелёный CI (две джобы:
+`fmt + clippy + test` и сборка образа) → слияние; прямо в `main` не пушить.
+`ofgate` гоняет ТРИ команды из джобы `check`, дословно и в порядке CI:
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
+`cargo test --workspace -- --test-threads=2`. Чего у него нет, а у CI есть (сверено по
+`.github/workflows/fork-ci.yml` 2026-08-24): шаг «версии тулчейна сходятся во всех
+четырёх местах», установка тулчейна и rust-cache, системные библиотеки Tauri и вторая
+джоба со сборкой Dockerfile. Зелёный `ofgate` значит «три команды cargo прошли на моём
+дереве», и ничего шире. Его блок вердикта идёт в отчёт дословно — закрывающая строка
+несёт sha256 блока, строки шагов — размеры и sha256 логов; подлинность блока
+доказывается перезапуском гейта, а не чтением отчёта.
 
 **`ofcheck-rs` не может покраснеть.** Его последняя строка —
 `cargo check $ARGS 2>&1 | tail -40`, а код конвейера это код `tail`. Проверено:

@@ -64,7 +64,7 @@
 set -uo pipefail
 
 BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
-SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/openfang/scripts}"
+SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/fang-upgrade/scripts}"
 # This probe deletes workspace directories under $STAGING_DATA. A path is only
 # this stand's if something established that: OPENFANG_HOME_HOST, which
 # tests/fang/run.sh exports only after proving the container publishes

@@ -124,15 +124,33 @@ After building, verify your local setup:
 cargo run -- doctor
 ```
 
-### CI on this fork (`ours`)
+### CI on this fork
 
-`.github/workflows/ci.yml` is upstream's workflow and stays scoped to upstream's `main`
-branch — we don't push there and don't edit that file for fork-specific needs.
-`.github/workflows/fork-ci.yml` is ours: it triggers on pushes to `ours` and on pull
-requests targeting `ours`, and runs `cargo fmt --check`, `cargo clippy --workspace
---all-targets -- -D warnings`, and `cargo test --workspace` on ubuntu-latest. See the
-comments at the top of that file for what was deliberately left out (OS matrix,
-`cargo audit`, install-script smoke test, upstream's secrets-scan job) and why.
+`.github/workflows/ci.yml` and `.github/workflows/release.yml` are upstream's. Both are
+scoped to the branch `upstream-sync-only`, which nothing pushes to, so they never run
+here; that is deliberate, and their headers say so.
+
+`.github/workflows/fork-ci.yml` is the fork's own, and it is the gate: a branch reaches
+`main` through a PR whose CI is green, never through a direct push. It triggers on
+pushes to `main` and on pull requests targeting `main` — the branch `ours` was deleted
+on 2026-08-23 as a duplicate of `main` and is named nowhere in the triggers. Two jobs
+run, in this order:
+
+1. `fmt + clippy + test` (ubuntu-latest): pins the toolchain from `rust-toolchain.toml`,
+   **fails early if the four declared toolchain versions disagree** (`rust-toolchain.toml`,
+   `rust-version` in `Cargo.toml`, `FROM rust:` in the `Dockerfile`, `toolchain:` in the
+   workflow), installs the Tauri system libraries, then runs `cargo fmt --all -- --check`,
+   `cargo clippy --workspace --all-targets -- -D warnings` and
+   `cargo test --workspace -- --test-threads=2`.
+2. `Образ → ghcr.io/kyzdes/fang-upgrade`, which `needs: [check]`: it builds the image on
+   every PR (proving the `Dockerfile` still builds before the merge, not after) and
+   pushes `:main` and `:<sha>` only on a push to `main`.
+
+`ofgate` runs the three cargo commands of job 1 and nothing else — not the
+toolchain-agreement step, not the image build. It is a fast local pre-check, not a
+substitute for the gate. See the comments at the top of `fork-ci.yml` for what was
+deliberately left out (OS matrix, `cargo audit`, install-script smoke test, upstream's
+secrets-scan job) and why.
 
 **`fork-ci.yml` does not make shell-based repro scripts (e.g. `run.sh`) runnable in
 CI.** Scripts in this repo that reproduce a bug against a live OpenFang instance

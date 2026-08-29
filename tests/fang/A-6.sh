@@ -90,7 +90,7 @@
 set -uo pipefail
 
 BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
-SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/openfang/scripts}"
+SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/fang-upgrade/scripts}"
 STAGING_DATA="${OPENFANG_HOME_HOST:-/var/lib/docker/volumes/openfang-staging-data/_data}"
 CONTAINER="${OPENFANG_CONTAINER:-openfang-staging}"
 DEAD_URL="${A6_DEAD_URL:-http://127.0.0.1:9/v1}"

@@ -22,7 +22,7 @@
 # Usage: A-1.sh [BASE_URL]     default $OPENFANG_URL or http://127.0.0.1:4201 (СТЕНД)
 
 set -u
-export PATH=/root/.claude/skills/openfang/scripts:$PATH
+export PATH=/root/.claude/skills/fang-upgrade/scripts:$PATH
 BASE=${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}
 export OPENFANG_URL=$BASE
 export OPENFANG_CONFIG=${OPENFANG_CONFIG:-/var/lib/docker/volumes/openfang-staging-data/_data/config.toml}

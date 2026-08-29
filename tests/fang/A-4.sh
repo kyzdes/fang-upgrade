@@ -29,7 +29,7 @@ if [ "${1:-}" = "--scan-only" ]; then SCAN_ONLY=1; shift; fi
 BASE_URL="${1:-${OPENFANG_URL:-http://127.0.0.1:4201}}"
 AGENT_NAME="${A4_AGENT:-AgentGemma4}"
 N_TASKS="${A4_TASKS:-10}"
-SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/openfang/scripts}"
+SKILL_SCRIPTS="${SKILL_SCRIPTS:-/root/.claude/skills/fang-upgrade/scripts}"
 STAGING_DATA="${OPENFANG_HOME_HOST:-/var/lib/docker/volumes/openfang-staging-data/_data}"
 export PATH="$SKILL_SCRIPTS:$PATH"
 export OPENFANG_URL="$BASE_URL"

@@ -26,7 +26,7 @@
 ofgate настоящий. Схема сверяет форму блока со строками, которые ofgate
 действительно печатает, — и только. Блок нужного вида пишется руками за минуту:
 ключа у схемы нет, sha256 из закрывающей строки ей не с чем сверить, тело блока
-и есть весь её вход. Подлинность доказывается перезапуском гейта (ofverify), и
+и есть весь её вход. Подлинность доказывается перезапуском гейта тем, кто проверяет, и
 фикстура OFGATE_GREEN ниже — образец формы, а не удостоверение подлинности.
 
 Числа в этом докстринге не проставлены руками: сколько случаев в наборе, столько
@@ -90,16 +90,16 @@ OFGATE_REFUSAL = """ofgate: отказываюсь идти на передне�
 
   Запусти фоном (Bash run_in_background: true), команда целиком:
 
-    sh /root/.claude/skills/openfang/scripts/ofgate /root/src/openfang --only test --wait
+    sh /root/.claude/skills/fang-upgrade/scripts/ofgate /root/src/openfang --only test --wait
 
   Короткие режимы, которым передний план разрешён:
-    sh /root/.claude/skills/openfang/scripts/ofgate /root/src/openfang --only fmt"""
+    sh /root/.claude/skills/fang-upgrade/scripts/ofgate /root/src/openfang --only fmt"""
 
 OFMUTATE_PROVEN = """# worktree /root/wt-fang-13
 # HEAD 1a2b3c4d5  база ours  фильтр 'empty_response'
 # ханков: 2 продакшн, 1 тестовых
-    прод  crates/openfang-runtime/src/agent.rs  @@+118,9
-    тест  crates/openfang-runtime/src/agent.rs  @@+402,24
+    прод  crates/openfang-runtime/src/agent_loop.rs  @@+118,9
+    тест  crates/openfang-runtime/src/agent_loop.rs  @@+402,24
 # логи: /tmp/ofmutate-xxxx
 
 [1/2] как есть — обязано быть зелёным и непустым

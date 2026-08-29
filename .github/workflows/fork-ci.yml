@@ -1,4 +1,4 @@
-name: Fork CI (ours)
+name: Fork CI
 
 # This is a SEPARATE workflow from the upstream `ci.yml`. It intentionally does not
 # touch `ci.yml`, whose push/PR triggers were narrowed to a branch nothing pushes to
