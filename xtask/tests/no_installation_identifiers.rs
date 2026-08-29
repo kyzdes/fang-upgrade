@@ -848,7 +848,7 @@ fn foreign_values_are_caught_by_shape() {
     let host = |labels: &[&str]| labels.join(".");
 
     let public = v4(198, 18, 44, 7); // 198.18/15 — benchmarking, маршрутизируемый
-    let another = v4(77, 90, 43, 8);
+    let another = v4(198, 19, 7, 42); // тот же диапазон, второй чужой адрес
     let v6 = ["2606", "4700", "", "1111"].join(":");
     let foreign_host = host(&["dash", "acme", "tld"]);
 
